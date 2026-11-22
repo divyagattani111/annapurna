@@ -1,0 +1,179 @@
+[
+  {
+    "id": "3d8c1ab9-b656-4062-b63a-f74832d22d13",
+    "code": "D001",
+    "name": "BUSTAND ROAD",
+    "active": true,
+    "credit_limit": null,
+    "details": {
+      "phone": "9160999385",
+      "route": "Retail"
+    }
+  },
+  {
+    "id": "c3708db8-16ac-45da-b399-8622484f098e",
+    "code": "D002",
+    "name": "SAVARKER NAGAR",
+    "active": true,
+    "credit_limit": null,
+    "details": {
+      "phone": "9701167335",
+      "route": "Retail"
+    }
+  },
+  {
+    "id": "b482d816-cd05-46b1-a571-526c39a3aa33",
+    "code": "D003",
+    "name": "HYD ROAD",
+    "active": true,
+    "credit_limit": null,
+    "details": {
+      "phone": "9908784334",
+      "route": "Retail"
+    }
+  },
+  {
+    "id": "ec859881-c5ce-4711-8009-60a23c4b7883",
+    "code": "D004",
+    "name": "RADHA KRISHNA",
+    "active": true,
+    "credit_limit": null,
+    "details": {
+      "phone": "9949416730",
+      "route": "Retail"
+    }
+  },
+  {
+    "id": "009b6c65-cd9a-4ab9-9971-67fcf38046a6",
+    "code": "D005",
+    "name": "NARSIMHA SALES MAN",
+    "active": true,
+    "credit_limit": null,
+    "details": {
+      "phone": "9885500528",
+      "route": "Retail"
+    }
+  },
+  {
+    "id": "2c32e349-78b1-41ef-8e7c-9937bf1ec2d4",
+    "code": "D006",
+    "name": "AKBER SALESMAN",
+    "active": true,
+    "credit_limit": null,
+    "details": {
+      "phone": "9182303903",
+      "route": "Retail"
+    }
+  },
+  {
+    "id": "6d588746-b41d-4720-983b-58aa7de2b4fb",
+    "code": "D007",
+    "name": "SWAMY SALES MAN",
+    "active": true,
+    "credit_limit": null,
+    "details": {
+      "phone": "8499004238",
+      "route": ""
+    }
+  },
+  {
+    "id": "d0d0dde8-80a2-4e4c-85c0-0a58964fd334",
+    "code": "D008",
+    "name": "FEROZ",
+    "active": true,
+    "credit_limit": null,
+    "details": {
+      "phone": "9701063917",
+      "route": "Retail"
+    }
+  },
+  {
+    "id": "8ae094f9-f372-4d38-8409-7ad73665bacd",
+    "code": "D009",
+    "name": "NAVEEN SALES MAN",
+    "active": true,
+    "credit_limit": null,
+    "details": {
+      "phone": "9701963304",
+      "route": "Retail"
+    }
+  },
+  {
+    "id": "2153c5cb-2eac-471a-9b6e-ae77490c30b7",
+    "code": "D010",
+    "name": "SOMANNA",
+    "active": true,
+    "credit_limit": null,
+    "details": {
+      "phone": "9885496103",
+      "route": "Retail"
+    }
+  },
+  {
+    "id": "6e742005-62e8-4d7c-8f7d-89e8a4eaea24",
+    "code": "D011",
+    "name": "DVK ROAD",
+    "active": true,
+    "credit_limit": null,
+    "details": {
+      "phone": "8297976565",
+      "route": "Retail"
+    }
+  },
+  {
+    "id": "e5977380-a02f-4f9c-9c8f-9301db7de446",
+    "code": "D012",
+    "name": "MLG AREA",
+    "active": true,
+    "credit_limit": null,
+    "details": {
+      "phone": "9666054266",
+      "route": "Retail"
+    }
+  },
+  {
+    "id": "6e308565-f388-45cb-83ec-616a1cc464ae",
+    "code": "D013",
+    "name": "CHANDRAKHANTH  SALESMAN",
+    "active": true,
+    "credit_limit": null,
+    "details": {
+      "phone": "7661901110",
+      "route": "Retail"
+    }
+  },
+  {
+    "id": "5d392ea5-e701-4422-96aa-a52fba7ed4be",
+    "code": "D014",
+    "name": "IBRAHEEM",
+    "active": true,
+    "credit_limit": null,
+    "details": {
+      "phone": "9603865059",
+      "route": "Retail"
+    }
+  },
+  {
+    "id": "6b448d5e-be39-41a5-ab34-6c53f4187da5",
+    "code": "D015",
+    "name": "SATYANARAYNA OMPRASAD ROUTE",
+    "active": true,
+    "credit_limit": null,
+    "details": {
+      "phone": "",
+      "route": "Retail"
+    }
+  },
+  {
+    "id": "fc4930bb-9775-4156-ad91-a161a981ed2d",
+    "code": "D016",
+    "name": "MUBASHIR SALESMAN",
+    "active": true,
+    "credit_limit": null,
+    "details": {
+      "phone": "9010885107",
+      "route": "Wholesale",
+      "is_direct_route": "true"
+    }
+  }
+]

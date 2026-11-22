@@ -1,0 +1,22 @@
+{
+  "name": "@ledger/api",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "build": "bun build src/index.ts --target bun --outdir dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ledger/contracts": "workspace:*",
+    "@ledger/db": "workspace:*",
+    "better-auth": "1.7.18",
+    "decimal.js": "10.6.0",
+    "drizzle-orm": "0.45.4",
+    "hono": "4.13.16",
+    "pg": "8.23.1",
+    "xlsx": "^0.18.5",
+    "zod": "4.6.7"
+  }
+}

@@ -1,0 +1,21373 @@
+import React, {
+  useEffect,
+  useRef,
+  useState,
+  useId,
+  useCallback,
+  useMemo,
+  createContext,
+  useContext,
+} from "react";
+import { createRoot } from "react-dom/client";
+import {
+  QueryClient,
+  QueryClientProvider,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { z } from "zod";
+import {
+  encodeCsvRows,
+  dashboardResponse,
+  documentResponse,
+  documentListResponse,
+  statementResponse,
+  previewResponse,
+  bookResponse,
+  rowSchema,
+  rowsSchema,
+  commandResult,
+  commands,
+  cleanMoney,
+  cleanDecimal,
+  type CommandName,
+} from "@ledger/contracts";
+import {
+  BookOpen,
+  LayoutDashboard,
+  Users,
+  FileText,
+  ArrowLeftRight,
+  BarChart3,
+  Settings,
+  Plus,
+  LogOut,
+  Check,
+  Clock,
+  Printer,
+  RefreshCw,
+  IndianRupee,
+  TrendingDown,
+  LockKeyhole,
+  Unlock,
+  Wallet,
+  CreditCard,
+  CalendarDays,
+  Download,
+  Layers,
+  Store,
+  Search,
+  CheckCircle2,
+  Trash2,
+  Pencil,
+  Star,
+  Receipt,
+  Banknote,
+  Calendar,
+  X,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Barcode,
+  ScanBarcode,
+  ExternalLink,
+  Package,
+  Copy,
+  AlertTriangle,
+  Eye,
+} from "lucide-react";
+import "./style.css";
+import Decimal from "decimal.js";
+Decimal.set({ precision: 60, rounding: Decimal.ROUND_HALF_UP });
+const D = (v: Decimal.Value) => new Decimal(v);
+type Row = Record<string, unknown>;
+const str = (v: unknown) => String(v ?? "");
+const arr = (v: unknown): Row[] => rowsSchema.parse(v ?? []);
+function parseCents(s: unknown) {
+  const cleaned = cleanMoney(s);
+  if (!cleaned) return 0n;
+  const neg = cleaned.startsWith("-");
+  const clean = neg ? cleaned.slice(1) : cleaned;
+  const parts = clean.split(".");
+  const whole = parts[0] ? BigInt(parts[0]) : 0n;
+  const fracStr = (parts[1] || "").padEnd(2, "0").slice(0, 2);
+  const frac = fracStr ? BigInt(fracStr) : 0n;
+  const total = whole * 100n + frac;
+  return neg ? -total : total;
+}
+function parseMoneyNumber(v: unknown): number {
+  const c = cleanMoney(v);
+  if (!c) return NaN;
+  const n = Number(c);
+  return isNaN(n) ? NaN : n;
+}
+function formatCents(cents: bigint) {
+  const neg = cents < 0n;
+  const abs = neg ? -cents : cents;
+  const whole = abs / 100n;
+  const frac = abs % 100n;
+  return (neg ? "-" : "") + whole.toString() + "." + frac.toString().padStart(2, "0");
+}
+function rupees(value: unknown) {
+  const s = str(value || "0"),
+    negative = s.startsWith("-"),
+    [whole, paise = "00"] = s.replace("-", "").split(".");
+  const prefix = whole.slice(0, -3),
+    last = whole.slice(-3),
+    grouped = prefix
+      ? prefix.replace(/\B(?=(\d{2})+(?!\d))/g, ",") + "," + last
+      : last;
+  return `${negative ? "−" : ""}₹${grouped}.${paise.replace(/0+$/, "").padEnd(2, "0")}`;
+}
+function formatBilledCaption(grossVal: unknown, revVal: unknown, retVal: unknown) {
+  const gross = str(grossVal ?? "0.00");
+  const rev = str(revVal ?? "0.00");
+  const ret = str(retVal ?? "0.00");
+  const hasGross = parseFloat(gross) > 0;
+  const hasRev = parseFloat(rev) > 0;
+  const hasRet = parseFloat(ret) > 0;
+  if (!hasGross && !hasRev && !hasRet) return "Total billed today";
+  const parts = [`Gross: ${rupees(gross)}`];
+  if (hasRev) parts.push(`Rev: ${rupees(rev)}`);
+  if (hasRet) parts.push(`Ret: ${rupees(ret)}`);
+  if (!hasRev && !hasRet) parts.push("No reversals");
+  return parts.join(" · ");
+}
+const dateLabel = (s: unknown) =>
+  new Intl.DateTimeFormat("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: "Asia/Kolkata",
+  }).format(new Date(str(s).slice(0, 10) + "T12:00:00+05:30"));
+
+const timeOnlyLabel = (s: unknown) => {
+  if (!s) return "";
+  try {
+    const d = new Date(String(s));
+    if (isNaN(d.getTime())) return "";
+    const parts = new Intl.DateTimeFormat("en-IN", {
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: "Asia/Kolkata",
+    }).formatToParts(d);
+    const day = parts.find((p) => p.type === "day")?.value;
+    const month = parts.find((p) => p.type === "month")?.value;
+    const hour = parts.find((p) => p.type === "hour")?.value;
+    const minute = parts.find((p) => p.type === "minute")?.value;
+    const dayPeriod = (parts.find((p) => p.type === "dayPeriod")?.value || "").toUpperCase();
+    return `${day}/${month}  ${hour}:${minute} ${dayPeriod}`;
+  } catch {
+    return "";
+  }
+};
+
+const formatDateTime = (s: unknown) => {
+  if (!s) return "—";
+  try {
+    const d = new Date(String(s));
+    if (isNaN(d.getTime())) return dateLabel(s);
+    return new Intl.DateTimeFormat("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: "Asia/Kolkata",
+    }).format(d);
+  } catch {
+    return dateLabel(s);
+  }
+};
+async function api<T = Row>(
+  path: string,
+  schema: z.ZodType<T> = rowSchema as z.ZodType<T>,
+  body?: unknown,
+  method?: string,
+  key?: string,
+  extraHeaders: Record<string, string> = {},
+): Promise<T> {
+  const actualMethod = method || (body !== undefined ? "POST" : "GET");
+  const response = await fetch("/api/v1/" + path, {
+    method: actualMethod,
+    credentials: "same-origin",
+    headers: {
+      ...extraHeaders,
+      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      ...(key ? { "Idempotency-Key": key } : {}),
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.message ?? "Request failed");
+  const resource = path.split("?")[0];
+  const validated =
+    resource === "dashboard"
+      ? dashboardResponse
+      : resource === "preview/bill"
+        ? previewResponse
+        : resource === "documents"
+          ? documentListResponse
+          : resource === "documents/lines"
+            ? schema
+            : resource.startsWith("documents/")
+              ? documentResponse
+              : resource.startsWith("statements/")
+                ? statementResponse
+                : resource.startsWith("books/")
+                  ? bookResponse
+                  : schema;
+  return validated.parse(data) as T;
+}
+const client = new QueryClient({
+  defaultOptions: { queries: { retry: false, refetchOnWindowFocus: true } },
+});
+function Button({
+  children,
+  ...props
+}: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button type="button" {...props}>
+      {children}
+    </button>
+  );
+}
+function selectKeys(e: React.KeyboardEvent<HTMLLabelElement>) {
+  const select = e.target;
+  if (
+    !(select instanceof HTMLSelectElement) ||
+    !["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)
+  )
+    return;
+  e.preventDefault();
+  const options = Array.from(select.options).filter((o) => !o.disabled);
+  const current = options.findIndex((o) => o.value === select.value);
+  const index =
+    e.key === "Home"
+      ? 0
+      : e.key === "End"
+        ? options.length - 1
+        : Math.max(
+          0,
+          Math.min(
+            options.length - 1,
+            current + (e.key === "ArrowDown" ? 1 : -1),
+          ),
+        );
+  const option = options[index];
+  if (option) {
+    select.value = option.value;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+}
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="field" onKeyDown={selectKeys}>
+      <span>{label}</span>
+      {children}
+    </label>
+  );
+}
+function Empty({ text = "No records yet." }) {
+  return (
+    <div className="empty">
+      <BookOpen size={28} />
+      <p>{text}</p>
+    </div>
+  );
+}
+function Table({
+  rows,
+  columns,
+  onRow,
+  cellRenderers,
+  footer,
+}: {
+  rows: Row[];
+  columns: [string, string, boolean?][];
+  onRow?: (r: Row) => void;
+  cellRenderers?: Record<string, (r: Row) => React.ReactNode>;
+  footer?: React.ReactNode;
+}) {
+  return rows.length ? (
+    <div className="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            {columns.map(([key, label, isMoney]) => (
+              <th className={isMoney ? "money-cell" : ""} key={key}>
+                {label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={str(r.id) || i}>
+              {columns.map(([key, , money]) => (
+                <td className={money ? "money-cell" : ""} key={key}>
+                  {cellRenderers && cellRenderers[key] ? (
+                    cellRenderers[key](r)
+                  ) : key === columns[0][0] && onRow ? (
+                    <button className="text-link" onClick={() => onRow(r)}>
+                      {str(r[key])}
+                    </button>
+                  ) : money ? (
+                    rupees(r[key])
+                  ) : key === "created_at" ? (
+                    formatDateTime(r[key])
+                  ) : (key === "date" || key === "business_date") && r.created_at ? (
+                    <div style={{ display: "flex", flexDirection: "column" }}>
+                      <span>{/^\d{4}-\d{2}-\d{2}$/.test(str(r[key])) ? dateLabel(r[key]) : str(r[key])}</span>
+                      <span style={{ fontSize: 11, color: "#94a3b8" }}>
+                        {timeOnlyLabel(r.created_at)}
+                      </span>
+                    </div>
+                  ) : (
+                    str(r[key])
+                  )}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+        {footer && <tfoot>{footer}</tfoot>}
+      </table>
+    </div>
+  ) : (
+    <Empty />
+  );
+}
+
+function NoteTooltip({ text }: { text: string }) {
+  const [coords, setCoords] = useState<{ top: number; left: number; placeBelow: boolean } | null>(null);
+  const [isPinned, setIsPinned] = useState(false);
+
+  const cleanText = (text || "").trim();
+  if (!cleanText) return <span style={{ color: "#cbd5e1" }}>—</span>;
+
+  const updateCoords = (el: HTMLElement) => {
+    const rect = el.getBoundingClientRect();
+    const placeBelow = rect.top < 130;
+    setCoords({
+      top: placeBelow ? rect.bottom + 8 : rect.top - 8,
+      left: Math.max(160, Math.min(window.innerWidth - 160, rect.left + rect.width / 2)),
+      placeBelow,
+    });
+  };
+
+  const handleMouseEnter = (e: React.MouseEvent<HTMLElement>) => {
+    updateCoords(e.currentTarget);
+  };
+
+  const handleMouseLeave = () => {
+    if (!isPinned) setCoords(null);
+  };
+
+  const handleClick = (e: React.MouseEvent<HTMLElement>) => {
+    e.stopPropagation();
+    if (isPinned) {
+      setIsPinned(false);
+      setCoords(null);
+    } else {
+      updateCoords(e.currentTarget);
+      setIsPinned(true);
+    }
+  };
+
+  return (
+    <div style={{ display: "inline-flex", justifyContent: "center", alignItems: "center" }}>
+      <button
+        type="button"
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+        onClick={handleClick}
+        aria-label="View transaction note"
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 26,
+          height: 26,
+          borderRadius: 6,
+          background: coords ? "#e2e8f0" : "#f1f5f9",
+          color: "#334155",
+          cursor: "pointer",
+          border: coords ? "1px solid #94a3b8" : "1px solid #e2e8f0",
+          fontSize: 14,
+          padding: 0,
+          outline: "none",
+          transition: "all 0.12s ease",
+        }}
+        title={cleanText}
+      >
+        📝
+      </button>
+
+      {coords && (
+        <div
+          role="tooltip"
+          onClick={(e) => e.stopPropagation()}
+          onMouseEnter={() => {
+            // Keep open if mouse enters the tooltip
+          }}
+          onMouseLeave={() => {
+            if (!isPinned) setCoords(null);
+          }}
+          style={{
+            position: "fixed",
+            top: coords.top,
+            left: coords.left,
+            transform: coords.placeBelow ? "translate(-50%, 0)" : "translate(-50%, -100%)",
+            background: "#0f172a",
+            color: "#f8fafc",
+            padding: "8px 12px",
+            borderRadius: 8,
+            fontSize: 12,
+            lineHeight: 1.45,
+            minWidth: 160,
+            maxWidth: 320,
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+            textAlign: "left",
+            boxShadow: "0 10px 25px -5px rgba(0,0,0,0.4), 0 8px 10px -6px rgba(0,0,0,0.4)",
+            zIndex: 999999,
+            pointerEvents: "auto",
+          }}
+        >
+          <div
+            style={{
+              fontWeight: 700,
+              fontSize: 10,
+              color: "#94a3b8",
+              textTransform: "uppercase",
+              letterSpacing: "0.5px",
+              marginBottom: 4,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 8,
+            }}
+          >
+            <span>Note / Remarks</span>
+            {isPinned && (
+              <span
+                style={{ cursor: "pointer", fontSize: 13, color: "#cbd5e1", lineHeight: 1 }}
+                onClick={() => {
+                  setIsPinned(false);
+                  setCoords(null);
+                }}
+              >
+                ✕
+              </span>
+            )}
+          </div>
+          <div style={{ color: "#ffffff", fontWeight: 450 }}>{cleanText}</div>
+          <div
+            style={{
+              position: "absolute",
+              ...(coords.placeBelow
+                ? {
+                  bottom: "100%",
+                  left: "50%",
+                  transform: "translateX(-50%)",
+                  borderLeft: "6px solid transparent",
+                  borderRight: "6px solid transparent",
+                  borderBottom: "6px solid #0f172a",
+                }
+                : {
+                  top: "100%",
+                  left: "50%",
+                  transform: "translateX(-50%)",
+                  borderLeft: "6px solid transparent",
+                  borderRight: "6px solid transparent",
+                  borderTop: "6px solid #0f172a",
+                }),
+              width: 0,
+              height: 0,
+            }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DocLink({
+  id,
+  number,
+  onSelect,
+  style,
+  className,
+}: {
+  id?: string | null;
+  number: string;
+  onSelect?: (id: string) => void;
+  style?: React.CSSProperties;
+  className?: string;
+}) {
+  if (!id || !onSelect) {
+    return <span style={style} className={className}>{number}</span>;
+  }
+  return (
+    <button
+      type="button"
+      className={`text-link ${className || ""}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        onSelect(id);
+      }}
+      style={{
+        fontWeight: 600,
+        color: "#2563eb",
+        background: "none",
+        border: "none",
+        padding: 0,
+        cursor: "pointer",
+        textDecoration: "underline",
+        fontFamily: "inherit",
+        fontSize: "inherit",
+        textAlign: "left",
+        ...style,
+      }}
+      title={`Open ${number}`}
+    >
+      {number}
+    </button>
+  );
+}
+function Login() {
+  const qc = useQueryClient(),
+    [email, setEmail] = useState(""),
+    [password, setPassword] = useState(""),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false);
+  return (
+    <main className="login">
+      <div className="login-brand">
+        <BookOpen size={36} />
+        <h1>
+          A clearer day.
+          <br />A balanced book.
+        </h1>
+        <p>Your business, one reliable record at a time.</p>
+      </div>
+      <form
+        className="panel"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          setBusy(true);
+          setError("");
+          try {
+            await api("auth/sign-in/email", rowSchema, { email, password });
+            await qc.invalidateQueries({ queryKey: ["me"] });
+          } catch (e) {
+            setError((e as Error).message);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <div className="eyebrow">SALES & MONEY BOOK</div>
+        <h2>Welcome back</h2>
+        <p className="muted">Sign in to your business records.</p>
+        <Field label="Email">
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+            autoComplete="username"
+          />
+        </Field>
+        <Field label="Password">
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            autoComplete="current-password"
+          />
+        </Field>
+        {error && (
+          <p role="alert" className="error">
+            {error}
+          </p>
+        )}
+        <Button type="submit" className="primary" disabled={busy}>
+          {busy ? "Signing in…" : "Sign in"}
+        </Button>
+        <p className="small muted">
+          Access is set up by your business owner. No public registration.
+        </p>
+      </form>
+    </main>
+  );
+}
+const nav = [
+  ["Home", LayoutDashboard],
+  ["Retail", Users],
+  ["Mudashir", Store],
+  ["Other Money", ArrowLeftRight],
+  ["Reports", BarChart3],
+  ["Settings", Settings],
+] as const;
+const WorkflowBusyContext = createContext<
+  React.Dispatch<React.SetStateAction<boolean>>
+>(() => { });
+const commandSection: Partial<Record<CommandName, string>> = {
+  bill: "Retail",
+  close: "Daily Close",
+  receipt: "Retail",
+  receiptBatch: "Retail",
+  deposit: "Cash & Bank",
+  transfer: "Cash & Bank",
+  resolveDeposit: "Cash & Bank",
+  reconcile: "Cash & Bank",
+  reopen: "Daily Close",
+  expense: "Other Money",
+  salary: "Other Money",
+  loan: "Other Money",
+  repay: "Other Money",
+  owner: "Other Money",
+  refund: "Other Money",
+  unidentified: "Other Money",
+  identify: "Other Money",
+};
+
+function App() {
+  const me = useQuery({
+    queryKey: ["me"],
+    queryFn: () => api("me"),
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+  const [page, setPage] = useState("Home");
+  const [reportTab, setReportTab] = useState("transactions");
+  const [action, setAction] = useState<CommandName | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [, setSelectedHistory] = useState<string[]>([]);
+  const [selectedSalesmanId, setSelectedSalesmanId] = useState<string | null>(null);
+  const [draftRecord, setDraftRecord] = useState<Row | null>(null);
+  const [directBillDraftRecord, setDirectBillDraftRecord] = useState<Row | null>(null);
+  const [directBillCustomerId, setDirectBillCustomerId] = useState<string | null>(null);
+  const [directReceiveCustomerId, setDirectReceiveCustomerId] = useState<string | null>(null);
+  const [retailBillDraftRecord, setRetailBillDraftRecord] = useState<Row | null>(null);
+  const [retailActiveView, setRetailActiveView] = useState<
+    "ledger" | "new_bill" | "receive_money" | "register" | "saved_drafts"
+  >("ledger");
+  const [directActiveView, setDirectActiveView] = useState<
+    "ledger" | "new_bill" | "receive_money" | "loading_sheet" | "register" | "saved_drafts" | "handovers"
+  >("ledger");
+  const [draftsOpen, setDraftsOpen] = useState(false);
+  const [itcExportOpen, setItcExportOpen] = useState(false);
+  const [addSalesmanOpen, setAddSalesmanOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [workflowBusy, setWorkflowBusy] = useState(false);
+
+  const openCommand = useCallback(
+    (name: CommandName) => {
+      if (workflowBusy) return;
+      if (action !== name) setDraftRecord(null);
+      setAction(name);
+      setDraftsOpen(false);
+    },
+    [workflowBusy, action],
+  );
+
+  const openDocument = useCallback((id: string | null) => {
+    if (id === null) {
+      setSelected(null);
+      setSelectedHistory([]);
+      return;
+    }
+    setSelected((prev) => {
+      if (prev && prev !== id) {
+        setSelectedHistory((h) => [...h, prev]);
+      }
+      return id;
+    });
+  }, []);
+
+  const goBackDocument = useCallback(() => {
+    setSelectedHistory((prev) => {
+      if (prev.length > 0) {
+        const next = [...prev];
+        const lastId = next.pop()!;
+        setSelected(lastId);
+        return next;
+      }
+      const wasBills = page === "Bills";
+      setSelected(null);
+      if (wasBills) {
+        openCommand("bill");
+      }
+      return [];
+    });
+  }, [page, openCommand]);
+  const isSalesmanUser = (me.data as Row)?.role === "salesman";
+  const navigate = (destination: string) => {
+    if (workflowBusy) return;
+    if (isSalesmanUser) {
+      if (destination !== "Mudashir") return;
+      setAction(null);
+      setDraftRecord(null);
+      setDirectBillDraftRecord(null);
+      setDraftsOpen(false);
+      setItcExportOpen(false);
+      setSelected(null);
+      setSelectedHistory([]);
+      setPage("Mudashir");
+      window.scrollTo(0, 0);
+      return;
+    }
+    if (destination === "New bill") {
+      setPage("Retail");
+      setRetailActiveView("new_bill");
+      window.scrollTo(0, 0);
+      return;
+    }
+    if (destination === "Receive Money") {
+      setPage("Retail");
+      setRetailActiveView("receive_money");
+      window.scrollTo(0, 0);
+      return;
+    }
+    if (destination === "Salesmen") {
+      setPage("Retail");
+      setRetailActiveView("ledger");
+      window.scrollTo(0, 0);
+      return;
+    }
+    if (destination === "Daily Close") {
+      openCommand("close");
+      return;
+    }
+    setAction(null);
+    setDraftRecord(null);
+    setDirectBillDraftRecord(null);
+    setRetailBillDraftRecord(null);
+    setDraftsOpen(false);
+    setItcExportOpen(false);
+    setSelected(null);
+    setSelectedHistory([]);
+    setPage(destination);
+    window.scrollTo(0, 0);
+  };
+  useEffect(() => {
+    const shortcut = (e: KeyboardEvent) => {
+      if (e.key === "F2") {
+        e.preventDefault();
+        if (!isSalesmanUser) openCommand("bill");
+      }
+    };
+    window.addEventListener("keydown", shortcut);
+    return () => window.removeEventListener("keydown", shortcut);
+  }, [openCommand, isSalesmanUser]);
+  const masters = useQuery({
+    queryKey: ["masters"],
+    queryFn: () => api("masters"),
+    enabled: !!me.data,
+  }),
+    dash = useQuery({
+      queryKey: ["dashboard"],
+      queryFn: () => api("dashboard"),
+      enabled: !!me.data,
+    });
+  usePackPcsSynced(!!me.data);
+  if (me.isPending) return <div className="loading">Opening your book…</div>;
+  if (me.isError) return <Login />;
+
+  const m = me.data,
+    business = m.business as Row,
+    md = masters.data ?? {},
+    d = dash.data,
+    date = str(m.date),
+    owner = m.role === "owner",
+    isSalesman = m.role === "salesman",
+    mubashirSalesman = arr(md.salesmen).find(
+      (s) =>
+        str((s.details as Row)?.is_direct_route) === "true" ||
+        str((s.details as Row)?.direct_route) === "true" ||
+        str((s.details as Row)?.isDirectRoute) === "true" ||
+        str(s.name).toLowerCase().includes("mubashir") ||
+        str(s.name).toLowerCase().includes("muddasir") ||
+        str((s.details as Row)?.itc_id) === "1HG2",
+    ),
+    mubashirSalesmanId = mubashirSalesman ? str(mubashirSalesman.id) : undefined,
+    workflowOpen = !!(
+      action ||
+      draftsOpen ||
+      selected?.startsWith("statement:") ||
+      selected?.startsWith("customer-statement:") ||
+      selected?.startsWith("verify:")
+    ),
+    activePage = isSalesman
+      ? "Mudashir"
+      : action
+        ? (commandSection[action] ?? page)
+        : selected
+          ? page === "Bills"
+            ? "Retail"
+            : page
+          : page;
+  return (
+    <WorkflowBusyContext.Provider value={setWorkflowBusy}>
+      <div
+        className={
+          `${page === "Home" && !selected && !workflowOpen ? "app-shell home-shell" : "app-shell"}${sidebarCollapsed ? " sidebar-collapsed" : ""}`
+        }
+      >
+        <aside>
+          <div className="sidebar-header">
+            <a
+              className="brand"
+              href="#"
+              onClick={(e) => {
+                e.preventDefault();
+                navigate("Home");
+              }}
+              title={str(business.name) || "Sales & Money Book"}
+            >
+              <span className="brand-icon" aria-hidden="true">
+                {str(business.name)
+                  .split(/\s+/)
+                  .filter(Boolean)
+                  .slice(0, 2)
+                  .map((word) => word[0])
+                  .join("")
+                  .toUpperCase() || "SM"}
+              </span>
+              <span className="brand-copy">
+                <strong>Sales & Money Book</strong>
+                <small>{str(business.name)}</small>
+              </span>
+            </a>
+            <button
+              type="button"
+              className="sidebar-toggle-btn"
+              onClick={() => setSidebarCollapsed((prev) => !prev)}
+              aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+              title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            >
+              {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+            </button>
+          </div>
+          <div className="workspace-profile">
+            <div>
+              <strong>{owner ? "Owner workspace" : "Manager workspace"}</strong>
+              <small>
+                {str(business.mode) === "live"
+                  ? "Business records"
+                  : "Fictional demo records"}
+              </small>
+            </div>
+            <span className="role-badge">{owner ? "OWNER" : "MANAGER"}</span>
+          </div>
+          <nav aria-label="Main navigation">
+            {nav.map(([label, Icon]) => (
+              <Button
+                key={label}
+                disabled={workflowBusy}
+                aria-current={activePage === label ? "page" : undefined}
+                className={
+                  activePage === label
+                    ? "nav-item active"
+                    : "nav-item"
+                }
+                title={sidebarCollapsed ? (label === "Home" ? "Dashboard" : label) : undefined}
+                onClick={() => navigate(label)}
+              >
+                <Icon size={19} />
+                <span className="nav-label">{label === "Home" ? "Dashboard" : label}</span>
+              </Button>
+            ))}
+          </nav>
+          <div className="sidebar-bottom">
+            <Button
+              aria-label="Sign out"
+              disabled={workflowBusy}
+              className="sign-out"
+              title={sidebarCollapsed ? "Sign Out" : undefined}
+              onClick={async () => {
+                await api("auth/sign-out", rowSchema, {});
+                client.clear();
+                location.reload();
+              }}
+            >
+              <LogOut size={19} /> <span className="nav-label">Sign Out</span>
+            </Button>
+          </div>
+        </aside>
+        <div className="main-wrap">
+          <header>
+            <div className="header-left">
+              <span>{dateLabel(date)} · Asia/Kolkata</span>
+              <span className={d?.dayClosed ? "day-state closed" : "day-state"}>
+                {!d
+                  ? "CHECKING DATE…"
+                  : d.dayClosed
+                    ? "DAY CLOSED"
+                    : "DAY OPEN"}
+              </span>
+            </div>
+            <span className="mode">
+              {str(business.mode).toUpperCase()} ·{" "}
+              {business.mode === "live"
+                ? "Business records"
+                : "Fictional records"}
+            </span>
+          </header>
+          <main className={workflowOpen ? "workflow-main" : undefined}>
+            <div className="page-content" hidden={workflowOpen}>
+              <div className="page-heading">
+                <div>
+                  {page !== "Home" && (
+                    <div className="eyebrow">
+                      {dateLabel(date)} · ASIA/KOLKATA
+                    </div>
+                  )}
+                  <h1>
+                    {selected
+                      ? page === "Bills"
+                        ? "Bill Record"
+                        : `${page} Record`
+                      : isSalesman
+                        ? "Mudashir Direct Route"
+                        : page === "Home"
+                          ? owner
+                            ? "Your business at a glance"
+                            : "Manager Daily Desk"
+                          : page}
+                  </h1>
+                  <p className="muted">
+                    {selected ? (
+                      "View and print the complete audit history and document details for this record."
+                    ) : page === "Home" ? (
+                      <>
+                        Business Date:{" "}
+                        <b className="business-date">{dateLabel(date)}</b>
+                        <span
+                          className={
+                            d?.dayClosed ? "day-state closed" : "day-state"
+                          }
+                        >
+                          {!d
+                            ? "CHECKING DATE…"
+                            : d.dayClosed
+                              ? "DAY CLOSED"
+                              : "DAY OPEN"}
+                        </span>
+                      </>
+                    ) : page === "Retail" ? (
+                      "Salesmen ledger, new cigarette bills, customer collections and registers."
+                    ) : page === "Mudashir" ? (
+                      "Direct cigarette sales, customer billing, dues and collections for route customers."
+                    ) : page === "Other Money" ? (
+                      "Expenses, employee salaries & advances, and cash/bank transfers."
+                    ) : (
+                      "Keep every record clear, connected and accounted for."
+                    )}
+                  </p>
+                </div>
+                <div className="actions">
+                  {page === "Salesmen" && (
+                    <>
+                      <Button
+                        className="primary"
+                        onClick={() => navigate("New bill")}
+                      >
+                        <Plus size={18} /> New bill
+                      </Button>
+                      <Button
+                        className="secondary"
+                        onClick={() => navigate("Receive Money")}
+                      >
+                        <IndianRupee size={16} /> Receive Money
+                      </Button>
+                    </>
+                  )}
+                  {page === "Home" && (
+                    <>
+                      <Button
+                        className="secondary"
+                        onClick={() => {
+                          setItcExportOpen(true);
+                          setTimeout(() => {
+                            const el = document.getElementById("itc-export-section");
+                            if (el) {
+                              el.scrollIntoView({ behavior: "smooth", block: "start" });
+                            }
+                          }, 50);
+                        }}
+                        title="Review bills, filter by date and export ITC upload CSV"
+                      >
+                        <Download size={16} /> <span>Export ITC Excel</span>
+                      </Button>
+                      <span className="dashboard-date">
+                        <CalendarDays size={16} /> {dateLabel(date)}
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+              {(masters.isError || dash.isError) && (
+                <div role="alert" className="error">
+                  Unable to refresh records.{" "}
+                  {str((masters.error ?? dash.error)?.message)}{" "}
+                  <Button
+                    onClick={() => {
+                      masters.refetch();
+                      dash.refetch();
+                    }}
+                  >
+                    Retry
+                  </Button>
+                </div>
+              )}
+              <div style={{ display: selected ? "none" : undefined }}>
+                {page === "Home" ? (
+                  d ? (
+                    <Dashboard
+                      data={d}
+                      owner={owner}
+                      setAction={openCommand}
+                      setPage={navigate}
+                      onStatement={(id) => {
+                        setSelectedSalesmanId(id);
+                        setRetailActiveView("ledger");
+                        setPage("Retail");
+                        openDocument("statement:" + id);
+                      }}
+                      onDrafts={() => setDraftsOpen(true)}
+                      onOpenReport={(tab) => {
+                        setReportTab(tab);
+                        setPage("Reports");
+                      }}
+                    />
+                  ) : (
+                    <p>Loading balances…</p>
+                  )
+                ) : page === "Retail" ? (
+                  <RetailCigSalesPage
+                    date={date}
+                    masters={md}
+                    dashboard={d}
+                    owner={owner}
+                    excludeSalesmanId={mubashirSalesmanId}
+                    initialSalesmanId={selectedSalesmanId}
+                    onSelect={openDocument}
+                    onStatement={(id) => openDocument("statement:" + id)}
+                    addSalesmanOpen={addSalesmanOpen}
+                    setAddSalesmanOpen={setAddSalesmanOpen}
+                    restoreDraftRecord={retailBillDraftRecord}
+                    onClearRestoreDraft={() => setRetailBillDraftRecord(null)}
+                    activeView={retailActiveView}
+                    onViewChange={setRetailActiveView}
+                  />
+                ) : page === "Salesmen" ? (
+                  <Salesmen
+                    owner={owner}
+                    data={d}
+                    masters={md}
+                    date={date}
+                    add={addSalesmanOpen}
+                    setAdd={setAddSalesmanOpen}
+                    initialSelectedId={selectedSalesmanId}
+                    onStatement={(id) => openDocument("statement:" + id)}
+                    onSelectRecord={openDocument}
+                  />
+                ) : page === "Bills" ? (
+                  <Documents onSelect={openDocument} kind="bill" excludeSalesmanId={mubashirSalesmanId} />
+                ) : page === "Receive Money" ? (
+                  <ReceiveMoneyPage
+                    date={date}
+                    masters={md}
+                    dashboard={d}
+                    excludeSalesmanId={mubashirSalesmanId}
+                    onSelect={openDocument}
+                    onGoToSalesman={(salesmanId) => {
+                      setSelectedSalesmanId(salesmanId);
+                      setRetailActiveView("ledger");
+                      setPage("Retail");
+                      openDocument(null);
+                    }}
+                  />
+                ) : (isSalesman || page === "Mudashir") ? (
+                  <DirectCigSalesPage
+                    date={date}
+                    masters={md}
+                    owner={owner}
+                    onSelect={openDocument}
+                    onCustomerStatement={(custId) => openDocument("customer-statement:" + custId)}
+                    restoreDraftRecord={directBillDraftRecord}
+                    onClearRestoreDraft={() => setDirectBillDraftRecord(null)}
+                    lockedSalesmanId={isSalesman ? (str(m.salesmanId) || mubashirSalesmanId) : undefined}
+                    activeView={directActiveView}
+                    onViewChange={setDirectActiveView}
+                    initialBillCustomerId={directBillCustomerId}
+                    initialReceiveCustomerId={directReceiveCustomerId}
+                    onClearInitialBillCustomer={() => setDirectBillCustomerId(null)}
+                    onClearInitialReceiveCustomer={() => setDirectReceiveCustomerId(null)}
+                    initialSalesmanId={selectedSalesmanId}
+                  />
+                ) : page === "Other Money" ? (
+                  <OtherMoneyPage
+                    date={date}
+                    masters={md}
+                    owner={owner}
+                    onSelect={openDocument}
+                  />
+                ) : page === "Cash & Bank" ? (
+                  <>
+                    <BookExplorer masters={md} date={date} onSelect={openDocument} />
+                    <div className="stats">
+                      {d &&
+                        arr(d.accounts).map((a) => (
+                          <Metric
+                            key={str(a.id)}
+                            label={str(a.name)}
+                            value={a.balance}
+                            caption={`${str(a.holder)} · book balance`}
+                          />
+                        ))}
+                    </div>
+                    <section className="panel">
+                      <h2>Move, check & close</h2>
+                      <div className="operation-grid">
+                        {(
+                          [
+                            "transfer",
+                            "deposit",
+                            "resolveDeposit",
+                            "reconcile",
+                            "close",
+                            ...(owner ? ["reopen"] : []),
+                          ] as CommandName[]
+                        ).map((n) => (
+                          <Button
+                            key={n}
+                            className="secondary"
+                            onClick={() => openCommand(n)}
+                          >
+                            {labels[n]}
+                          </Button>
+                        ))}
+                      </div>
+                    </section>
+                    <section className="panel">
+                      <h2>Money in transit</h2>
+                      <Table
+                        rows={d ? arr(d.transit) : []}
+                        columns={[
+                          ["account", "Transit account"],
+                          ["balance", "Still in transit", true],
+                        ]}
+                      />
+                    </section>
+                    <section className="panel">
+                      <h2>Daily close history · today</h2>
+                      <Table
+                        rows={d ? arr(d.closes) : []}
+                        columns={[
+                          ["account_name", "Cash account"],
+                          ["created_at", "Closed At"],
+                          ["expected", "Book cash", true],
+                          ["counted", "Counted", true],
+                          ["difference", "Difference", true],
+                          ["state", "Status"],
+                          ["reason", "Explanation"],
+                        ]}
+                      />
+                    </section>
+                    <Documents onSelect={openDocument} />
+                  </>
+                ) : page === "Reports" ? (
+                  <ReportExplorer
+                    masters={md}
+                    onSelect={openDocument}
+                    activeTab={reportTab}
+                    setActiveTab={setReportTab}
+                  />
+                ) : (
+                  <SettingsPage
+                    masters={md}
+                    date={date}
+                    owner={owner}
+                    setAction={openCommand}
+                  />
+                )}
+              </div>
+              {selected ? (
+                <DocumentDetail
+                  id={selected}
+                  currentDate={date}
+                  onBack={goBackDocument}
+                  setAction={openCommand}
+                  owner={owner}
+                  onSelect={openDocument}
+                />
+              ) : null}
+            </div>
+            {action && (
+              <CommandPage
+                key={action}
+                name={action}
+                restore={draftRecord}
+                date={date}
+                masters={md}
+                dashboard={d ?? {}}
+                owner={owner}
+                onClose={() => {
+                  setAction(null);
+                  setDraftRecord(null);
+                }}
+                onGoToSalesman={(salesmanId) => {
+                  setAction(null);
+                  setDraftRecord(null);
+                  setSelectedSalesmanId(salesmanId);
+                  setPage("Retail");
+                  openDocument(null);
+                }}
+                onSelect={(docId) => {
+                  if (action === "bill") {
+                    setPage("Retail");
+                  } else if (action && commandSection[action]) {
+                    setPage(commandSection[action]!);
+                  }
+                  setAction(null);
+                  openDocument(docId);
+                }}
+              />
+            )}{" "}
+            {itcExportOpen && !action && (
+              <ItcExportPage
+                initialDate={date}
+                onClose={() => setItcExportOpen(false)}
+                onSelect={openDocument}
+              />
+            )}
+            {!action && !draftsOpen && selected?.startsWith("statement:") && (
+              <StatementPage
+                id={selected.slice(10)}
+                onClose={goBackDocument}
+                date={date}
+                onSelectRecord={openDocument}
+                onNewBill={(salesmanId) => {
+                  setSelected(null);
+                  setSelectedHistory([]);
+                  setSelectedSalesmanId(salesmanId);
+                  if (page === "Mudashir" || salesmanId === mubashirSalesmanId) {
+                    setDirectActiveView("new_bill");
+                    setPage("Mudashir");
+                  } else {
+                    setRetailActiveView("new_bill");
+                    setPage("Retail");
+                  }
+                }}
+                onReceiveMoney={(salesmanId) => {
+                  setSelected(null);
+                  setSelectedHistory([]);
+                  setSelectedSalesmanId(salesmanId);
+                  if (page === "Mudashir" || salesmanId === mubashirSalesmanId) {
+                    setDirectActiveView("receive_money");
+                    setPage("Mudashir");
+                  } else {
+                    setRetailActiveView("receive_money");
+                    setPage("Retail");
+                  }
+                }}
+              />
+            )}{" "}
+            {!action && !draftsOpen && selected?.startsWith("customer-statement:") && (
+              <CustomerStatementPage
+                customerId={selected.slice(19)}
+                onClose={goBackDocument}
+                date={date}
+                onSelectRecord={openDocument}
+                onNewBill={(custId, salesmanId) => {
+                  setSelected(null);
+                  setSelectedHistory([]);
+                  if (salesmanId) setSelectedSalesmanId(salesmanId);
+                  setDirectBillCustomerId(custId);
+                  setDirectActiveView("new_bill");
+                  setPage("Mudashir");
+                }}
+                onReceiveMoney={(custId, salesmanId) => {
+                  setSelected(null);
+                  setSelectedHistory([]);
+                  if (salesmanId) setSelectedSalesmanId(salesmanId);
+                  setDirectReceiveCustomerId(custId);
+                  setDirectActiveView("receive_money");
+                  setPage("Mudashir");
+                }}
+              />
+            )}{" "}
+            {!action && !draftsOpen && selected?.startsWith("verify:") && (
+              <VerificationPage
+                id={selected.slice(7)}
+                date={date}
+                dashboard={d}
+                onClose={goBackDocument}
+              />
+            )}
+          </main>
+          <footer>
+            Sales & Money Book{" "}
+            <span>Operational ledger · tax invoice format not configured</span>
+          </footer>
+        </div>
+      </div>
+    </WorkflowBusyContext.Provider>
+  );
+}
+function Dashboard({
+  data: d,
+  owner,
+  setAction: _setAction,
+  setPage,
+  onStatement: _onStatement,
+  onDrafts: _onDrafts,
+  onOpenReport: _onOpenReport,
+}: {
+  data: Row;
+  owner: boolean;
+  setAction: (name: CommandName) => void;
+  setPage: (page: string) => void;
+  onStatement: (id: string) => void;
+  onDrafts: () => void;
+  onOpenReport?: (tab: string) => void;
+}) {
+  const qc = useQueryClient();
+  const claims = arr(d.claims),
+    cash = arr(d.accounts).filter((a) => a.type === "cash");
+  const claimCount = `${claims.length}${claims.length === 100 ? "+" : ""}`;
+  const isDayClosed = d.dayClosed === true;
+
+  // Inline Daily Close state for the dashboard
+  const [isClosingOpen, setIsClosingOpen] = useState(false);
+  const [counts, setCounts] = useState<Record<string, string>>({});
+  const [reasons, setReasons] = useState<Record<string, string>>({});
+  const [reopenReason, setReopenReason] = useState("");
+  const [isReopenOpen, setIsReopenOpen] = useState(false);
+  const [closeBusy, setCloseBusy] = useState(false);
+  const [closeError, setCloseError] = useState("");
+  const [closeSuccess, setCloseSuccess] = useState("");
+
+  // Online Claims review state on dashboard
+  const [claimNameFilter, setClaimNameFilter] = useState("");
+  const [claimAmountFilter, setClaimAmountFilter] = useState("");
+  const [claimPage, setClaimPage] = useState(0);
+  const [reviewingClaim, setReviewingClaim] = useState<Row | null>(null);
+  const [claimNote, setClaimNote] = useState("");
+  const [claimActionBusy, setClaimActionBusy] = useState(false);
+  const [claimActionError, setClaimActionError] = useState("");
+  const [claimActionSuccess, setClaimActionSuccess] = useState("");
+
+  const filteredClaims = useMemo(() => {
+    return claims.filter((r) => {
+      if (claimNameFilter.trim()) {
+        const query = claimNameFilter.toLowerCase().trim();
+        const salesman = str(r.salesman_name).toLowerCase();
+        const account = str(r.account_name).toLowerCase();
+        const ref = str(r.reference).toLowerCase();
+        if (!salesman.includes(query) && !account.includes(query) && !ref.includes(query)) {
+          return false;
+        }
+      }
+      if (claimAmountFilter.trim()) {
+        const query = claimAmountFilter.replace(/[₹,\s]/g, "").trim();
+        const amtStr = str(r.amount).replace(/[₹,\s]/g, "");
+        if (!amtStr.includes(query)) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [claims, claimNameFilter, claimAmountFilter]);
+
+  useEffect(() => {
+    setClaimPage(0);
+  }, [claimNameFilter, claimAmountFilter]);
+
+  const claimsPerPage = 5;
+  const totalClaimPages = Math.ceil(filteredClaims.length / claimsPerPage);
+  const visibleClaims = filteredClaims.slice(claimPage * claimsPerPage, (claimPage + 1) * claimsPerPage);
+
+  // Inbound Cash Handovers state on Dashboard
+  const pendingHandovers = arr(d.pendingHandovers);
+  const [reviewingHandover, setReviewingHandover] = useState<Row | null>(null);
+  const [handoverActionType, setHandoverActionType] = useState<"accept" | "reject">("accept");
+  const [handoverAcceptedAmount, setHandoverAcceptedAmount] = useState("");
+  const [handoverAccountId, setHandoverAccountId] = useState("");
+  const [handoverNote, setHandoverNote] = useState("");
+  const [handoverBusy, setHandoverBusy] = useState(false);
+  const [handoverError, setHandoverError] = useState("");
+  const [handoverSuccess, setHandoverSuccess] = useState("");
+
+  const defaultHandoverCashAccount = str(cash[0]?.id ?? "");
+
+  const openAcceptHandover = (h: Row) => {
+    setReviewingHandover(h);
+    setHandoverActionType("accept");
+    setHandoverAcceptedAmount(str(h.amount));
+    setHandoverAccountId(defaultHandoverCashAccount);
+    setHandoverNote("");
+    setHandoverError("");
+    setHandoverSuccess("");
+  };
+
+  const handleConfirmHandover = async () => {
+    if (!reviewingHandover) return;
+    const targetAccountId = handoverAccountId || defaultHandoverCashAccount;
+    if (!targetAccountId) {
+      setHandoverError("Please select a physical cash till account.");
+      return;
+    }
+    const enteredAmt = parseMoneyNumber(handoverAcceptedAmount);
+    const maxAmt = parseMoneyNumber(reviewingHandover.amount);
+    if (isNaN(enteredAmt) || enteredAmt <= 0) {
+      setHandoverError("Please enter a valid accepted cash amount.");
+      return;
+    }
+    if (enteredAmt > maxAmt) {
+      setHandoverError(`Accepted amount cannot exceed the handed over amount of ${rupees(reviewingHandover.amount)}.`);
+      return;
+    }
+    setHandoverBusy(true);
+    setHandoverError("");
+    try {
+      await api(
+        "commands/confirmCashHandover",
+        commandResult,
+        {
+          handoverId: str(reviewingHandover.id),
+          acceptedAmount: cleanMoney(handoverAcceptedAmount),
+          accountId: targetAccountId,
+          date: str(d.date),
+          managerNote: handoverNote.trim() || undefined,
+        },
+        "POST",
+        crypto.randomUUID(),
+      );
+      setHandoverSuccess(
+        `Successfully accepted ${rupees(enteredAmt.toFixed(2))} cash into physical drawer!`
+      );
+      setReviewingHandover(null);
+      await qc.invalidateQueries();
+    } catch (err: unknown) {
+      setHandoverError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setHandoverBusy(false);
+    }
+  };
+
+  const handleRejectHandover = async () => {
+    if (!reviewingHandover) return;
+    if (!handoverNote.trim() || handoverNote.trim().length < 3) {
+      setHandoverError("Please enter a reason for rejecting the handover (at least 3 characters).");
+      return;
+    }
+    setHandoverBusy(true);
+    setHandoverError("");
+    try {
+      await api(
+        "commands/rejectCashHandover",
+        commandResult,
+        {
+          handoverId: str(reviewingHandover.id),
+          reason: handoverNote.trim(),
+        },
+        "POST",
+        crypto.randomUUID(),
+      );
+      setHandoverSuccess("Cash handover rejected.");
+      setReviewingHandover(null);
+      await qc.invalidateQueries();
+    } catch (err: unknown) {
+      setHandoverError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setHandoverBusy(false);
+    }
+  };
+
+  const handleVerifyClaim = async () => {
+    if (!reviewingClaim) return;
+    setClaimActionBusy(true);
+    setClaimActionError("");
+    setClaimActionSuccess("");
+    try {
+      const trimmed = claimNote.trim();
+      const claimId = str(reviewingClaim.id);
+      await api(
+        "commands/verify",
+        commandResult,
+        {
+          claimId,
+          date: str(d.date),
+          note: trimmed,
+          bankIdentity: trimmed || `VERIFIED-${claimId.slice(0, 8)}`,
+          evidence: trimmed
+            ? `Verified transaction ID: ${trimmed}`
+            : "Verified online payment",
+        },
+        "POST",
+        crypto.randomUUID(),
+      );
+      await qc.invalidateQueries();
+      setClaimActionSuccess("Payment verified into bank book successfully!");
+      setReviewingClaim(null);
+      setClaimNote("");
+    } catch (err: unknown) {
+      setClaimActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setClaimActionBusy(false);
+    }
+  };
+
+  const handleRejectClaim = async () => {
+    if (!reviewingClaim) return;
+    const trimmed = claimNote.trim();
+    if (!trimmed || trimmed.length < 3) {
+      setClaimActionError("Please enter a reason for rejection (at least 3 characters) in the field below.");
+      return;
+    }
+    setClaimActionBusy(true);
+    setClaimActionError("");
+    setClaimActionSuccess("");
+    try {
+      const claimId = str(reviewingClaim.id);
+      await api(
+        "commands/reject",
+        commandResult,
+        { claimId, reason: trimmed },
+        "POST",
+        crypto.randomUUID(),
+      );
+      await qc.invalidateQueries();
+      setClaimActionSuccess("Claim rejected.");
+      setReviewingClaim(null);
+      setClaimNote("");
+    } catch (err: unknown) {
+      setClaimActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setClaimActionBusy(false);
+    }
+  };
+
+  const handleCloseDay = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setCloseBusy(true);
+    setCloseError("");
+    setCloseSuccess("");
+    try {
+      const activeCashAccounts = cash.filter((a) => a.active !== false);
+      for (const a of activeCashAccounts) {
+        const id = str(a.id);
+        const countedStr = (counts[id] ?? "").trim();
+        if (!countedStr) {
+          throw new Error(`Please enter the physically counted cash for ${str(a.name)}.`);
+        }
+        const expectedCents = parseCents(a.balance);
+        const countedCents = parseCents(countedStr);
+        const diffCents = countedCents - expectedCents;
+        if (diffCents !== 0n && (reasons[id] ?? "").trim().length < 3) {
+          throw new Error(`Explanation is required (at least 3 characters) for cash difference in ${str(a.name)}.`);
+        }
+      }
+      const payload = {
+        date: str(d.date),
+        counts: activeCashAccounts.map((a) => {
+          const id = str(a.id);
+          const countedCents = parseCents(counts[id] ?? "");
+          return {
+            accountId: id,
+            counted: formatCents(countedCents),
+            reason: (reasons[id] ?? "").trim(),
+          };
+        }),
+      };
+      await api("commands/close", commandResult, payload, "POST", crypto.randomUUID());
+      setCloseSuccess("Business date closed and locked successfully.");
+      setIsClosingOpen(false);
+      await qc.invalidateQueries();
+    } catch (err: unknown) {
+      setCloseError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCloseBusy(false);
+    }
+  };
+
+  const handleReopenDay = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setCloseBusy(true);
+    setCloseError("");
+    setCloseSuccess("");
+    try {
+      if (reopenReason.trim().length < 3) {
+        throw new Error("Reason for reopening must be at least 3 characters.");
+      }
+      await api(
+        "commands/reopen",
+        commandResult,
+        { date: str(d.date), reason: reopenReason.trim() },
+        "POST",
+        crypto.randomUUID()
+      );
+      setCloseSuccess("Business date reopened successfully.");
+      setIsReopenOpen(false);
+      setReopenReason("");
+      await qc.invalidateQueries();
+    } catch (err: unknown) {
+      setCloseError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCloseBusy(false);
+    }
+  };
+  const seg = (d.segments as Row) ?? {};
+  const todayBilled = seg.today_billed ?? "0.00";
+  const todayRetailBilled = seg.today_retail_billed ?? "0.00";
+  const todayMudashirBilled = seg.today_mubashir_billed ?? "0.00";
+  const totalDues = seg.total_dues ?? d.due ?? "0.00";
+  const retailDues = seg.retail_dues ?? "0.00";
+  const mudashirDues = seg.mubashir_dues ?? "0.00";
+
+  const summary = (d.summary as Row) ?? {};
+  const cashRec = summary.cash_collections ?? "0.00";
+  const onlineRec = summary.online_collections ?? "0.00";
+  const totalRec = summary.collections ?? D(str(cashRec)).plus(D(str(onlineRec))).toFixed(2);
+  const expensesAndLoans = summary.expenses_and_loans ?? D(str(summary.expenses ?? "0.00")).plus(D(str(summary.loans ?? "0.00"))).toFixed(2);
+  const expensesOnly = summary.expenses ?? "0.00";
+  const loansOnly = summary.loans ?? "0.00";
+
+  return (
+    <div className="dashboard">
+      <div className="quick-actions dashboard-actions">
+        {(
+          [
+            ["Retail", "Retail", "Salesmen & wholesale", Users, "action-retail"],
+            ["Mudashir", "Mudashir", "Direct cig sales & beats", Store, "action-mudashir"],
+            ["Other Money", "Other Money", "Expenses, loans & salaries", ArrowLeftRight, "action-other"],
+            ["Reports", "Reports", "Statements & ledger views", BarChart3, "action-reports"],
+            ["Settings", "Settings", "Masters & configuration", Settings, "action-settings"],
+          ] as const
+        ).map(([targetPage, label, caption, Icon, actionClass]) => (
+          <Button
+            key={targetPage}
+            className={`dashboard-action ${actionClass}`}
+            onClick={() => setPage(targetPage)}
+          >
+            <Icon size={24} aria-hidden="true" />
+            <strong>{label}</strong>
+            <small>{caption}</small>
+          </Button>
+        ))}
+      </div>
+      <div className="stats daily-stats">
+        <Metric
+          label="Total Outstanding Dues (Retail + Mudashir)"
+          value={totalDues}
+          caption={`Retail: ${rupees(retailDues)} · Mudashir: ${rupees(mudashirDues)}`}
+          icon={TrendingDown}
+          tone="expense"
+        />
+        <Metric
+          label="Todays Cig Sales (Retail + Mudashir)"
+          value={todayBilled}
+          caption={`Retail: ${rupees(todayRetailBilled)} · Mudashir: ${rupees(todayMudashirBilled)}`}
+          icon={FileText}
+          tone="bills"
+        />
+        <Metric
+          label="Todays Received (Cash + Online)"
+          value={totalRec}
+          caption={`Cash: ${rupees(cashRec)} · Online: ${rupees(onlineRec)}`}
+          icon={IndianRupee}
+          tone="cash"
+        />
+        <Metric
+          label="Todays Expenses + Loans"
+          value={expensesAndLoans}
+          caption={`Expenses: ${rupees(expensesOnly)} · Loans: ${rupees(loansOnly)}`}
+          icon={ArrowLeftRight}
+          tone="online"
+        />
+      </div>
+      <div className="dashboard-main-grid" style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+        {/* Row 1: Side-by-side 2-column grid for Physical Cash & Mudhasir Inbound Collections */}
+        <div
+          className="dashboard-cash-row"
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))",
+            gap: "20px",
+            alignItems: "start",
+          }}
+        >
+          {/* Left Column: Compact Physical Cash & Daily Close */}
+          <section className="panel physical-cash-panel" style={{ minHeight: "auto", margin: 0, padding: "16px 20px" }}>
+            <div className="section-title" style={{ marginBottom: 12 }}>
+              <div>
+                <h2 style={{ fontSize: 17, margin: 0 }}>Physical Cash & Daily Close</h2>
+                <p className="cash-subtitle" style={{ fontSize: 12, margin: "2px 0 0" }}>Physical drawer reconciliation & day closing</p>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span className={isDayClosed ? "day-state closed" : "day-state"} style={{ fontSize: 11, padding: "3px 8px" }}>
+                  {isDayClosed ? "DAY CLOSED" : "DAY OPEN"}
+                </span>
+                <Wallet size={20} aria-hidden="true" />
+              </div>
+            </div>
+
+            {closeSuccess && (
+              <div className="notice" role="status" style={{ marginBottom: 10, fontSize: 13, padding: "8px 12px" }}>
+                {closeSuccess}
+              </div>
+            )}
+            {closeError && (
+              <div className="error" role="alert" style={{ marginBottom: 10, fontSize: 13, padding: "8px 12px" }}>
+                {closeError}
+              </div>
+            )}
+            {cash.length ? (
+              cash.map((a) => (
+                <div
+                  className="drawer-card compact-drawer-card"
+                  key={str(a.id)}
+                  style={{
+                    padding: "10px 14px",
+                    borderRadius: 10,
+                    marginBottom: 8,
+                    gap: 12,
+                  }}
+                >
+                  <div>
+                    <strong style={{ fontSize: 14, marginBottom: 2 }}>{str(a.name)}</strong>
+                    <small style={{ fontSize: 12 }}>Custody: {str(a.holder) || "Not configured"}</small>
+                  </div>
+                  <div className="drawer-balance" style={{ textAlign: "right" }}>
+                    <b style={{ fontSize: 18, display: "block" }}>{rupees(a.balance)}</b>
+                    <small style={{ fontSize: 11 }}>Book expected balance</small>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <Empty text="No physical cash account configured." />
+            )}
+
+            {isDayClosed ? (
+              <div className="drawer-footer" style={{ flexDirection: "column", alignItems: "stretch", gap: 8, marginTop: 8, paddingTop: 10, borderTop: "1px solid #f1f5f9" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                  <p style={{ margin: 0, fontSize: 12, color: "#64748b" }}>
+                    <LockKeyhole size={14} style={{ verticalAlign: "middle", marginRight: 4, display: "inline" }} />
+                    This business date is locked. Financial entries cannot be posted.
+                  </p>
+                  {owner && !isReopenOpen && (
+                    <Button
+                      className="secondary"
+                      style={{ padding: "5px 12px", fontSize: 12 }}
+                      onClick={() => {
+                        setIsReopenOpen(true);
+                        setCloseError("");
+                        setCloseSuccess("");
+                      }}
+                    >
+                      <Unlock size={13} /> Reopen Date
+                    </Button>
+                  )}
+                </div>
+                {owner && isReopenOpen && (
+                  <form onSubmit={handleReopenDay} style={{ marginTop: 8, padding: 12, background: "#fef3c7", borderRadius: 8 }}>
+                    <Field label="Reason for reopening (min 3 chars) *">
+                      <input
+                        value={reopenReason}
+                        onChange={(e) => setReopenReason(e.target.value)}
+                        placeholder="e.g. Correct late night cash discrepancy"
+                        required
+                        minLength={3}
+                      />
+                    </Field>
+                    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                      <Button type="submit" className="primary" disabled={closeBusy}>
+                        {closeBusy ? "Reopening…" : "Confirm Reopen"}
+                      </Button>
+                      <Button
+                        type="button"
+                        className="secondary"
+                        disabled={closeBusy}
+                        onClick={() => setIsReopenOpen(false)}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            ) : (
+              <div className="drawer-footer" style={{ flexDirection: "column", alignItems: "stretch", gap: 8, marginTop: 8, paddingTop: 10, borderTop: "1px solid #f1f5f9" }}>
+                {!isClosingOpen ? (
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                    <p style={{ margin: 0, fontSize: 12, color: "#64748b" }}>Online receipts do NOT increase physical drawer cash.</p>
+                    <Button
+                      className="primary"
+                      style={{ padding: "6px 14px", fontSize: 12 }}
+                      onClick={() => {
+                        setIsClosingOpen(true);
+                        setCloseError("");
+                        setCloseSuccess("");
+                        // Pre-populate count with current expected balance for convenience
+                        const initialCounts: Record<string, string> = {};
+                        cash.forEach((a) => {
+                          const id = str(a.id);
+                          if (!counts[id]) {
+                            initialCounts[id] = formatCents(parseCents(a.balance));
+                          }
+                        });
+                        if (Object.keys(initialCounts).length) {
+                          setCounts((prev) => ({ ...initialCounts, ...prev }));
+                        }
+                      }}
+                    >
+                      <LockKeyhole size={14} /> Close Today / Count Drawer
+                    </Button>
+                  </div>
+                ) : (
+                  <form onSubmit={handleCloseDay} style={{ borderTop: "1px solid #e2e8f0", paddingTop: 10 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                      <strong style={{ fontSize: 13 }}>Daily Cash Count & Reconciliation</strong>
+                      <Button
+                        type="button"
+                        className="text-link"
+                        style={{ fontSize: 12 }}
+                        onClick={() => setIsClosingOpen(false)}
+                        disabled={closeBusy}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+
+                    {cash.map((a) => {
+                      const id = str(a.id);
+                      const expectedCents = parseCents(a.balance);
+                      const countedStr = counts[id] ?? "";
+                      const countedCents = parseCents(countedStr);
+                      const diffCents = countedStr ? countedCents - expectedCents : 0n;
+                      const diffFormatted = formatCents(diffCents);
+
+                      return (
+                        <div
+                          key={id}
+                          style={{
+                            background: "#f8fafc",
+                            padding: 10,
+                            borderRadius: 8,
+                            border: "1px solid #e2e8f0",
+                            marginBottom: 8,
+                          }}
+                        >
+                          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 13 }}>
+                            <span><b>{str(a.name)}</b> ({str(a.holder)})</span>
+                            <span>Expected: <b>{rupees(a.balance)}</b></span>
+                          </div>
+                          <div className="form-grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                            <Field label="Physically Counted Cash (₹) *">
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                value={counts[id] ?? ""}
+                                onChange={(e) =>
+                                  setCounts({ ...counts, [id]: e.target.value })
+                                }
+                                placeholder="0.00"
+                                required
+                                style={{ fontSize: 13, padding: "6px 10px" }}
+                              />
+                            </Field>
+                            <Field label="Explanation (if difference)">
+                              <input
+                                type="text"
+                                value={reasons[id] ?? ""}
+                                onChange={(e) =>
+                                  setReasons({ ...reasons, [id]: e.target.value })
+                                }
+                                placeholder={
+                                  diffCents !== 0n
+                                    ? "Explanation required"
+                                    : "Optional note"
+                                }
+                                style={{ fontSize: 13, padding: "6px 10px" }}
+                              />
+                            </Field>
+                          </div>
+                          {countedStr && (
+                            <div
+                              style={{
+                                marginTop: 4,
+                                fontSize: 11,
+                                color: diffCents === 0n ? "#166534" : "#991b1b",
+                                fontWeight: 600,
+                              }}
+                            >
+                              {diffCents === 0n
+                                ? "✓ Drawer matches expected book cash exactly."
+                                : `Diff: ${diffCents > 0n ? "+" : ""}${diffFormatted} (Counted: ${formatCents(countedCents)} vs Expected: ${formatCents(expectedCents)})`}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                      <Button type="submit" className="primary" style={{ padding: "6px 14px", fontSize: 12 }} disabled={closeBusy}>
+                        {closeBusy ? "Locking Day…" : "Confirm Count & Close Day"}
+                      </Button>
+                      <Button
+                        type="button"
+                        className="secondary"
+                        style={{ padding: "6px 12px", fontSize: 12 }}
+                        disabled={closeBusy}
+                        onClick={() => setIsClosingOpen(false)}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            )}
+          </section>
+          <section className="panel inbound-handovers-panel" style={{ minHeight: "auto", margin: 0, padding: "16px 20px" }}>
+            <div className="section-title" style={{ marginBottom: 12 }}>
+              <div>
+                <h2 style={{ fontSize: 17, margin: 0 }}>Inbound Cash from Mudhasir (Route Collections)</h2>
+                <p className="cash-subtitle" style={{ fontSize: 12, margin: "2px 0 0" }}>Direct field cash collections awaiting manager verification into till</p>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span className="badge" style={{ background: pendingHandovers.length > 0 ? "#dbeafe" : "#e2e8f0", color: pendingHandovers.length > 0 ? "#1e40af" : "#475569", fontWeight: 700, fontSize: 11, padding: "3px 8px" }}>
+                  {pendingHandovers.length} Pending
+                </span>
+                <ArrowLeftRight size={20} aria-hidden="true" />
+              </div>
+            </div>
+
+            {handoverSuccess && (
+              <div className="notice" role="status" style={{ marginBottom: 12 }}>
+                {handoverSuccess}
+              </div>
+            )}
+            {handoverError && (
+              <div className="error" role="alert" style={{ marginBottom: 12 }}>
+                {handoverError}
+              </div>
+            )}
+
+            {pendingHandovers.length === 0 ? (
+              <div style={{ padding: "24px 16px", textAlign: "center", color: "#64748b", background: "#f8fafc", borderRadius: 12, border: "1px dashed #cbd5e1" }}>
+                <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#166534" }}>✓ All Mudhasir route collections received into till.</p>
+                <small style={{ color: "#94a3b8", fontSize: 12, marginTop: 2, display: "block" }}>No pending route cash awaiting manager count.</small>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {pendingHandovers.map((h) => {
+                  const hId = str(h.id);
+                  const isSelected = reviewingHandover && str(reviewingHandover.id) === hId;
+                  return (
+                    <div
+                      className="drawer-card compact-drawer-card"
+                      key={hId}
+                      style={{
+                        padding: "10px 14px",
+                        borderRadius: 10,
+                        marginBottom: 8,
+                        gap: 12,
+                        cursor: "pointer",
+                        background: isSelected ? "#f0fdf4" : undefined,
+                        borderColor: isSelected ? "#86efac" : undefined,
+                      }}
+                      onClick={() => openAcceptHandover(h)}
+                      title="Click to select this route cash collection"
+                    >
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <strong style={{ fontSize: 14, marginBottom: 2 }}>
+                            {str(h.salesman_name)}
+                          </strong>
+                          <span
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 700,
+                              background: "#fef3c7",
+                              color: "#b45309",
+                              padding: "2px 6px",
+                              borderRadius: 4,
+                            }}
+                          >
+                            IN HAND
+                          </span>
+                        </div>
+                        <small style={{ fontSize: 12, color: "var(--dashboard-muted)", display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {h.salesman_note ? str(h.salesman_note) : "Route collection"}{h.date ? ` · ${dateLabel(h.date)}` : ""}
+                        </small>
+                      </div>
+
+                      <div className="drawer-balance" style={{ textAlign: "right", flexShrink: 0 }}>
+                        <b style={{ fontSize: 18, display: "block", color: "#0f172a", fontVariantNumeric: "tabular-nums" }}>
+                          {rupees(h.amount)}
+                        </b>
+                        <small style={{ fontSize: 11, color: "var(--dashboard-muted)" }}>Route cash</small>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="drawer-footer" style={{ flexDirection: "column", alignItems: "stretch", gap: 8, marginTop: 8, paddingTop: 10, borderTop: "1px solid #f1f5f9" }}>
+              {!reviewingHandover ? (
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                  <p style={{ margin: 0, fontSize: 12, color: "#64748b" }}>
+                    {pendingHandovers.length > 0
+                      ? "Manager count required to transfer route cash into drawer."
+                      : "No pending route cash awaiting manager count."}
+                  </p>
+                  <Button
+                    className="primary"
+                    disabled={handoverBusy || isDayClosed || pendingHandovers.length === 0}
+                    style={{ padding: "6px 14px", fontSize: 12 }}
+                    onClick={() => {
+                      if (pendingHandovers.length > 0) {
+                        openAcceptHandover(pendingHandovers[0]);
+                      }
+                    }}
+                  >
+                    <Check size={14} /> Receive
+                  </Button>
+                </div>
+              ) : (
+                <div
+                  style={{
+                    padding: 12,
+                    background: handoverActionType === "accept" ? "#f0fdf4" : "#fef2f2",
+                    border: handoverActionType === "accept" ? "1px solid #86efac" : "1px solid #fca5a5",
+                    borderRadius: 8,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                    <strong style={{ fontSize: 13, color: handoverActionType === "accept" ? "#166534" : "#991b1b" }}>
+                      {handoverActionType === "accept"
+                        ? `Accept Cash Handover from ${str(reviewingHandover.salesman_name)}`
+                        : `Reject Cash Handover from ${str(reviewingHandover.salesman_name)}`}
+                    </strong>
+                    <Button
+                      type="button"
+                      className="text-link"
+                      style={{ fontSize: 12 }}
+                      onClick={() => setReviewingHandover(null)}
+                      disabled={handoverBusy}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+
+                  {handoverActionType === "accept" ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      <div style={{ fontSize: 12, color: "#374151" }}>
+                        Reported route cash in hand: <b>{rupees(reviewingHandover.amount)}</b>
+                      </div>
+                      <div className="form-grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                        <Field label="Actual Counted Cash (₹) * (Supports Partial)">
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={handoverAcceptedAmount}
+                            onChange={(e) => setHandoverAcceptedAmount(e.target.value)}
+                            placeholder="e.g. 10000.00"
+                            required
+                            style={{ fontSize: 13, padding: "6px 10px" }}
+                          />
+                        </Field>
+                        <Field label="Target Cash Till / Account *">
+                          <select
+                            value={handoverAccountId || defaultHandoverCashAccount}
+                            onChange={(e) => setHandoverAccountId(e.target.value)}
+                            required
+                            style={{ fontSize: 13, padding: "6px 10px" }}
+                          >
+                            {cash.map((cAcc) => (
+                              <option key={str(cAcc.id)} value={str(cAcc.id)}>
+                                {str(cAcc.name)} ({str(cAcc.holder)})
+                              </option>
+                            ))}
+                          </select>
+                        </Field>
+                      </div>
+
+                      {parseMoneyNumber(handoverAcceptedAmount) < parseMoneyNumber(reviewingHandover.amount) && (
+                        <div
+                          style={{
+                            background: "#fffbeb",
+                            color: "#92400e",
+                            padding: "6px 10px",
+                            borderRadius: 6,
+                            fontSize: 12,
+                            border: "1px solid #fde68a",
+                          }}
+                        >
+                          ⚠️ Partial acceptance: You are accepting{" "}
+                          <b>{rupees(cleanMoney(handoverAcceptedAmount) || "0")}</b> out of{" "}
+                          <b>{rupees(reviewingHandover.amount)}</b>. The difference of{" "}
+                          <b>
+                            {rupees(
+                              (
+                                parseMoneyNumber(reviewingHandover.amount) -
+                                (parseMoneyNumber(handoverAcceptedAmount) || 0)
+                              ).toFixed(2),
+                            )}
+                          </b>{" "}
+                          remains with the salesman.
+                        </div>
+                      )}
+
+                      <Field label="Manager remarks / count notes (optional)">
+                        <input
+                          type="text"
+                          placeholder="e.g. Counted into physical till at 4:30 PM"
+                          value={handoverNote}
+                          onChange={(e) => setHandoverNote(e.target.value)}
+                          style={{ fontSize: 13, padding: "6px 10px" }}
+                        />
+                      </Field>
+
+                      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
+                        <Button
+                          type="button"
+                          className="secondary"
+                          style={{ color: "#dc2626", borderColor: "#fca5a5", padding: "5px 12px", fontSize: 12 }}
+                          disabled={handoverBusy}
+                          onClick={() => setHandoverActionType("reject")}
+                        >
+                          Reject
+                        </Button>
+                        <Button
+                          type="button"
+                          className="secondary"
+                          disabled={handoverBusy}
+                          style={{ padding: "5px 12px", fontSize: 12 }}
+                          onClick={() => setReviewingHandover(null)}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          type="button"
+                          className="primary"
+                          disabled={handoverBusy}
+                          style={{ padding: "5px 14px", fontSize: 12 }}
+                          onClick={handleConfirmHandover}
+                        >
+                          {handoverBusy
+                            ? "Crediting Till…"
+                            : `Confirm & Add ${rupees(handoverAcceptedAmount || "0")} to Cash Till`}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      <Field label="Reason for rejection (min 3 chars) *">
+                        <input
+                          type="text"
+                          placeholder="e.g. Cash not received physically"
+                          value={handoverNote}
+                          onChange={(e) => setHandoverNote(e.target.value)}
+                          required
+                          minLength={3}
+                          style={{ fontSize: 13, padding: "6px 10px" }}
+                        />
+                      </Field>
+                      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
+                        <Button
+                          type="button"
+                          className="secondary"
+                          disabled={handoverBusy}
+                          style={{ padding: "5px 12px", fontSize: 12 }}
+                          onClick={() => setHandoverActionType("accept")}
+                        >
+                          Back
+                        </Button>
+                        <Button
+                          type="button"
+                          className="secondary"
+                          disabled={handoverBusy}
+                          style={{ padding: "5px 12px", fontSize: 12 }}
+                          onClick={() => setReviewingHandover(null)}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          type="button"
+                          className="secondary"
+                          style={{ color: "#dc2626", borderColor: "#fca5a5", padding: "5px 12px", fontSize: 12 }}
+                          disabled={handoverBusy}
+                          onClick={handleRejectHandover}
+                        >
+                          {handoverBusy ? "Rejecting…" : "Confirm Rejection"}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+
+        {/* Row 2: Online Claims Queue */}
+        <section className="panel online-queue-panel" style={{ minHeight: "auto", width: "100%", padding: "18px 20px" }}>
+          <div className="section-title" style={{ marginBottom: 14 }}>
+            <div>
+              <h2 style={{ fontSize: 17, margin: 0 }}>Online Claims Queue</h2>
+              <p className="cash-subtitle" style={{ fontSize: 12, margin: "2px 0 0" }}>Online payments awaiting bank credit verification</p>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span className="badge" style={{ background: claims.length > 0 ? "#fef3c7" : "#e2e8f0", color: claims.length > 0 ? "#92400e" : "#475569", fontWeight: 700, fontSize: 11, padding: "3px 8px" }}>
+                {claimCount} Pending
+              </span>
+              <Clock size={18} aria-hidden="true" />
+            </div>
+          </div>
+
+          {claimActionSuccess && (
+            <div style={{ background: "#dcfce7", color: "#166534", padding: "8px 12px", borderRadius: 8, fontSize: 13, marginBottom: 12 }}>
+              ✓ {claimActionSuccess}
+            </div>
+          )}
+
+          {claims.length === 0 ? (
+            <div style={{ padding: "24px 0", textAlign: "center", color: "#64748b" }}>
+              <p style={{ margin: 0, fontSize: 14 }}>✓ All online payment claims have been reviewed.</p>
+              <small style={{ color: "#94a3b8" }}>No pending transfers in queue.</small>
+            </div>
+          ) : (
+            <>
+              {/* Filter Toolbar */}
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "8px 12px",
+                  background: "#f8fafc",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: 8,
+                  marginBottom: 12,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, minWidth: 200 }}>
+                  <Search size={14} style={{ color: "#64748b", flexShrink: 0 }} />
+                  <input
+                    type="text"
+                    placeholder="Filter by salesman, customer, account, or ref…"
+                    value={claimNameFilter}
+                    onChange={(e) => setClaimNameFilter(e.target.value)}
+                    style={{
+                      border: "none",
+                      background: "transparent",
+                      outline: "none",
+                      fontSize: 13,
+                      width: "100%",
+                      color: "#0f172a",
+                    }}
+                  />
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    minWidth: 160,
+                    borderLeft: "1px solid #e2e8f0",
+                    paddingLeft: 10,
+                  }}
+                >
+                  <IndianRupee size={14} style={{ color: "#64748b", flexShrink: 0 }} />
+                  <input
+                    type="text"
+                    placeholder="Filter by amount…"
+                    value={claimAmountFilter}
+                    onChange={(e) => setClaimAmountFilter(e.target.value)}
+                    style={{
+                      border: "none",
+                      background: "transparent",
+                      outline: "none",
+                      fontSize: 13,
+                      width: "100%",
+                      color: "#0f172a",
+                    }}
+                  />
+                </div>
+                {(claimNameFilter.trim() || claimAmountFilter.trim()) && (
+                  <Button
+                    type="button"
+                    className="secondary"
+                    style={{ padding: "4px 8px", fontSize: 11, height: "auto" }}
+                    onClick={() => {
+                      setClaimNameFilter("");
+                      setClaimAmountFilter("");
+                    }}
+                  >
+                    Clear
+                  </Button>
+                )}
+              </div>
+
+              {filteredClaims.length === 0 ? (
+                <div style={{ padding: "18px 0", textAlign: "center", color: "#64748b" }}>
+                  <p style={{ margin: 0, fontSize: 13 }}>No claims match your filter criteria.</p>
+                  <Button
+                    className="text-link"
+                    style={{ fontSize: 12, marginTop: 4 }}
+                    onClick={() => {
+                      setClaimNameFilter("");
+                      setClaimAmountFilter("");
+                    }}
+                  >
+                    Clear filters
+                  </Button>
+                </div>
+              ) : (
+                <div style={{ overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: 10, marginBottom: 12, background: "#ffffff" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, textAlign: "left" }}>
+                    <thead>
+                      <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#64748b", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                        <th style={{ padding: "10px 14px", width: "110px" }}>Date</th>
+                        <th style={{ padding: "10px 14px" }}>Salesman / Route</th>
+                        <th style={{ padding: "10px 14px" }}>Receiving Account</th>
+                        <th style={{ padding: "10px 14px" }}>Reference / UTR</th>
+                        <th style={{ padding: "10px 14px", textAlign: "right", width: "130px" }}>Amount</th>
+                        <th style={{ padding: "10px 14px", textAlign: "center", width: "100px" }}>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visibleClaims.map((r, idx) => {
+                        const refStr = str(r.reference || "");
+                        return (
+                          <tr
+                            key={str(r.id)}
+                            style={{
+                              borderBottom: idx < visibleClaims.length - 1 ? "1px solid #f1f5f9" : "none",
+                              background: idx % 2 === 1 ? "#fafaf9" : "#ffffff",
+                              transition: "background 0.15s ease",
+                            }}
+                            onMouseEnter={(e) => (e.currentTarget.style.background = "#f1f5f9")}
+                            onMouseLeave={(e) => (e.currentTarget.style.background = idx % 2 === 1 ? "#fafaf9" : "#ffffff")}
+                          >
+                            <td style={{ padding: "10px 14px", whiteSpace: "nowrap", color: "#64748b", fontSize: 12 }}>
+                              <div>{dateLabel(r.actual_date)}</div>
+                              {r.created_at ? (
+                                <div style={{ fontSize: 11, color: "#94a3b8" }}>{timeOnlyLabel(r.created_at)}</div>
+                              ) : null}
+                            </td>
+                            <td style={{ padding: "10px 14px", fontWeight: 600, color: "#0f172a" }}>
+                              {str(r.salesman_name)}
+                            </td>
+                            <td style={{ padding: "10px 14px", color: "#475569" }}>
+                              {str(r.account_name)}
+                            </td>
+                            <td style={{ padding: "10px 14px", color: "#64748b", fontSize: 12, fontFamily: refStr ? "monospace" : "inherit" }}>
+                              {refStr || <span style={{ color: "#94a3b8", fontStyle: "italic" }}>—</span>}
+                            </td>
+                            <td style={{ padding: "10px 14px", textAlign: "right", fontWeight: 700, color: "#0f172a", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                              {rupees(r.amount)}
+                            </td>
+                            <td style={{ padding: "10px 14px", textAlign: "center", whiteSpace: "nowrap" }}>
+                              <Button
+                                className="primary"
+                                style={{ padding: "5px 12px", fontSize: 12 }}
+                                onClick={() => {
+                                  setReviewingClaim(r);
+                                  setClaimNote(refStr);
+                                  setClaimActionError("");
+                                }}
+                              >
+                                Review
+                              </Button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Pagination (5 per page) */}
+              {totalClaimPages > 1 && (
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid #e2e8f0", paddingTop: 10, fontSize: 13, color: "#64748b" }}>
+                  <span>
+                    Showing {claimPage * claimsPerPage + 1}–{Math.min((claimPage + 1) * claimsPerPage, filteredClaims.length)} of {filteredClaims.length}
+                    {(claimNameFilter.trim() || claimAmountFilter.trim()) && ` (filtered from ${claims.length})`}
+                  </span>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <Button
+                      className="secondary"
+                      disabled={claimPage === 0}
+                      onClick={() => setClaimPage((p) => Math.max(0, p - 1))}
+                      style={{ padding: "4px 10px", fontSize: 12 }}
+                    >
+                      ← Prev
+                    </Button>
+                    <Button
+                      className="secondary"
+                      disabled={claimPage >= totalClaimPages - 1}
+                      onClick={() => setClaimPage((p) => Math.min(totalClaimPages - 1, p + 1))}
+                      style={{ padding: "4px 10px", fontSize: 12 }}
+                    >
+                      Next →
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          <p className="queue-rule" style={{ marginTop: 12, marginBottom: 0 }}>
+            <b>Accounting Rule:</b> Pending claims do not reduce salesman dues or affect bank books until verified against real bank credits.
+          </p>
+        </section>
+      </div>
+
+      {/* Review Online Claim Modal */}
+      {reviewingClaim && (
+        <div
+          className="no-print"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.6)",
+            backdropFilter: "blur(2px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            padding: 16,
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !claimActionBusy) {
+              setReviewingClaim(null);
+            }
+          }}
+        >
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: 12,
+              padding: "24px 28px",
+              maxWidth: 520,
+              width: "100%",
+              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.2)",
+              border: "1px solid #e2e8f0",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <h3 style={{ margin: 0, fontSize: "1.2rem", color: "#0f172a" }}>
+                Verify Online Payment
+              </h3>
+              <Button
+                type="button"
+                className="text-link"
+                disabled={claimActionBusy}
+                onClick={() => setReviewingClaim(null)}
+                style={{ fontSize: 18, padding: 0 }}
+              >
+                ✕
+              </Button>
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(3, 1fr)",
+                gap: 10,
+                background: "#f8fafc",
+                padding: "12px 14px",
+                borderRadius: 8,
+                border: "1px solid #e2e8f0",
+                marginBottom: 16,
+              }}
+            >
+              <div>
+                <span className="muted" style={{ fontSize: 11, display: "block" }}>Salesman</span>
+                <strong style={{ fontSize: 13, color: "#0f172a" }}>{str(reviewingClaim.salesman_name)}</strong>
+              </div>
+              <div>
+                <span className="muted" style={{ fontSize: 11, display: "block" }}>Reported Date & Time</span>
+                <span style={{ fontSize: 13, display: "block", color: "#0f172a" }}>{dateLabel(reviewingClaim.actual_date)}</span>
+                {reviewingClaim.created_at ? (
+                  <span style={{ fontSize: 11, color: "#64748b" }}>{timeOnlyLabel(reviewingClaim.created_at)}</span>
+                ) : null}
+              </div>
+              <div>
+                <span className="muted" style={{ fontSize: 11, display: "block" }}>Amount</span>
+                <strong style={{ fontSize: 15, color: "#16a34a" }}>{rupees(reviewingClaim.amount)}</strong>
+              </div>
+            </div>
+
+            <div style={{ fontSize: 12, color: "#475569", marginBottom: 14 }}>
+              <b>Account:</b> {str(reviewingClaim.account_name)}
+              {reviewingClaim.reference ? (
+                <> · <b>Reported Ref:</b> {str(reviewingClaim.reference)}</>
+              ) : null}
+            </div>
+
+            {claimActionError && (
+              <div style={{ background: "#fee2e2", color: "#b91c1c", padding: "8px 12px", borderRadius: 6, marginBottom: 14, fontSize: 13 }}>
+                {claimActionError}
+              </div>
+            )}
+
+            <div style={{ marginBottom: 18 }}>
+              <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#334155", marginBottom: 6 }}>
+                Transaction ID / Verification Reference (Optional)
+              </label>
+              <input
+                type="text"
+                placeholder="Bank UTR / UPI reference ID / Remarks"
+                value={claimNote}
+                onChange={(e) => setClaimNote(e.target.value)}
+                disabled={claimActionBusy}
+                style={{
+                  width: "100%",
+                  borderRadius: 6,
+                  border: "1px solid #cbd5e1",
+                  padding: "8px 10px",
+                  fontSize: 14,
+                }}
+              />
+              <span style={{ fontSize: 11, color: "#64748b", marginTop: 4, display: "block" }}>
+                Confirming adds the funds to the bank book and reduces {str(reviewingClaim.salesman_name)}'s dues. (If rejecting, specify the reason above).
+              </span>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+              <Button
+                type="button"
+                className="secondary"
+                disabled={claimActionBusy}
+                onClick={handleRejectClaim}
+                style={{ color: "#b91c1c", borderColor: "#fca5a5" }}
+              >
+                {claimActionBusy ? "…" : "Reject Claim"}
+              </Button>
+
+              <div style={{ display: "flex", gap: 10 }}>
+                <Button
+                  type="button"
+                  className="secondary"
+                  disabled={claimActionBusy}
+                  onClick={() => setReviewingClaim(null)}
+                >
+                  Cancel
+                </Button>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={claimActionBusy}
+                  onClick={handleVerifyClaim}
+                  style={{
+                    padding: "8px 16px",
+                    borderRadius: 6,
+                    fontWeight: 600,
+                    background: "#16a34a",
+                    borderColor: "#15803d",
+                    color: "#ffffff",
+                    cursor: claimActionBusy ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {claimActionBusy ? "Confirming…" : "Confirm & Verify"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+function Metric({
+  label,
+  value,
+  caption,
+  accent = false,
+  icon: Icon,
+  tone,
+  onClick,
+  isCurrency = true,
+}: {
+  label: string;
+  value: unknown;
+  caption: string;
+  accent?: boolean;
+  icon?: typeof FileText;
+  tone?: "bills" | "cash" | "online" | "expense";
+  onClick?: () => void;
+  isCurrency?: boolean;
+}) {
+  return (
+    <div
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onClick={onClick}
+      onKeyDown={
+        onClick
+          ? (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onClick();
+            }
+          }
+          : undefined
+      }
+      style={onClick ? { cursor: "pointer" } : undefined}
+      className={[
+        "metric",
+        accent ? "accent" : "",
+        tone ? "metric-" + tone : "",
+        onClick ? "metric-interactive" : "",
+      ].join(" ")}
+    >
+      <div className="metric-label">
+        {label}
+        {Icon && <Icon size={20} aria-hidden="true" />}
+      </div>
+      <strong>{isCurrency ? rupees(value) : String(value ?? 0)}</strong>
+      <small>{caption}</small>
+    </div>
+  );
+}
+function ReceiveMoneyPage({
+  date,
+  masters,
+  dashboard,
+  excludeSalesmanId,
+  onSelect,
+  onGoToSalesman,
+}: {
+  date: string;
+  masters?: Row;
+  dashboard?: Row;
+  excludeSalesmanId?: string;
+  onSelect: (id: string) => void;
+  onGoToSalesman?: (salesmanId: string) => void;
+}) {
+  const qc = useQueryClient(),
+    [salesmanId, setSalesmanId] = useState(""),
+    [lastRecordedSalesmanId, setLastRecordedSalesmanId] = useState(""),
+    [paymentDate, setPaymentDate] = useState(date),
+    [cashAmount, setCashAmount] = useState(""),
+    [bankAmount, setBankAmount] = useState(""),
+    [note, setNote] = useState(""),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState(""),
+    [success, setSuccess] = useState("");
+
+  const accounts = arr(masters?.accounts);
+  const defaultCashId = accounts.find((a) => a.type === "cash")?.id ?? "";
+  const defaultBankId = accounts.find((a) => a.type === "bank")?.id ?? "";
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setSuccess("");
+    if (!salesmanId) {
+      setError("Please select a salesman.");
+      return;
+    }
+    const cleanCash = cleanMoney(cashAmount);
+    const cleanBank = cleanMoney(bankAmount);
+    const hasCash = Boolean(cleanCash && parseMoneyNumber(cleanCash) > 0);
+    const hasBank = Boolean(cleanBank && parseMoneyNumber(cleanBank) > 0);
+    if (!hasCash && !hasBank) {
+      setError("Enter either a cash amount or a bank amount.");
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const receipts: Row[] = [];
+      if (hasCash) {
+        receipts.push({
+          amount: cleanCash,
+          accountId: defaultCashId,
+          method: "cash",
+          actualDate: paymentDate,
+          reference: "",
+          verified: false,
+        });
+      }
+      if (hasBank) {
+        receipts.push({
+          amount: cleanBank,
+          accountId: defaultBankId,
+          method: "online",
+          actualDate: paymentDate,
+          reference: note || "Online payment",
+          verified: false,
+        });
+      }
+
+      await api(
+        "commands/receiptBatch",
+        commandResult,
+        {
+          date: paymentDate,
+          salesmanId,
+          note,
+          receipts,
+        },
+        "POST",
+        crypto.randomUUID(),
+      );
+
+      const savedSalesmanId = salesmanId;
+      setLastRecordedSalesmanId(savedSalesmanId);
+      setSuccess("Payment recorded successfully.");
+      setCashAmount("");
+      setBankAmount("");
+      setNote("");
+      await qc.invalidateQueries();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const selectedSalesmanName = str(
+    arr(masters?.salesmen).find((s) => s.id === lastRecordedSalesmanId)?.name,
+  );
+
+  return (
+    <>
+      <section className="panel">
+        <div className="section-title">
+          <h2>Receive Money</h2>
+        </div>
+        <form onSubmit={handleSubmit}>
+          <div className="form-grid">
+            <Field label="Salesman">
+              <select
+                value={salesmanId}
+                onChange={(e) => setSalesmanId(e.target.value)}
+                required
+              >
+                <option value="">Choose salesman…</option>
+                {arr(masters?.salesmen)
+                  .filter((s) => s.active && (!excludeSalesmanId || s.id !== excludeSalesmanId))
+                  .map((s) => (
+                    <option key={str(s.id)} value={str(s.id)}>
+                      {str(s.code)} · {str(s.name)}
+                    </option>
+                  ))}
+              </select>
+            </Field>
+            <Field label="Date">
+              <input
+                type="date"
+                value={paymentDate}
+                onChange={(e) => setPaymentDate(e.target.value)}
+                required
+              />
+            </Field>
+            <Field label="Cash amount (₹)">
+              <input
+                inputMode="decimal"
+                placeholder="0.00"
+                value={cashAmount}
+                onChange={(e) => setCashAmount(e.target.value)}
+              />
+            </Field>
+            <Field label="Bank amount (₹)">
+              <input
+                inputMode="decimal"
+                placeholder="0.00"
+                value={bankAmount}
+                onChange={(e) => setBankAmount(e.target.value)}
+              />
+            </Field>
+            <Field label="Notes">
+              <input
+                placeholder="Reference / remarks (optional)"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+              />
+            </Field>
+          </div>
+          {error && (
+            <p role="alert" className="error">
+              {error}
+            </p>
+          )}
+          {success && (
+            <div
+              role="status"
+              className="notice"
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 10,
+                padding: "12px 16px",
+              }}
+            >
+              <span>
+                Payment recorded successfully.{" "}
+                {lastRecordedSalesmanId && onGoToSalesman && (
+                  <button
+                    type="button"
+                    onClick={() => onGoToSalesman(lastRecordedSalesmanId)}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      padding: 0,
+                      color: "#b45309",
+                      fontWeight: 700,
+                      textDecoration: "underline",
+                      cursor: "pointer",
+                      fontSize: "inherit",
+                    }}
+                  >
+                    View {selectedSalesmanName ? `${selectedSalesmanName}'s` : "salesman"} updated passbook & statement →
+                  </button>
+                )}
+              </span>
+            </div>
+          )}
+          <div className="actions" style={{ marginTop: 16 }}>
+            <Button className="primary" disabled={busy} type="submit">
+              {busy ? "Recording…" : "Save Payment"}
+            </Button>
+          </div>
+        </form>
+      </section>
+
+      <section className="panel">
+        <h2>Awaiting verification</h2>
+        {dashboard &&
+          arr(dashboard.claims).map((r) => (
+            <div className="claim" key={str(r.id)}>
+              <div>
+                <strong>{str(r.salesman_name)}</strong>
+                <small>
+                  {str(r.account_name)} · reported {dateLabel(r.actual_date)} ·{" "}
+                  {str(r.reference)}
+                </small>
+              </div>
+              <b>{rupees(r.amount)}</b>
+              <Button
+                className="secondary"
+                onClick={() => onSelect("verify:" + r.id)}
+              >
+                Review
+              </Button>
+            </div>
+          ))}
+        {(!dashboard || !arr(dashboard.claims).length) && (
+          <Empty text="No payments awaiting verification." />
+        )}
+      </section>
+
+      <Documents onSelect={onSelect} kind="receipt" excludeSalesmanId={excludeSalesmanId} />
+    </>
+  );
+}
+
+function Documents({
+  onSelect,
+  kind,
+  salesmanId,
+  excludeSalesmanId,
+  requireSalesman,
+  title,
+}: {
+  onSelect: (id: string) => void;
+  kind?: string;
+  salesmanId?: string;
+  excludeSalesmanId?: string;
+  requireSalesman?: boolean;
+  title?: string;
+}) {
+  const [offset, setOffset] = useState(0);
+  const pageSize = 20;
+
+  // Dedicated column-wise filter states
+  const [colRecord, setColRecord] = useState("");
+  const [colDate, setColDate] = useState("");
+  const [colPerson, setColPerson] = useState("");
+  const [colType, setColType] = useState("");
+  const [colAmount, setColAmount] = useState("");
+  const [colStatus, setColStatus] = useState("");
+  const [colNote, setColNote] = useState("");
+
+  const q = useQuery({
+    queryKey: ["documents", kind, salesmanId, excludeSalesmanId, requireSalesman, offset],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      params.set("offset", "0");
+      params.set("limit", "100"); // Load generous window for instantaneous column filtering
+      if (kind) params.set("kind", kind);
+      if (salesmanId) params.set("salesmanId", salesmanId);
+      if (excludeSalesmanId) params.set("excludeSalesmanId", excludeSalesmanId);
+      if (requireSalesman) params.set("requireSalesman", "true");
+      return api(`documents?${params.toString()}`, rowsSchema);
+    },
+  });
+
+  const rawRows: Row[] = (q.data ?? []).map((r) => {
+    const rowData = (r.data as Row) || {};
+    const personName =
+      rowData.customerName
+        ? `${rowData.customerName}${r.salesman_name ? ` (${r.salesman_name})` : ""}`
+        : r.salesman_name ||
+        rowData.employeeName ||
+        rowData.payee ||
+        rowData.counterparty ||
+        "—";
+    let statusStr = str(r.settlement ?? "Posted");
+    if (r.kind === "bill") {
+      const parts = [str(r.settlement ?? "Unpaid")];
+      if (r.returned) parts.push("returned");
+      if (r.reversed) parts.push("reversal");
+      statusStr = parts.join(" / ");
+    } else {
+      if (r.reversed) {
+        statusStr = "Reversed";
+      }
+    }
+    const formattedDate = dateLabel(r.business_date);
+    const noteText = str(
+      rowData.note ||
+      rowData.notes ||
+      rowData.remarks ||
+      rowData.reference ||
+      rowData.reason ||
+      r.note ||
+      ""
+    );
+    return {
+      ...r,
+      person_name: personName,
+      formatted_date: formattedDate,
+      raw_date: str(r.business_date || ""),
+      status: statusStr,
+      note_text: noteText,
+    };
+  });
+
+  // Client-side instant filter across all columns
+  const filteredRows = rawRows.filter((r) => {
+    if (colRecord.trim() && !str(r.number).toLowerCase().includes(colRecord.trim().toLowerCase())) {
+      return false;
+    }
+    if (
+      colDate.trim() &&
+      !str(r.formatted_date).toLowerCase().includes(colDate.trim().toLowerCase()) &&
+      !str(r.raw_date).includes(colDate.trim()) &&
+      !timeOnlyLabel(r.created_at).toLowerCase().includes(colDate.trim().toLowerCase())
+    ) {
+      return false;
+    }
+    if (colPerson.trim() && !str(r.person_name).toLowerCase().includes(colPerson.trim().toLowerCase())) {
+      return false;
+    }
+    if (colType.trim()) {
+      if (colType === "reversed") {
+        if (!r.reversed) return false;
+      } else if (str(r.kind).toLowerCase() !== colType.toLowerCase()) {
+        return false;
+      }
+    }
+    if (colAmount.trim() && !str(r.amount).includes(colAmount.trim())) {
+      return false;
+    }
+    if (colStatus.trim() && !str(r.status).toLowerCase().includes(colStatus.trim().toLowerCase())) {
+      return false;
+    }
+    if (colNote.trim() && !str(r.note_text).toLowerCase().includes(colNote.trim().toLowerCase())) {
+      return false;
+    }
+    return true;
+  });
+
+  const paginatedRows = filteredRows.slice(offset, offset + pageSize);
+
+  const availableTypes = useMemo(() => {
+    const defaultTypes = [
+      "bill",
+      "receipt",
+      "foods_receipt",
+      "expense",
+      "salary",
+      "loan",
+      "employee_receipt",
+      "transfer",
+      "deposit",
+      "return",
+      "reversal",
+    ];
+    const set = new Set<string>(defaultTypes);
+    for (const r of rawRows) {
+      if (r.kind) set.add(str(r.kind));
+    }
+    return Array.from(set);
+  }, [rawRows]);
+  const hasActiveFilters = Boolean(colRecord || colDate || colPerson || colType || colAmount || colStatus || colNote);
+
+  const clearFilters = () => {
+    setColRecord("");
+    setColDate("");
+    setColPerson("");
+    setColType("");
+    setColAmount("");
+    setColStatus("");
+    setColNote("");
+    setOffset(0);
+  };
+
+  const personColumnTitle = salesmanId
+    ? "Customer / Person"
+    : kind?.includes("salary")
+      ? "Employee / Person"
+      : kind === "foods_receipt"
+        ? "Foods Salesman"
+        : "Salesman / Customer";
+
+  return (
+    <section className="panel" style={{ padding: "16px 18px" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: 12,
+          marginBottom: 16,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <h2 style={{ margin: 0, fontSize: 18 }}>
+            {title ||
+              (kind === "bill"
+                ? "Bill Register"
+                : kind === "receipt"
+                  ? "Receipts Register"
+                  : kind === "foods_receipt"
+                    ? "Foods Collections Register"
+                    : kind === "expense"
+                      ? "Expense Vouchers"
+                      : "Register")}
+          </h2>
+          <span className="badge" style={{ fontSize: 12, fontWeight: 700 }}>
+            {filteredRows.length} record{filteredRows.length === 1 ? "" : "s"}
+          </span>
+        </div>
+
+        {hasActiveFilters && (
+          <Button
+            className="secondary"
+            onClick={clearFilters}
+            style={{ fontSize: 12, padding: "5px 12px", color: "#dc2626", borderColor: "#fca5a5" }}
+          >
+            ✕ Reset All Filters
+          </Button>
+        )}
+      </div>
+
+      {q.isPending ? (
+        <p>Loading records…</p>
+      ) : q.isError ? (
+        <p role="alert" className="error">
+          {q.error.message}
+        </p>
+      ) : (
+        <div className="table-scroll" style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              {/* Row 1: Column Headings */}
+              <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0" }}>
+                <th style={{ textAlign: "left", padding: "10px 12px", fontWeight: 700, fontSize: 13, color: "#475569" }}>
+                  Record
+                </th>
+                <th style={{ textAlign: "left", padding: "10px 12px", fontWeight: 700, fontSize: 13, color: "#475569" }}>
+                  Date
+                </th>
+                <th style={{ textAlign: "left", padding: "10px 12px", fontWeight: 700, fontSize: 13, color: "#475569" }}>
+                  {personColumnTitle}
+                </th>
+                <th style={{ textAlign: "left", padding: "10px 12px", fontWeight: 700, fontSize: 13, color: "#475569" }}>
+                  Type
+                </th>
+                <th className="money-cell" style={{ textAlign: "right", padding: "10px 12px", fontWeight: 700, fontSize: 13, color: "#475569" }}>
+                  Amount
+                </th>
+                <th style={{ textAlign: "left", padding: "10px 12px", fontWeight: 700, fontSize: 13, color: "#475569" }}>
+                  Status
+                </th>
+                <th style={{ textAlign: "center", padding: "10px 12px", fontWeight: 700, fontSize: 13, color: "#475569", width: 70 }}>
+                  Note
+                </th>
+              </tr>
+
+              {/* Row 2: Search and Filter Row Directly Below All Columns */}
+              <tr style={{ background: "#f1f5f9", borderBottom: "2px solid #cbd5e1" }}>
+                <th style={{ padding: "6px 8px" }}>
+                  <input
+                    type="search"
+                    placeholder="Search #…"
+                    value={colRecord}
+                    onChange={(e) => {
+                      setColRecord(e.target.value);
+                      setOffset(0);
+                    }}
+                    style={{
+                      width: "100%",
+                      padding: "6px 8px",
+                      fontSize: 12,
+                      borderRadius: 6,
+                      border: "1px solid #cbd5e1",
+                      background: "#ffffff",
+                    }}
+                  />
+                </th>
+                <th style={{ padding: "6px 8px" }}>
+                  <input
+                    type="search"
+                    placeholder="Search date…"
+                    value={colDate}
+                    onChange={(e) => {
+                      setColDate(e.target.value);
+                      setOffset(0);
+                    }}
+                    style={{
+                      width: "100%",
+                      padding: "6px 8px",
+                      fontSize: 12,
+                      borderRadius: 6,
+                      border: "1px solid #cbd5e1",
+                      background: "#ffffff",
+                    }}
+                  />
+                </th>
+                <th style={{ padding: "6px 8px" }}>
+                  <input
+                    type="search"
+                    placeholder="Search name…"
+                    value={colPerson}
+                    onChange={(e) => {
+                      setColPerson(e.target.value);
+                      setOffset(0);
+                    }}
+                    style={{
+                      width: "100%",
+                      padding: "6px 8px",
+                      fontSize: 12,
+                      borderRadius: 6,
+                      border: "1px solid #cbd5e1",
+                      background: "#ffffff",
+                    }}
+                  />
+                </th>
+                <th style={{ padding: "6px 8px" }}>
+                  <select
+                    value={colType}
+                    onChange={(e) => {
+                      setColType(e.target.value);
+                      setOffset(0);
+                    }}
+                    style={{
+                      width: "100%",
+                      padding: "6px 8px",
+                      fontSize: 12,
+                      borderRadius: 6,
+                      border: "1px solid #cbd5e1",
+                      background: "#ffffff",
+                    }}
+                  >
+                    <option value="">All Types</option>
+                    {availableTypes.map((t: string) => (
+                      <option key={t} value={t}>
+                        {t === "foods_receipt"
+                          ? "Foods Collection"
+                          : t === "employee_receipt"
+                            ? "Employee Receipt"
+                            : t === "reversal"
+                              ? "Reversal Entry"
+                              : t.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase())}
+                      </option>
+                    ))}
+                    <option value="reversed">Reversed</option>
+                  </select>
+                </th>
+                <th style={{ padding: "6px 8px" }}>
+                  <input
+                    type="search"
+                    placeholder="Search ₹…"
+                    value={colAmount}
+                    onChange={(e) => {
+                      setColAmount(e.target.value);
+                      setOffset(0);
+                    }}
+                    style={{
+                      width: "100%",
+                      padding: "6px 8px",
+                      fontSize: 12,
+                      borderRadius: 6,
+                      border: "1px solid #cbd5e1",
+                      background: "#ffffff",
+                      textAlign: "right",
+                    }}
+                  />
+                </th>
+                <th style={{ padding: "6px 8px" }}>
+                  <select
+                    value={colStatus}
+                    onChange={(e) => {
+                      setColStatus(e.target.value);
+                      setOffset(0);
+                    }}
+                    style={{
+                      width: "100%",
+                      padding: "6px 8px",
+                      fontSize: 12,
+                      borderRadius: 6,
+                      border: "1px solid #cbd5e1",
+                      background: "#ffffff",
+                    }}
+                  >
+                    <option value="">All Statuses</option>
+                    <option value="Posted">Posted</option>
+                    <option value="Settled">Settled</option>
+                    <option value="Part-paid">Part-paid / credited</option>
+                    <option value="Unpaid">Unpaid</option>
+                    <option value="returned">Returned</option>
+                    <option value="reversal">Reversal / Reversed</option>
+                  </select>
+                </th>
+                <th style={{ padding: "6px 8px", width: 70 }}>
+                  <input
+                    type="search"
+                    placeholder="Search note…"
+                    value={colNote}
+                    onChange={(e) => {
+                      setColNote(e.target.value);
+                      setOffset(0);
+                    }}
+                    style={{
+                      width: "100%",
+                      padding: "6px 8px",
+                      fontSize: 12,
+                      borderRadius: 6,
+                      border: "1px solid #cbd5e1",
+                      background: "#ffffff",
+                    }}
+                  />
+                </th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {paginatedRows.length === 0 ? (
+                <tr>
+                  <td colSpan={7} style={{ textAlign: "center", padding: "28px 12px", color: "#64748b" }}>
+                    No matching records found.
+                  </td>
+                </tr>
+              ) : (
+                paginatedRows.map((r, i) => (
+                  <tr key={str(r.id) || i} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                    <td style={{ padding: "10px 12px" }}>
+                      <button
+                        className="text-link"
+                        onClick={() => onSelect(str(r.id))}
+                        style={{ fontWeight: 600, color: "#2563eb", cursor: "pointer" }}
+                      >
+                        {str(r.number)}
+                      </button>
+                    </td>
+                    <td style={{ padding: "10px 12px", color: "#475569", whiteSpace: "nowrap" }}>
+                      <div style={{ display: "flex", flexDirection: "column" }}>
+                        <span>{str(r.formatted_date)}</span>
+                        {r.created_at ? (
+                          <span style={{ fontSize: 11, color: "#94a3b8" }}>
+                            {timeOnlyLabel(r.created_at)}
+                          </span>
+                        ) : null}
+                      </div>
+                    </td>
+                    <td style={{ padding: "10px 12px", fontWeight: 500, color: "#0f172a" }}>
+                      {str(r.person_name)}
+                    </td>
+                    <td style={{ padding: "10px 12px" }}>
+                      <span
+                        className="badge"
+                        style={{
+                          textTransform: "capitalize",
+                          background:
+                            r.kind === "bill"
+                              ? "#eff6ff"
+                              : r.kind === "receipt" || r.kind === "foods_receipt" || r.kind === "employee_receipt"
+                                ? "#f0fdf4"
+                                : r.kind === "expense"
+                                  ? "#fff1f2"
+                                  : r.kind === "salary" || r.kind === "loan"
+                                    ? "#f5f3ff"
+                                    : r.kind === "transfer" || r.kind === "deposit"
+                                      ? "#f0f9ff"
+                                      : r.kind === "return"
+                                        ? "#fef3c7"
+                                        : "#f1f5f9",
+                          color:
+                            r.kind === "bill"
+                              ? "#1d4ed8"
+                              : r.kind === "receipt" || r.kind === "foods_receipt" || r.kind === "employee_receipt"
+                                ? "#15803d"
+                                : r.kind === "expense"
+                                  ? "#be123c"
+                                  : r.kind === "salary" || r.kind === "loan"
+                                    ? "#6d28d9"
+                                    : r.kind === "transfer" || r.kind === "deposit"
+                                      ? "#0369a1"
+                                      : r.kind === "return"
+                                        ? "#b45309"
+                                        : "#475569",
+                        }}
+                      >
+                        {str(r.kind).replace(/_/g, " ")}
+                      </span>
+                    </td>
+                    <td className="money-cell" style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700 }}>
+                      {rupees(r.amount)}
+                    </td>
+                    <td style={{ padding: "10px 12px" }}>
+                      <span
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 600,
+                          padding: "2px 8px",
+                          borderRadius: 4,
+                          background: r.reversed
+                            ? "#fee2e2"
+                            : r.returned
+                              ? "#ffedd5"
+                              : str(r.status).startsWith("Settled")
+                                ? "#dcfce7"
+                                : str(r.status).startsWith("Unpaid")
+                                  ? "#fef9c3"
+                                  : "#f1f5f9",
+                          color: r.reversed
+                            ? "#dc2626"
+                            : r.returned
+                              ? "#c2410c"
+                              : str(r.status).startsWith("Settled")
+                                ? "#166534"
+                                : str(r.status).startsWith("Unpaid")
+                                  ? "#854d0e"
+                                  : "#334155",
+                        }}
+                      >
+                        {str(r.status)}
+                      </span>
+                    </td>
+                    <td style={{ padding: "10px 12px", textAlign: "center" }}>
+                      <NoteTooltip text={str(r.note_text ?? "")} />
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {filteredRows.length > 0 && (
+        <div className="pagination" style={{ marginTop: 14 }}>
+          <Button
+            disabled={!offset}
+            onClick={() => setOffset(Math.max(0, offset - pageSize))}
+          >
+            Previous
+          </Button>
+          <span>
+            Records {offset + 1}–{Math.min(offset + pageSize, filteredRows.length)} of {filteredRows.length}
+          </span>
+          <Button
+            disabled={offset + pageSize >= filteredRows.length}
+            onClick={() => setOffset(offset + pageSize)}
+          >
+            Next
+          </Button>
+        </div>
+      )}
+    </section>
+  );
+}
+function SignaturePad({
+  onChange,
+  onClear,
+}: {
+  onChange: (blob: Blob | null) => void;
+  onClear?: () => void;
+}) {
+  const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
+  const [hasStroke, setHasStroke] = useState(false);
+  const isDrawing = React.useRef(false);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    // Set high-DPI scaling
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = Math.round(rect.width * dpr);
+    canvas.height = Math.round(rect.height * dpr);
+    ctx.scale(dpr, dpr);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, rect.width, rect.height);
+    ctx.strokeStyle = "#0f172a";
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+  }, []);
+
+  const getPos = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    if ("touches" in e) {
+      const touch = e.touches[0] || (e as React.TouchEvent).changedTouches[0];
+      return {
+        x: touch.clientX - rect.left,
+        y: touch.clientY - rect.top,
+      };
+    }
+    return {
+      x: (e as React.MouseEvent).clientX - rect.left,
+      y: (e as React.MouseEvent).clientY - rect.top,
+    };
+  };
+
+  const startDraw = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const pos = getPos(e);
+    isDrawing.current = true;
+    ctx.beginPath();
+    ctx.moveTo(pos.x, pos.y);
+  };
+
+  const draw = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    if (!isDrawing.current) return;
+    e.preventDefault();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const pos = getPos(e);
+    ctx.lineTo(pos.x, pos.y);
+    ctx.stroke();
+    if (!hasStroke) setHasStroke(true);
+  };
+
+  const stopDraw = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    if (!isDrawing.current) return;
+    e.preventDefault();
+    isDrawing.current = false;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.toBlob((blob) => {
+      onChange(blob);
+    }, "image/png");
+  };
+
+  const handleClear = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
+    ctx.strokeStyle = "#0f172a";
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    setHasStroke(false);
+    onChange(null);
+    onClear?.();
+  };
+
+  return (
+    <div style={{ margin: "14px 0", border: "1px dashed #cbd5e1", borderRadius: 8, padding: 12, background: "#f8fafc" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: "#334155" }}>
+          ✍️ Employee Digital Signature (Touch / Mouse / Pen)
+        </span>
+        <button
+          type="button"
+          onClick={handleClear}
+          style={{
+            background: "#fee2e2",
+            border: "1px solid #fca5a5",
+            color: "#991b1b",
+            borderRadius: 4,
+            padding: "3px 10px",
+            fontSize: 12,
+            fontWeight: 600,
+            cursor: "pointer",
+          }}
+        >
+          Clear
+        </button>
+      </div>
+      <canvas
+        ref={canvasRef}
+        style={{
+          width: "100%",
+          height: "150px",
+          background: "#ffffff",
+          borderRadius: 6,
+          border: "1px solid #e2e8f0",
+          touchAction: "none",
+          display: "block",
+          cursor: "crosshair",
+        }}
+        onMouseDown={startDraw}
+        onMouseMove={draw}
+        onMouseUp={stopDraw}
+        onMouseLeave={stopDraw}
+        onTouchStart={startDraw}
+        onTouchMove={draw}
+        onTouchEnd={stopDraw}
+      />
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 11, color: "#64748b" }}>
+        <span>Sign above inside the white canvas to attach proof of receipt</span>
+        {hasStroke ? (
+          <span style={{ color: "#16a34a", fontWeight: 600 }}>✓ Signature captured</span>
+        ) : (
+          <span>(Optional / Can sign printout)</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CustomerSearchableSelect({
+  customers,
+  selectedId,
+  onSelect,
+  placeholder = "Search and select customer…",
+}: {
+  customers: Row[];
+  selectedId: string;
+  onSelect: (customerId: string) => void;
+  placeholder?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const selectedCustomer = customers.find((c) => str(c.id) === selectedId);
+
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    if (open) {
+      document.addEventListener("mousedown", handleOutsideClick);
+      setTimeout(() => inputRef.current?.focus(), 50);
+    }
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [open]);
+
+  const filtered = customers.filter((c) => {
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    return (
+      str(c.customer_name).toLowerCase().includes(q) ||
+      str(c.customer_id).toLowerCase().includes(q) ||
+      str(c.beat_name).toLowerCase().includes(q) ||
+      str(c.beat_code).toLowerCase().includes(q)
+    );
+  });
+
+  return (
+    <div ref={containerRef} style={{ position: "relative", width: "100%" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        style={{
+          width: "100%",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          padding: "10px 14px",
+          background: "#ffffff",
+          border: open ? "1.5px solid #ea580c" : "1px solid #cbd5e1",
+          borderRadius: 10,
+          fontSize: 13,
+          fontWeight: 500,
+          color: selectedCustomer ? "#0f172a" : "#94a3b8",
+          cursor: "pointer",
+          textAlign: "left",
+          boxShadow: open ? "0 0 0 3px rgba(234, 88, 12, 0.12)" : "0 1px 2px rgba(0,0,0,0.03)",
+          transition: "all 0.15s ease",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 10, overflow: "hidden" }}>
+          <Store size={16} color={selectedCustomer ? "#ea580c" : "#94a3b8"} style={{ flexShrink: 0 }} />
+          {selectedCustomer ? (
+            <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              <span style={{ fontWeight: 600, color: "#0f172a" }}>
+                {str(selectedCustomer.customer_name)}
+              </span>{" "}
+              <span style={{ color: "#64748b", fontSize: 12 }}>
+                ({str(selectedCustomer.beat_name) || `Beat ${str(selectedCustomer.beat_code)}`})
+              </span>
+            </div>
+          ) : (
+            <span>{placeholder}</span>
+          )}
+        </div>
+        <span style={{ fontSize: 11, color: "#64748b", marginLeft: 8 }}>▼</span>
+      </button>
+
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 6px)",
+            left: 0,
+            right: 0,
+            zIndex: 9999,
+            background: "#ffffff",
+            border: "1px solid #e2e8f0",
+            borderRadius: 10,
+            boxShadow: "0 12px 28px -4px rgba(0,0,0,0.12), 0 4px 12px -2px rgba(0,0,0,0.08)",
+            padding: 8,
+            minWidth: 280,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "6px 10px",
+              background: "#f8fafc",
+              border: "1px solid #e2e8f0",
+              borderRadius: 8,
+              marginBottom: 6,
+            }}
+          >
+            <Search size={15} color="#64748b" />
+            <input
+              ref={inputRef}
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.keyCode === 13) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (filtered.length > 0) {
+                    onSelect(str(filtered[0].id));
+                    setOpen(false);
+                    setSearch("");
+                  }
+                }
+              }}
+              placeholder="Type customer name, code or beat…"
+              style={{
+                border: "none",
+                background: "transparent",
+                outline: "none",
+                width: "100%",
+                fontSize: 13,
+                color: "#0f172a",
+              }}
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch("")}
+                style={{
+                  border: "none",
+                  background: "transparent",
+                  color: "#94a3b8",
+                  cursor: "pointer",
+                  padding: 0,
+                  fontSize: 13,
+                }}
+              >
+                ✕
+              </button>
+            )}
+          </div>
+
+          <div style={{ maxHeight: 250, overflowY: "auto" }}>
+            {filtered.length === 0 ? (
+              <div style={{ padding: "12px", textAlign: "center", color: "#94a3b8", fontSize: 13 }}>
+                No customer found matching "{search}"
+              </div>
+            ) : (
+              filtered.map((c) => {
+                const isSelected = str(c.id) === selectedId;
+                const balNum = parseFloat(str(c.balance || "0"));
+                return (
+                  <div
+                    key={str(c.id)}
+                    onClick={() => {
+                      onSelect(str(c.id));
+                      setOpen(false);
+                      setSearch("");
+                    }}
+                    style={{
+                      padding: "8px 12px",
+                      borderRadius: 6,
+                      background: isSelected ? "#fff7ed" : "transparent",
+                      cursor: "pointer",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      borderBottom: "1px solid #f8fafc",
+                      transition: "background 0.1s ease",
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!isSelected) e.currentTarget.style.background = "#f8fafc";
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!isSelected) e.currentTarget.style.background = "transparent";
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: isSelected ? "#ea580c" : "#1e293b" }}>
+                        {str(c.customer_name)}
+                      </div>
+                      <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>
+                        <span style={{ fontFamily: "monospace" }}>{str(c.customer_id)}</span> ·{" "}
+                        <span>{str(c.beat_name) || `Beat ${str(c.beat_code)}`}</span>
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right", marginLeft: 12 }}>
+                      <div
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 700,
+                          color: balNum > 0 ? "#dc2626" : "#16a34a",
+                        }}
+                      >
+                        {rupees(c.balance)}
+                      </div>
+                      <div style={{ fontSize: 10, color: "#94a3b8" }}>
+                        {balNum > 0 ? "due" : "clear"}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function getProductBarcodes(p: Row): string[] {
+  const details = (p.details as Record<string, unknown>) || {};
+  const raw = [
+    str(p.barcode || ""),
+    str(details.barcode || ""),
+    str(details.ean || ""),
+    ...(Array.isArray(details.barcodes) ? details.barcodes.map(String) : []),
+  ];
+  const set = new Set<string>();
+  for (const item of raw) {
+    if (!item) continue;
+    // Split on commas, spaces, semicolons, or newlines
+    const tokens = item.split(/[\s,;]+/).map((s) => s.trim().toLowerCase()).filter(Boolean);
+    for (const t of tokens) set.add(t);
+  }
+  return Array.from(set);
+}
+
+function matchProductByScanOrCode(products: Row[], rawInput: string): Row | undefined {
+  const query = rawInput.trim().toLowerCase();
+  if (!query) return undefined;
+
+  // 1. Exact match on any barcode or ean (supports multiple barcodes per product)
+  const byBarcode = products.find((p) => {
+    const barcodes = getProductBarcodes(p);
+    return barcodes.includes(query);
+  });
+  if (byBarcode) return byBarcode;
+
+  // 2. Exact match on product code
+  const byCode = products.find((p) => str(p.code).trim().toLowerCase() === query);
+  if (byCode) return byCode;
+
+  // 3. Exact match on product id
+  const byId = products.find((p) => str(p.id).trim().toLowerCase() === query);
+  if (byId) return byId;
+
+  // 4. Exact match on name
+  const byExactName = products.find((p) => str(p.name).trim().toLowerCase() === query);
+  if (byExactName) return byExactName;
+
+  // 5. Code starts with query or name starts with query
+  const byPrefix = products.find((p) =>
+    str(p.code).trim().toLowerCase().startsWith(query) ||
+    str(p.name).trim().toLowerCase().startsWith(query)
+  );
+  if (byPrefix) return byPrefix;
+
+  // 6. Substring match
+  return products.find((p) =>
+    str(p.code).toLowerCase().includes(query) ||
+    str(p.name).toLowerCase().includes(query) ||
+    getProductBarcodes(p).some((bc) => bc.includes(query))
+  );
+}
+
+function useGlobalBarcodeScanner({
+  enabled,
+  products,
+  onProductScanned,
+  onRestoreQuantity,
+  onScanNotFound,
+}: {
+  enabled: boolean;
+  products: Row[];
+  onProductScanned: (product: Row) => void;
+  onRestoreQuantity?: (rowId: string, prevVal: string) => void;
+  onScanNotFound?: (rawBarcode: string) => void;
+}) {
+  const bufferRef = useRef<{
+    chars: string[];
+    timestamps: number[];
+    targetInput?: HTMLInputElement;
+    initialVal?: string;
+    rowId?: string;
+  }>({
+    chars: [],
+    timestamps: [],
+  });
+
+  useEffect(() => {
+    if (!enabled) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const now = Date.now();
+
+      if (e.key === "Enter" || e.keyCode === 13) {
+        const { chars, timestamps, targetInput, initialVal, rowId } = bufferRef.current;
+        bufferRef.current = { chars: [], timestamps: [] };
+
+        if (chars.length >= 3 && timestamps.length >= 2) {
+          const totalDuration = now - timestamps[0];
+          const avgInterval = totalDuration / chars.length;
+
+          // Hardware barcode scanners emit keystrokes rapidly (typically 10-50ms avg interval)
+          if (avgInterval < 65) {
+            const rawScan = chars.join("").trim();
+            const matched = matchProductByScanOrCode(products, rawScan);
+
+            e.preventDefault();
+            e.stopPropagation();
+
+            // Revert any input that was focused while the scanner was typing
+            if (targetInput) {
+              targetInput.value = initialVal ?? "";
+              try {
+                targetInput.dispatchEvent(new Event("input", { bubbles: true }));
+              } catch {
+                // ignore
+              }
+              if (rowId && onRestoreQuantity) {
+                onRestoreQuantity(rowId, initialVal ?? "");
+              }
+            }
+
+            if (matched) {
+              onProductScanned(matched);
+            } else {
+              onScanNotFound?.(rawScan);
+              if (targetInput) {
+                targetInput.focus();
+                targetInput.select?.();
+              }
+            }
+          }
+        }
+        return;
+      }
+
+      if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        const lastTime = bufferRef.current.timestamps[bufferRef.current.timestamps.length - 1];
+
+        // If time since last char > 85ms, it is manual human typing — reset buffer
+        if (lastTime && now - lastTime > 85) {
+          bufferRef.current = { chars: [], timestamps: [] };
+        }
+
+        if (bufferRef.current.chars.length === 0) {
+          const activeEl = document.activeElement as HTMLElement | null;
+          const isInput = activeEl?.tagName === "INPUT";
+          const inputEl = isInput ? (activeEl as HTMLInputElement) : undefined;
+          let rowId: string | undefined;
+          if (inputEl?.id?.startsWith("qty-input-")) {
+            rowId = inputEl.id.replace("qty-input-m-", "").replace("qty-input-", "");
+          }
+          bufferRef.current = {
+            chars: [e.key],
+            timestamps: [now],
+            targetInput: inputEl,
+            initialVal: inputEl?.value,
+            rowId,
+          };
+        } else {
+          bufferRef.current.chars.push(e.key);
+          bufferRef.current.timestamps.push(now);
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, [enabled, products, onProductScanned, onRestoreQuantity]);
+}
+
+interface DraftConfectioneryItem {
+  rowId?: string;
+  productId?: string;
+  code?: string;
+  name?: string;
+  quantity?: string;
+  rate?: string;
+  isManual?: boolean;
+}
+
+function DraftReviewModal({
+  draft,
+  masters,
+  onClose,
+  onResumeEdit,
+  onPostSuccess,
+  salesmanList,
+  customerList,
+}: {
+  draft: Row;
+  masters: Row;
+  onClose: () => void;
+  onResumeEdit: () => void;
+  onPostSuccess: (res: { id?: string; number?: string; message?: string }) => void;
+  salesmanList?: Row[];
+  customerList?: Row[];
+}) {
+  const qc = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const draftId = str(draft.id);
+  const dData = (draft.data ?? {}) as Row;
+  const values = (dData.values ?? {}) as Row;
+  const isDirectCig = dData.name === "direct_cig_bill";
+
+  const salesmanId = str(dData.salesmanId || values.salesmanId || "");
+  const customerId = str(dData.customerId || values.customerId || "");
+  const allSalesmen = salesmanList || arr(masters.salesmen);
+  const salesmanObj = allSalesmen.find((s) => str(s.id) === salesmanId);
+  const salesmanName = str(
+    dData.salesmanName || values.salesmanName || salesmanObj?.name || "Unknown Salesman"
+  );
+  const customerName = isDirectCig
+    ? str(
+      dData.customerName ||
+      (customerList || []).find((c) => str(c.id) === customerId)?.customer_name ||
+      "Unknown Customer"
+    )
+    : "";
+
+  const billDate = str(dData.date || values.date || "");
+  const paperRef = str(dData.paperReference || values.paperReference || "");
+  const note = str(dData.note || values.note || "");
+  const billDiscount = str(dData.discount || (values as Row)?.discount || "");
+
+  // Products
+  const rowIds = Array.isArray(dData.rowIds)
+    ? dData.rowIds.map(String)
+    : Object.keys((dData.rowProducts as Record<string, string>) || {});
+  const rowProducts = (dData.rowProducts ?? {}) as Record<string, string>;
+  const quantities = (dData.quantities ?? {}) as Record<string, string>;
+  const hasConfectionery = Boolean(
+    dData.hasConfectionery ||
+    (Array.isArray(dData.confectioneryRows) && dData.confectioneryRows.length > 0)
+  );
+  const confectioneryRows = Array.isArray(dData.confectioneryRows)
+    ? (dData.confectioneryRows as DraftConfectioneryItem[])
+    : [];
+
+  // Payments
+  const payment = (dData.payment ?? {}) as Row;
+  const withPayments = Boolean(dData.withPayments ?? payment.withPayments);
+  const cashPay = str(dData.cashPay || payment.cashPay || "");
+  const onlinePay = str(dData.onlinePay || payment.onlinePay || "");
+  const paymentNote = str(dData.paymentNote || payment.bankRef || "");
+  const cashAccountId = str(dData.cashAccountId || payment.cashId || "");
+  const bankAccountId = str(dData.bankAccountId || payment.bankId || "");
+
+  // Map products
+  const productMap = useMemo(() => {
+    const map = new Map<string, Row>();
+    for (const p of arr(masters.products)) {
+      map.set(str(p.id), p);
+    }
+    return map;
+  }, [masters.products]);
+
+  // Build lines
+  const lines = useMemo(() => {
+    const res: Array<{
+      productId?: string;
+      name?: string;
+      code?: string;
+      category?: string;
+      quantity: string;
+      rate?: string;
+    }> = [];
+
+    for (const rId of rowIds) {
+      const pId = rowProducts[rId];
+      const rawQ = str(quantities[rId] ?? "").trim();
+      const qStr = rawQ.startsWith(".") ? "0" + rawQ : rawQ;
+      if (pId && Number(qStr) > 0) {
+        res.push({ productId: pId, quantity: qStr, category: "CG-01 CIGARETTE" });
+      }
+    }
+
+    if (hasConfectionery) {
+      for (const cr of confectioneryRows) {
+        const rawQ = str(cr.quantity ?? "").trim();
+        const qStr = rawQ.startsWith(".") ? "0" + rawQ : rawQ;
+        const rawR = str(cr.rate ?? "").trim();
+        const rStr = rawR.startsWith(".") ? "0" + rawR : rawR;
+        if (Number(qStr) > 0 && Number(rStr) > 0 && (cr.productId || (cr.name && str(cr.name).trim()))) {
+          res.push({
+            ...(cr.productId ? { productId: cr.productId } : {}),
+            name: (cr.name && str(cr.name).trim()) || undefined,
+            code: (cr.code && str(cr.code).trim()) || undefined,
+            category: "CF-05 CONFECTIONERY",
+            quantity: qStr,
+            rate: rStr,
+          });
+        }
+      }
+    }
+    return res;
+  }, [rowIds, rowProducts, quantities, hasConfectionery, confectioneryRows]);
+
+  // Receipts
+  const billReceipts = useMemo(() => {
+    const r: Row[] = [];
+    if (withPayments) {
+      const cleanCash = cleanMoney(cashPay);
+      const cleanOnline = cleanMoney(onlinePay);
+      const hasCash = Boolean(cleanCash && parseMoneyNumber(cleanCash) > 0);
+      const hasOnline = Boolean(cleanOnline && parseMoneyNumber(cleanOnline) > 0);
+
+      const defaultCash = arr(masters.accounts).find((a) => a.type === "cash")?.id || "";
+      const defaultBank = arr(masters.accounts).find((a) => a.type === "bank")?.id || "";
+      const activeCashId = cashAccountId || defaultCash;
+      const activeBankId = bankAccountId || defaultBank;
+
+      if (hasCash) {
+        r.push({
+          amount: cleanCash,
+          accountId: activeCashId,
+          method: "cash",
+          actualDate: billDate,
+          reference: "",
+          verified: false,
+        });
+      }
+      if (hasOnline) {
+        r.push({
+          amount: cleanOnline,
+          accountId: activeBankId,
+          method: "online",
+          actualDate: billDate,
+          reference: paymentNote || "Draft Online Payment",
+          verified: false,
+        });
+      }
+    }
+    return r;
+  }, [withPayments, cashPay, onlinePay, cashAccountId, bankAccountId, masters.accounts, billDate, paymentNote]);
+
+  const cleanBillDisc = cleanMoney(billDiscount);
+  const previewPayload = useMemo(() => {
+    return {
+      date: billDate,
+      note: note.trim(),
+      salesmanId: salesmanId,
+      ...(isDirectCig && customerId ? { customerId } : {}),
+      lines,
+      receipts: billReceipts,
+      ...(!isDirectCig && paperRef ? { paperReference: paperRef } : {}),
+      ...(cleanBillDisc && parseMoneyNumber(cleanBillDisc) > 0 ? { discount: cleanBillDisc } : {}),
+      overrideReason: "",
+    };
+  }, [billDate, note, salesmanId, isDirectCig, customerId, lines, billReceipts, paperRef, cleanBillDisc]);
+
+  // Query server preview quote
+  const previewQuery = useQuery({
+    queryKey: ["preview/bill", previewPayload],
+    queryFn: () => api("preview/bill", previewResponse, previewPayload),
+    enabled: lines.length > 0 && !!salesmanId && (!isDirectCig || !!customerId),
+    staleTime: 5000,
+  });
+
+  const quote = previewQuery.data;
+  const quoteLoading = previewQuery.isLoading;
+  const quoteError = previewQuery.error ? (previewQuery.error as Error).message : "";
+
+  // Accounts lookup for payments
+  const cashAccName = useMemo(() => {
+    const accId = cashAccountId || arr(masters.accounts).find((a) => a.type === "cash")?.id;
+    return str(arr(masters.accounts).find((a) => str(a.id) === str(accId))?.name || "Cash In Hand");
+  }, [cashAccountId, masters.accounts]);
+
+  const bankAccName = useMemo(() => {
+    const accId = bankAccountId || arr(masters.accounts).find((a) => a.type === "bank")?.id;
+    return str(arr(masters.accounts).find((a) => str(a.id) === str(accId))?.name || "Bank Account");
+  }, [bankAccountId, masters.accounts]);
+
+  // Calculate line items for display
+  const displayItems = useMemo(() => {
+    return lines.map((line, idx) => {
+      if (line.category === "confectionery" || line.category === "CF-05 CONFECTIONERY") {
+        const qNum = Number(line.quantity) || 0;
+        const rNum = Number(line.rate) || 0;
+        const amt = (qNum * rNum).toFixed(2);
+        return {
+          id: `conf-${idx}`,
+          name: line.name || "Confectionery Item",
+          code: line.code || "",
+          category: "Confectionery",
+          quantity: line.quantity,
+          unit: "pcs",
+          rate: line.rate || "0",
+          amount: amt,
+        };
+      }
+      const prod = productMap.get(line.productId || "");
+      const prodName = prod ? str(prod.name) : `Product ${line.productId}`;
+      const prodCode = prod?.code ? str(prod.code) : "";
+      const prodUnit = prod?.unit ? str(prod.unit) : "pkt";
+      const qNum = Number(line.quantity) || 0;
+      const rNum = Number(prod?.rate) || 0;
+      const bNum = Number(prod?.basis || 1) || 1;
+      const clientAmt = ((qNum * rNum) / bNum).toFixed(2);
+
+      // Match server quote line if available
+      const qLine = quote?.lines?.find((ql) => str(ql.productId) === str(line.productId));
+      return {
+        id: line.productId ? `${line.productId}-${idx}` : `item-${idx}`,
+        name: prodName,
+        code: prodCode,
+        category: "Cigarette",
+        quantity: line.quantity,
+        unit: qLine?.unit ? str(qLine.unit) : prodUnit,
+        rate: qLine?.effectiveRate ? str(qLine.effectiveRate) : (rNum > 0 ? String(rNum) : "—"),
+        amount: qLine?.amount ? str(qLine.amount) : clientAmt,
+      };
+    });
+  }, [lines, productMap, quote]);
+
+  const handleConfirmPost = async () => {
+    if (!quote?.quoteHash) return;
+    setBusy(true);
+    setError("");
+    try {
+      const postPayload = {
+        ...previewPayload,
+        expectedQuoteHash: quote.quoteHash,
+      };
+      const res = await api(
+        "commands/bill",
+        commandResult,
+        postPayload,
+        "POST",
+        crypto.randomUUID()
+      );
+
+      // Delete draft on successful post
+      if (draftId) {
+        try {
+          await api(`drafts/${draftId}`, z.unknown(), undefined, "DELETE");
+        } catch {
+          // ignore
+        }
+      }
+
+      await qc.invalidateQueries({ queryKey: ["drafts"] });
+      await qc.invalidateQueries();
+
+      onPostSuccess({
+        id: str(res.id),
+        number: res.number || "POSTED",
+        message: `Bill ${res.number || "POSTED"} confirmed and posted successfully!`,
+      });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDeleteDraft = async () => {
+    if (!window.confirm("Are you sure you want to delete this draft?")) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api(`drafts/${draftId}`, z.unknown(), undefined, "DELETE");
+      await qc.invalidateQueries({ queryKey: ["drafts"] });
+      onClose();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const totalPaid = withPayments
+    ? (Number(cleanMoney(cashPay) || "0") + Number(cleanMoney(onlinePay) || "0")).toFixed(2)
+    : "0.00";
+  const billTotalNum = quote?.total
+    ? Number(quote.total)
+    : displayItems.reduce((acc, it) => acc + Number(it.amount || 0), 0) - Number(cleanBillDisc || 0);
+  const balanceRemaining = (billTotalNum - Number(totalPaid)).toFixed(2);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(15, 23, 42, 0.65)",
+        backdropFilter: "blur(4px)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1000,
+        padding: 16,
+      }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !busy) onClose();
+      }}
+    >
+      <div
+        style={{
+          background: "#ffffff",
+          borderRadius: 16,
+          maxWidth: 680,
+          width: "100%",
+          maxHeight: "92vh",
+          display: "flex",
+          flexDirection: "column",
+          boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.15), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
+          overflow: "hidden",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Modal Header */}
+        <div
+          style={{
+            padding: "18px 22px",
+            borderBottom: "1px solid #e2e8f0",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            background: "#f8fafc",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div
+              style={{
+                width: 38,
+                height: 38,
+                borderRadius: 10,
+                background: "#eff6ff",
+                color: "#2563eb",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Receipt size={20} />
+            </div>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: "#0f172a" }}>
+                  {draftId ? "Review Saved Draft Bill" : "Review Bill Before Posting"}
+                </h3>
+                <span
+                  style={{
+                    fontSize: 11,
+                    background: draftId ? "#fef3c7" : "#eff6ff",
+                    color: draftId ? "#92400e" : "#1e40af",
+                    padding: "2px 8px",
+                    borderRadius: 10,
+                    fontWeight: 600,
+                  }}
+                >
+                  {draftId ? "Draft · Unposted" : "New Bill · Unposted"}
+                </span>
+              </div>
+              <p style={{ margin: "2px 0 0", fontSize: 12, color: "#64748b" }}>
+                Verify all line items, rates, and payments before confirming to the ledger.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            style={{
+              background: "none",
+              border: "none",
+              fontSize: 22,
+              cursor: "pointer",
+              color: "#94a3b8",
+              padding: 4,
+              lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+        </div>
+
+        {/* Modal Body - Scrollable */}
+        <div style={{ padding: "20px 22px", overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* Metadata Card */}
+          <div
+            style={{
+              background: "#f8fafc",
+              border: "1px solid #e2e8f0",
+              borderRadius: 12,
+              padding: "14px 16px",
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+              gap: 12,
+            }}
+          >
+            <div>
+              <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em", color: "#64748b", fontWeight: 600 }}>
+                {isDirectCig ? "Customer" : "Salesman (Debtor)"}
+              </span>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#0f172a", marginTop: 2 }}>
+                {isDirectCig ? customerName : salesmanName}
+              </div>
+              {isDirectCig && salesmanName && (
+                <div style={{ fontSize: 11, color: "#64748b" }}>Route: {salesmanName}</div>
+              )}
+            </div>
+
+            <div>
+              <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em", color: "#64748b", fontWeight: 600 }}>
+                Bill Date
+              </span>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#0f172a", marginTop: 2 }}>
+                {billDate || "—"}
+              </div>
+            </div>
+
+            {paperRef && (
+              <div>
+                <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em", color: "#64748b", fontWeight: 600 }}>
+                  Paper Ref #
+                </span>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#0f172a", marginTop: 2 }}>
+                  {paperRef}
+                </div>
+              </div>
+            )}
+
+            {note && (
+              <div style={{ gridColumn: "1 / -1" }}>
+                <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em", color: "#64748b", fontWeight: 600 }}>
+                  Note / Memo
+                </span>
+                <div style={{ fontSize: 13, color: "#334155", marginTop: 2 }}>
+                  {note}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Products Table */}
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#1e293b" }}>
+                Billed Products & Items ({displayItems.length})
+              </h4>
+              {quoteLoading && (
+                <span style={{ fontSize: 12, color: "#2563eb", display: "flex", alignItems: "center", gap: 4 }}>
+                  <RefreshCw size={12} className="spin" /> Verifying ledger rates…
+                </span>
+              )}
+            </div>
+
+            {displayItems.length === 0 ? (
+              <div style={{ padding: 20, textAlign: "center", background: "#f8fafc", borderRadius: 8, color: "#64748b", fontSize: 13 }}>
+                No items recorded in this draft bill.
+              </div>
+            ) : (
+              <div style={{ border: "1px solid #e2e8f0", borderRadius: 10, overflow: "hidden" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: "#f1f5f9", textAlign: "left", color: "#475569", borderBottom: "1px solid #e2e8f0" }}>
+                      <th style={{ padding: "8px 12px", width: 36 }}>#</th>
+                      <th style={{ padding: "8px 12px" }}>Product Description</th>
+                      <th style={{ padding: "8px 12px", textAlign: "right" }}>Rate (₹)</th>
+                      <th style={{ padding: "8px 12px", textAlign: "right" }}>Qty</th>
+                      <th style={{ padding: "8px 12px", textAlign: "right" }}>Amount (₹)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {displayItems.map((item, i) => (
+                      <tr
+                        key={item.id}
+                        style={{
+                          borderBottom: i === displayItems.length - 1 ? "none" : "1px solid #f1f5f9",
+                          background: i % 2 === 0 ? "#ffffff" : "#fcfcfd",
+                        }}
+                      >
+                        <td style={{ padding: "10px 12px", color: "#94a3b8", fontSize: 12 }}>{i + 1}</td>
+                        <td style={{ padding: "10px 12px" }}>
+                          <div style={{ fontWeight: 600, color: "#0f172a" }}>{item.name}</div>
+                          <div style={{ fontSize: 11, color: "#64748b" }}>
+                            {item.category}{item.code ? ` · ${item.code}` : ""}
+                          </div>
+                        </td>
+                        <td style={{ padding: "10px 12px", textAlign: "right", color: "#334155" }}>
+                          {item.rate !== "—" ? rupees(item.rate) : "—"}
+                        </td>
+                        <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: "#0f172a" }}>
+                          {item.quantity} <span style={{ fontSize: 11, color: "#64748b", fontWeight: 400 }}>{item.unit}</span>
+                        </td>
+                        <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, color: "#0f172a" }}>
+                          {rupees(item.amount)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Financial Breakdown Card */}
+          <div
+            style={{
+              background: "#f8fafc",
+              border: "1px solid #e2e8f0",
+              borderRadius: 12,
+              padding: "14px 16px",
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "#475569" }}>
+              <span>Subtotal:</span>
+              <span style={{ fontWeight: 600 }}>
+                {quote?.subtotal ? rupees(quote.subtotal) : rupees(displayItems.reduce((acc, it) => acc + Number(it.amount || 0), 0))}
+              </span>
+            </div>
+
+            {Boolean(cleanBillDisc && parseMoneyNumber(cleanBillDisc) > 0) && (
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "#dc2626" }}>
+                <span>Overall Discount:</span>
+                <span style={{ fontWeight: 600 }}>−{rupees(cleanBillDisc)}</span>
+              </div>
+            )}
+
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                fontSize: 16,
+                fontWeight: 800,
+                color: "#0f172a",
+                borderTop: "1px solid #cbd5e1",
+                paddingTop: 8,
+                marginTop: 2,
+              }}
+            >
+              <span>Total Bill Amount:</span>
+              <span style={{ color: "#2563eb" }}>
+                {quote?.total ? rupees(quote.total) : rupees(billTotalNum)}
+              </span>
+            </div>
+
+            {/* Payment Details if withPayments */}
+            {withPayments && (
+              <div
+                style={{
+                  marginTop: 6,
+                  paddingTop: 8,
+                  borderTop: "1px dashed #cbd5e1",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                }}
+              >
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#334155", textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                  Associated Payments Recorded:
+                </div>
+                {Boolean(cleanMoney(cashPay) && parseMoneyNumber(cleanMoney(cashPay)) > 0) && (
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#166534" }}>
+                    <span>💵 Cash Payment ({cashAccName}):</span>
+                    <span style={{ fontWeight: 600 }}>{rupees(cashPay)}</span>
+                  </div>
+                )}
+                {Boolean(cleanMoney(onlinePay) && parseMoneyNumber(cleanMoney(onlinePay)) > 0) && (
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#1e40af" }}>
+                    <span>🏦 Online Bank ({bankAccName}):</span>
+                    <span style={{ fontWeight: 600 }}>{rupees(onlinePay)}</span>
+                  </div>
+                )}
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    fontSize: 13,
+                    fontWeight: 700,
+                    color: "#0f172a",
+                    background: "#f1f5f9",
+                    padding: "6px 8px",
+                    borderRadius: 6,
+                    marginTop: 2,
+                  }}
+                >
+                  <span>Balance Owed to Ledger:</span>
+                  <span style={{ color: Number(balanceRemaining) > 0 ? "#b45309" : "#166534" }}>
+                    {rupees(balanceRemaining)}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Warnings / Errors */}
+          {quoteError && (
+            <div
+              style={{
+                background: "#fef2f2",
+                border: "1px solid #fecaca",
+                borderRadius: 8,
+                padding: "10px 14px",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                color: "#991b1b",
+                fontSize: 13,
+              }}
+            >
+              <AlertTriangle size={16} />
+              <span>{quoteError}</span>
+            </div>
+          )}
+
+          {error && (
+            <div
+              style={{
+                background: "#fef2f2",
+                border: "1px solid #fecaca",
+                borderRadius: 8,
+                padding: "10px 14px",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                color: "#991b1b",
+                fontSize: 13,
+              }}
+            >
+              <AlertTriangle size={16} />
+              <span>{error}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Modal Footer */}
+        <div
+          style={{
+            padding: "14px 22px",
+            borderTop: "1px solid #e2e8f0",
+            display: "flex",
+            justifyContent: draftId ? "space-between" : "flex-end",
+            alignItems: "center",
+            background: "#f8fafc",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
+          {draftId ? (
+            <Button
+              type="button"
+              className="secondary"
+              onClick={handleDeleteDraft}
+              disabled={busy}
+              style={{ color: "#dc2626", borderColor: "#fca5a5", fontSize: 13 }}
+            >
+              <Trash2 size={15} /> Delete Draft
+            </Button>
+          ) : null}
+
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <Button
+              type="button"
+              className="secondary"
+              onClick={onResumeEdit}
+              disabled={busy}
+              style={{ fontSize: 13 }}
+            >
+              <Pencil size={15} /> {draftId ? "Edit in Form" : "Back to Edit"}
+            </Button>
+
+            <Button
+              type="button"
+              className="primary"
+              onClick={handleConfirmPost}
+              disabled={busy || quoteLoading || Boolean(quoteError) || !quote?.quoteHash || displayItems.length === 0}
+              style={{
+                fontSize: 13,
+                padding: "8px 18px",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                fontWeight: 700,
+              }}
+            >
+              {busy ? (
+                <>
+                  <RefreshCw size={15} className="spin" /> Posting Bill…
+                </>
+              ) : quoteLoading ? (
+                <>
+                  <RefreshCw size={15} className="spin" /> Verifying…
+                </>
+              ) : (
+                <>
+                  <Check size={16} /> Confirm & Post Bill
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RetailCigSalesPage({
+  date,
+  masters,
+  dashboard,
+  owner: _owner,
+  excludeSalesmanId,
+  initialSalesmanId,
+  onSelect,
+  onStatement,
+  addSalesmanOpen,
+  setAddSalesmanOpen,
+  restoreDraftRecord,
+  onClearRestoreDraft,
+  activeView: externalActiveView,
+  onViewChange,
+}: {
+  date: string;
+  masters: Row;
+  dashboard?: Row;
+  owner: boolean;
+  excludeSalesmanId?: string;
+  initialSalesmanId?: string | null;
+  onSelect: (id: string) => void;
+  onStatement: (id: string) => void;
+  addSalesmanOpen: boolean;
+  setAddSalesmanOpen: (open: boolean) => void;
+  restoreDraftRecord?: Row | null;
+  onClearRestoreDraft?: () => void;
+  activeView?: "ledger" | "new_bill" | "receive_money" | "register" | "saved_drafts";
+  onViewChange?: (view: "ledger" | "new_bill" | "receive_money" | "register" | "saved_drafts") => void;
+}) {
+  const qc = useQueryClient();
+  const salesmenList = arr(masters.salesmen).filter(
+    (s) => s.active && (!excludeSalesmanId || s.id !== excludeSalesmanId)
+  );
+
+  // Retail Cigs summary for all retail cigarette salesmen (excluding Mubashir)
+  const retailSummaryQuery = useQuery({
+    queryKey: ["retail-cig-summary", excludeSalesmanId || "", date],
+    queryFn: () =>
+      api(
+        `retail-cig/summary?date=${encodeURIComponent(date)}${excludeSalesmanId ? `&excludeSalesmanId=${encodeURIComponent(excludeSalesmanId)}` : ""}`,
+      ),
+  });
+  const retailStats = (retailSummaryQuery.data ?? {}) as Row;
+
+  const [selectedSalesmanId, setSelectedSalesmanId] = useState<string>(
+    initialSalesmanId || str(salesmenList[0]?.id ?? "")
+  );
+
+  useEffect(() => {
+    if (initialSalesmanId) {
+      setSelectedSalesmanId(initialSalesmanId);
+      setBillSalesmanId(initialSalesmanId);
+      setReceiveSalesmanId(initialSalesmanId);
+    }
+  }, [initialSalesmanId]);
+
+  // Sub-views: "ledger" | "new_bill" | "receive_money" | "register" | "saved_drafts"
+  const [internalView, setInternalView] = useState<
+    "ledger" | "new_bill" | "receive_money" | "register" | "saved_drafts"
+  >(externalActiveView ?? "ledger");
+  const activeView = externalActiveView ?? internalView;
+  const setActiveView = (nextView: "ledger" | "new_bill" | "receive_money" | "register" | "saved_drafts") => {
+    setInternalView(nextView);
+    onViewChange?.(nextView);
+  };
+
+  const switchView = (nextView: "ledger" | "new_bill" | "receive_money" | "register" | "saved_drafts") => {
+    setBillSuccess(null);
+    setBillError("");
+    setReceiveSuccess("");
+    setReceiveError("");
+    if (nextView === "new_bill") {
+      // Direct click on New Bill tab clears form completely
+      setBillSalesmanId("");
+      setBillRowIds([crypto.randomUUID()]);
+      setBillRowProducts({});
+      setQuantities({});
+      setConfectioneryRows([]);
+      setBillDiscount("");
+      setBillNote("");
+      setBillPaperRef("");
+      setBillWithPayments(false);
+      setBillCashPay("");
+      setBillOnlinePay("");
+      setBillPaymentNote("");
+      setBillDraft(null);
+      setBillDraftNotice("");
+    }
+    setActiveView(nextView);
+  };
+
+  // --- NEW BILL STATE ---
+  const [billSalesmanId, setBillSalesmanId] = useState<string>(initialSalesmanId || "");
+  useEffect(() => {
+    if (selectedSalesmanId) {
+      setBillSalesmanId(selectedSalesmanId);
+    }
+  }, [selectedSalesmanId]);
+
+  const [billDate, setBillDate] = useState(date);
+  const [billRowIds, setBillRowIds] = useState<string[]>(() => [crypto.randomUUID()]);
+  const [billRowProducts, setBillRowProducts] = useState<Record<string, string>>({});
+  const [quantities, setQuantities] = useState<Record<string, string>>({});
+  const [hasConfectionery, setHasConfectionery] = useState(false);
+  const [confectioneryRows, setConfectioneryRows] = useState<ConfectioneryRowItem[]>([]);
+  const [billDiscount, setBillDiscount] = useState("");
+
+  const cigaretteProducts = useMemo(
+    () => arr(masters.products).filter((x) => x.active && (x.category === "CG-01 CIGARETTE" || x.category === "cigarette" || !x.category)),
+    [masters.products]
+  );
+  const confectioneryProducts = useMemo(
+    () => arr(masters.products).filter((x) => x.active && (x.category === "CF-05 CONFECTIONERY" || x.category === "confectionery")),
+    [masters.products]
+  );
+
+  const handleProductScanned = (scannedProduct: Row) => {
+    const prodId = str(scannedProduct.id);
+    let targetRowId = billRowIds.find((id) => billRowProducts[id] === prodId);
+
+    if (!targetRowId) {
+      // Find empty row or create new
+      const emptyRowId = billRowIds.find((id) => !billRowProducts[id]);
+      if (emptyRowId) {
+        targetRowId = emptyRowId;
+        setBillRowProducts((prev) => ({ ...prev, [emptyRowId]: prodId }));
+      } else {
+        const newId = crypto.randomUUID();
+        targetRowId = newId;
+        setBillRowIds((prev) => [...prev, newId]);
+        setBillRowProducts((prev) => ({ ...prev, [newId]: prodId }));
+      }
+    }
+
+    setTimeout(() => {
+      const el =
+        (document.getElementById(`qty-input-${targetRowId}`) as HTMLInputElement | null) ||
+        (document.getElementById(`qty-input-m-${targetRowId}`) as HTMLInputElement | null);
+      if (el) {
+        el.focus();
+        el.select?.();
+      }
+    }, 50);
+  };
+
+  const [barcodeNotFoundCode, setBarcodeNotFoundCode] = useState<string | null>(null);
+
+  useGlobalBarcodeScanner({
+    enabled: activeView === "new_bill",
+    products: cigaretteProducts,
+    onProductScanned: handleProductScanned,
+    onRestoreQuantity: (rowId, prevVal) => {
+      setQuantities((prev) => ({ ...prev, [rowId]: prevVal }));
+    },
+    onScanNotFound: (rawBarcode) => {
+      setBarcodeNotFoundCode(rawBarcode);
+    },
+  });
+  const [billNote, setBillNote] = useState("");
+  const [billPaperRef, setBillPaperRef] = useState("");
+  const [billWithPayments, setBillWithPayments] = useState(false);
+  const [billCashPay, setBillCashPay] = useState("");
+  const [billOnlinePay, setBillOnlinePay] = useState("");
+  const [billPaymentNote, setBillPaymentNote] = useState("");
+  const [billCashAccountId, setBillCashAccountId] = useState("");
+  const [billBankAccountId, setBillBankAccountId] = useState("");
+  const [billBusy, setBillBusy] = useState(false);
+  const [billError, setBillError] = useState("");
+  const [billSuccess, setBillSuccess] = useState<{ text: string; billNo?: string; billId?: string } | null>(null);
+  const [billDraft, setBillDraft] = useState<{ id?: string; version?: number } | null>(null);
+  const [billDraftNotice, setBillDraftNotice] = useState("");
+  const [reviewDraftRecord, setReviewDraftRecord] = useState<Row | null>(null);
+
+  // Query retail bill drafts
+  const draftsQuery = useQuery({
+    queryKey: ["drafts"],
+    queryFn: () => api("drafts", rowsSchema),
+  });
+  const retailBillDrafts = (draftsQuery.data ?? []).filter(
+    (d) => (d.data as Row)?.name === "bill",
+  );
+
+  // Helper to load draft into retail bill form
+  const loadDraftIntoRetailBill = (draftRow: Row) => {
+    const data = (draftRow.data ?? {}) as Row;
+    const values = (data.values ?? {}) as Row;
+    const sId = str(data.salesmanId || values.salesmanId || "");
+    if (sId) {
+      setBillSalesmanId(sId);
+      setSelectedSalesmanId(sId);
+    }
+    const dDate = str(data.date || values.date || "");
+    if (dDate) setBillDate(dDate);
+
+    if (Array.isArray(data.rowIds) && data.rowIds.length > 0) {
+      setBillRowIds(data.rowIds.map(String));
+    } else if (data.rowProducts && typeof data.rowProducts === "object") {
+      const keys = Object.keys(data.rowProducts);
+      setBillRowIds(keys.length > 0 ? keys : [crypto.randomUUID()]);
+    }
+    if (data.rowProducts && typeof data.rowProducts === "object") {
+      setBillRowProducts(data.rowProducts as Record<string, string>);
+    }
+    if (data.quantities && typeof data.quantities === "object") {
+      setQuantities(data.quantities as Record<string, string>);
+    }
+    if (typeof data.hasConfectionery === "boolean") {
+      setHasConfectionery(data.hasConfectionery);
+    } else if (Array.isArray(data.confectioneryRows) && data.confectioneryRows.length > 0) {
+      setHasConfectionery(true);
+    } else {
+      setHasConfectionery(false);
+    }
+    if (Array.isArray(data.confectioneryRows)) {
+      setConfectioneryRows(data.confectioneryRows as ConfectioneryRowItem[]);
+    } else {
+      setConfectioneryRows([]);
+    }
+    setBillDiscount(str(data.discount || (data.values as Row | undefined)?.discount || ""));
+
+    setBillNote(str(data.note || values.note || ""));
+    setBillPaperRef(str(data.paperReference || values.paperReference || ""));
+
+    const payment = (data.payment ?? {}) as Row;
+    const withPay = data.withPayments ?? payment.withPayments;
+    setBillWithPayments(Boolean(withPay));
+    setBillCashPay(str(data.cashPay || payment.cashPay || ""));
+    setBillOnlinePay(str(data.onlinePay || payment.onlinePay || ""));
+    setBillPaymentNote(str(data.paymentNote || payment.bankRef || ""));
+    if (data.cashAccountId || payment.cashId) {
+      setBillCashAccountId(str(data.cashAccountId || payment.cashId));
+    }
+    if (data.bankAccountId || payment.bankId) {
+      setBillBankAccountId(str(data.bankAccountId || payment.bankId));
+    }
+
+    setBillDraft({ id: str(draftRow.id), version: Number(draftRow.version) });
+    setBillDraftNotice(`Restored draft from ${str(draftRow.created_at)}.`);
+    setBillError("");
+    setBillSuccess(null);
+    setActiveView("new_bill");
+  };
+
+  useEffect(() => {
+    if (restoreDraftRecord) {
+      loadDraftIntoRetailBill(restoreDraftRecord);
+      onClearRestoreDraft?.();
+    }
+  }, [restoreDraftRecord]);
+
+  // --- RECEIVE MONEY STATE ---
+  const [receiveSalesmanId, setReceiveSalesmanId] = useState<string>(
+    selectedSalesmanId || str(salesmenList[0]?.id ?? "")
+  );
+  useEffect(() => {
+    if (selectedSalesmanId) {
+      setReceiveSalesmanId(selectedSalesmanId);
+    }
+  }, [selectedSalesmanId]);
+
+  const [receivePaymentDate, setReceivePaymentDate] = useState(date);
+  const [receiveCashAmount, setReceiveCashAmount] = useState("");
+  const [receiveBankAmount, setReceiveBankAmount] = useState("");
+  const [receiveCashAccountId, setReceiveCashAccountId] = useState("");
+  const [receiveBankAccountId, setReceiveBankAccountId] = useState("");
+  const [receiveNote, setReceiveNote] = useState("");
+  const [receiveBusy, setReceiveBusy] = useState(false);
+  const [receiveError, setReceiveError] = useState("");
+  const [receiveSuccess, setReceiveSuccess] = useState("");
+
+  // --- LEDGER SEARCH STATE ---
+  const [ledgerSearch, setLedgerSearch] = useState("");
+  const [ledgerFilter, setLedgerFilter] = useState<"all" | "due" | "advance">("all");
+
+  const accounts = arr(masters.accounts);
+  const defaultCash = str(accounts.find((a) => a.type === "cash")?.id ?? accounts[0]?.id ?? "");
+  const defaultBank = str(accounts.find((a) => a.type === "bank")?.id ?? accounts[0]?.id ?? "");
+  const activeBillCashId = billCashAccountId || defaultCash;
+  const activeBillBankId = billBankAccountId || defaultBank;
+  const activeReceiveCashId = receiveCashAccountId || defaultCash;
+  const activeReceiveBankId = receiveBankAccountId || defaultBank;
+
+  // Estimated bill total & subtotals
+  const {
+    cigSubtotal,
+    cigTotalQty,
+    confSubtotal,
+    confTotalQty,
+    grossSubtotal,
+    estimatedDiscount,
+    estimatedBillTotal,
+    estimatedTotalQty,
+  } = (() => {
+    let sum = 0;
+    let qtySum = 0;
+    for (const rId of billRowIds) {
+      const pId = billRowProducts[rId];
+      const rawQ = (quantities[rId] ?? "").trim();
+      const qStr = rawQ.startsWith(".") ? "0" + rawQ : rawQ;
+      const q = Number(qStr);
+      if (!isNaN(q) && q > 0) {
+        qtySum += q;
+      }
+      const prod = arr(masters.products).find((x) => str(x.id) === pId);
+      if (!prod || !prod.rate) continue;
+      const r = Number(prod.rate);
+      const b = Number(prod.basis || 1) || 1;
+      if (isNaN(q) || isNaN(r) || q <= 0 || r <= 0) continue;
+      sum += (q * r) / b;
+    }
+    let confSum = 0;
+    let confQtySum = 0;
+    if (hasConfectionery) {
+      for (const cr of confectioneryRows) {
+        const rawQ = cr.quantity.trim();
+        const qStr = rawQ.startsWith(".") ? "0" + rawQ : rawQ;
+        const q = Number(qStr);
+        const rawR = cr.rate.trim();
+        const rStr = rawR.startsWith(".") ? "0" + rawR : rawR;
+        const r = Number(rStr);
+        if (!isNaN(q) && q > 0) {
+          confQtySum += q;
+        }
+        if (!isNaN(q) && !isNaN(r) && q > 0 && r > 0) {
+          confSum += q * r;
+        }
+      }
+    }
+    const totalGross = sum + confSum;
+    const cleanDisc = cleanMoney(billDiscount);
+    const discNum = cleanDisc ? parseMoneyNumber(cleanDisc) : 0;
+    const netSum = Math.max(0, totalGross - (isNaN(discNum) ? 0 : discNum));
+    const totalQty = qtySum + confQtySum;
+    const fmtQty = (q: number) =>
+      Number.isInteger(q) ? String(q) : (Math.round(q * 100) / 100).toFixed(2);
+
+    return {
+      cigSubtotal: sum > 0 ? (Math.round(sum * 100) / 100).toFixed(2) : "0.00",
+      cigTotalQty: fmtQty(qtySum),
+      confSubtotal: confSum > 0 ? (Math.round(confSum * 100) / 100).toFixed(2) : "0.00",
+      confTotalQty: fmtQty(confQtySum),
+      grossSubtotal: totalGross > 0 ? (Math.round(totalGross * 100) / 100).toFixed(2) : "0.00",
+      estimatedDiscount: discNum > 0 ? (Math.round(discNum * 100) / 100).toFixed(2) : "0.00",
+      estimatedBillTotal: netSum > 0 ? (Math.round(netSum * 100) / 100).toFixed(2) : "0.00",
+      estimatedTotalQty: fmtQty(totalQty),
+    };
+  })();
+
+  const handleCreateBill = async (e?: React.SyntheticEvent) => {
+    e?.preventDefault();
+    setBillError("");
+    setBillSuccess(null);
+
+    if (!billSalesmanId) {
+      setBillError("Please select a salesman.");
+      return;
+    }
+
+    const lines: Array<{
+      productId?: string;
+      name?: string;
+      code?: string;
+      category?: string;
+      quantity: string;
+      rate?: string;
+    }> = [];
+    for (const rId of billRowIds) {
+      const pId = billRowProducts[rId];
+      const rawQ = (quantities[rId] ?? "").trim();
+      const qStr = rawQ.startsWith(".") ? "0" + rawQ : rawQ;
+      if (pId && Number(qStr) > 0) {
+        lines.push({ productId: pId, quantity: qStr, category: "CG-01 CIGARETTE" });
+      }
+    }
+    if (hasConfectionery) {
+      for (const cr of confectioneryRows) {
+        const rawQ = cr.quantity.trim();
+        const qStr = rawQ.startsWith(".") ? "0" + rawQ : rawQ;
+        const rawR = cr.rate.trim();
+        const rStr = rawR.startsWith(".") ? "0" + rawR : rawR;
+        if (Number(qStr) > 0 && Number(rStr) > 0 && (cr.productId || cr.name.trim())) {
+          lines.push({
+            ...(cr.productId ? { productId: cr.productId } : {}),
+            name: cr.name.trim() || undefined,
+            code: cr.code.trim() || undefined,
+            category: "CF-05 CONFECTIONERY",
+            quantity: qStr,
+            rate: rStr,
+          });
+        }
+      }
+    }
+
+    if (lines.length === 0) {
+      setBillError("Please add at least one cigarette or confectionery item with quantity > 0.");
+      return;
+    }
+
+    if (billWithPayments) {
+      const cleanCash = cleanMoney(billCashPay);
+      const cleanOnline = cleanMoney(billOnlinePay);
+      const hasCash = Boolean(cleanCash && parseMoneyNumber(cleanCash) > 0);
+      const hasOnline = Boolean(cleanOnline && parseMoneyNumber(cleanOnline) > 0);
+      if (!hasCash && !hasOnline) {
+        setBillError("Enter at least one payment amount (cash or online) or uncheck 'Record payment'.");
+        return;
+      }
+    }
+
+    const sObj = salesmenList.find((s) => str(s.id) === billSalesmanId);
+    setReviewDraftRecord({
+      id: billDraft?.id || "",
+      data: {
+        name: "bill",
+        salesmanId: billSalesmanId,
+        salesmanName: sObj ? str(sObj.name) : "",
+        date: billDate,
+        rowIds: billRowIds,
+        rowProducts: billRowProducts,
+        quantities,
+        hasConfectionery,
+        confectioneryRows,
+        discount: billDiscount,
+        note: billNote,
+        paperReference: billPaperRef,
+        withPayments: billWithPayments,
+        cashPay: billCashPay,
+        onlinePay: billOnlinePay,
+        paymentNote: billPaymentNote,
+        cashAccountId: activeBillCashId,
+        bankAccountId: activeBillBankId,
+      },
+    });
+  };
+
+  const handleSaveDraft = async () => {
+    setBillBusy(true);
+    setBillError("");
+    setBillDraftNotice("");
+    try {
+      const sObj = salesmenList.find((s) => str(s.id) === billSalesmanId);
+      const r = await api("drafts", rowSchema, {
+        ...(billDraft ?? {}),
+        data: {
+          name: "bill",
+          salesmanId: billSalesmanId,
+          salesmanName: sObj ? str(sObj.name) : "",
+          date: billDate,
+          rowIds: billRowIds,
+          rowProducts: billRowProducts,
+          quantities,
+          hasConfectionery,
+          confectioneryRows,
+          discount: billDiscount,
+          note: billNote,
+          paperReference: billPaperRef,
+          withPayments: billWithPayments,
+          cashPay: billCashPay,
+          onlinePay: billOnlinePay,
+          paymentNote: billPaymentNote,
+          cashAccountId: billCashAccountId,
+          bankAccountId: billBankAccountId,
+          // Support generic CommandPage shape as well
+          values: {
+            salesmanId: billSalesmanId,
+            salesmanName: sObj ? str(sObj.name) : "",
+            date: billDate,
+            note: billNote,
+            paperReference: billPaperRef,
+          },
+          payment: {
+            withPayments: billWithPayments,
+            cashPay: billCashPay,
+            onlinePay: billOnlinePay,
+            cashId: billCashAccountId,
+            bankId: billBankAccountId,
+            bankRef: billPaymentNote,
+          },
+        },
+      });
+      setBillDraft({ id: str(r.id), version: Number(r.version) });
+      setBillDraftNotice("Draft saved. No financial posting.");
+      await qc.invalidateQueries({ queryKey: ["drafts"] });
+    } catch (e) {
+      setBillError((e as Error).message);
+    } finally {
+      setBillBusy(false);
+    }
+  };
+
+  const handleReceiveMoney = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setReceiveError("");
+    setReceiveSuccess("");
+
+    if (!receiveSalesmanId) {
+      setReceiveError("Please select a salesman.");
+      return;
+    }
+
+    const cleanCash = cleanMoney(receiveCashAmount);
+    const cleanBank = cleanMoney(receiveBankAmount);
+    const hasCash = Boolean(cleanCash && parseMoneyNumber(cleanCash) > 0);
+    const hasBank = Boolean(cleanBank && parseMoneyNumber(cleanBank) > 0);
+    if (!hasCash && !hasBank) {
+      setReceiveError("Enter either a cash amount or a bank amount.");
+      return;
+    }
+
+    setReceiveBusy(true);
+    try {
+      const receipts: Row[] = [];
+      if (hasCash) {
+        receipts.push({
+          amount: cleanCash,
+          accountId: activeReceiveCashId,
+          method: "cash",
+          actualDate: receivePaymentDate,
+          reference: "",
+          verified: false,
+        });
+      }
+      if (hasBank) {
+        receipts.push({
+          amount: cleanBank,
+          accountId: activeReceiveBankId,
+          method: "online",
+          actualDate: receivePaymentDate,
+          reference: receiveNote || "Online payment",
+          verified: false,
+        });
+      }
+
+      await api(
+        "commands/receiptBatch",
+        commandResult,
+        {
+          date: receivePaymentDate,
+          salesmanId: receiveSalesmanId,
+          note: receiveNote,
+          receipts,
+        },
+        "POST",
+        crypto.randomUUID()
+      );
+
+      setReceiveSuccess("Payment recorded successfully.");
+      setReceiveCashAmount("");
+      setReceiveBankAmount("");
+      setReceiveNote("");
+      await qc.invalidateQueries();
+    } catch (err) {
+      setReceiveError((err as Error).message);
+    } finally {
+      setReceiveBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      {/* 1. Stats Metric Cards */}
+      <div
+        className="stats"
+        style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}
+      >
+        <Metric
+          label="Customers Dues"
+          value={retailStats.customerDues ?? "0.00"}
+          caption={`Overall billed: ${rupees(retailStats.totalBilled ?? "0.00")} · Received: ${rupees(retailStats.totalReceived ?? "0.00")}`}
+          accent
+        />
+        <Metric
+          label="Total Products Sold"
+          value={retailStats.todayQty ?? "0"}
+          caption={`Today: ${retailStats.todayQty ?? "0"} · Overall: ${retailStats.totalQty ?? "0"}`}
+          icon={FileText}
+          tone="bills"
+          isCurrency={false}
+        />
+        <Metric
+          label="Today's Billed"
+          value={retailStats.todayBilled ?? "0.00"}
+          caption={formatBilledCaption(
+            retailStats.todayGrossBilled ?? retailStats.todayBilled,
+            retailStats.todayReversed,
+            retailStats.todayReturned,
+          )}
+          tone="bills"
+        />
+        <Metric
+          label="Today's Received"
+          value={retailStats.todayReceived ?? "0.00"}
+          caption="Total collections received today"
+          icon={IndianRupee}
+          tone="cash"
+        />
+      </div>
+
+      {/* 3. Sub-Navigation Tabs */}
+      <div className="direct-cig-tabs-line">
+        <button
+          type="button"
+          className={`direct-cig-tab-btn ${activeView === "ledger" ? "active" : ""}`}
+          onClick={() => switchView("ledger")}
+        >
+          <Users size={17} /> Salesmen / Ledger
+        </button>
+        <button
+          type="button"
+          className={`direct-cig-tab-btn ${activeView === "new_bill" ? "active" : ""}`}
+          onClick={() => switchView("new_bill")}
+        >
+          <FileText size={17} /> New Bill
+        </button>
+        <button
+          type="button"
+          className={`direct-cig-tab-btn ${activeView === "receive_money" ? "active" : ""}`}
+          onClick={() => switchView("receive_money")}
+        >
+          <IndianRupee size={17} /> Receive Money
+        </button>
+        <button
+          type="button"
+          className={`direct-cig-tab-btn ${activeView === "register" ? "active" : ""}`}
+          onClick={() => switchView("register")}
+        >
+          <Layers size={17} /> Register
+        </button>
+        <button
+          type="button"
+          className={`direct-cig-tab-btn ${activeView === "saved_drafts" ? "active" : ""}`}
+          onClick={() => switchView("saved_drafts")}
+        >
+          <Layers size={17} /> Saved Drafts {retailBillDrafts.length > 0 ? `(${retailBillDrafts.length})` : ""}
+        </button>
+      </div>
+
+      {billSuccess && (
+        <div
+          style={{
+            background: "#f0fdf4",
+            border: "1px solid #86efac",
+            borderRadius: 10,
+            padding: "12px 16px",
+            color: "#166534",
+            marginBottom: 16,
+            fontWeight: 600,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 8,
+            boxShadow: "0 2px 4px rgba(22, 101, 52, 0.08)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <CheckCircle2 size={18} color="#16a34a" />
+            <span>{billSuccess.text}</span>
+            {billSuccess.billId ? (
+              <button
+                type="button"
+                onClick={() => onSelect(billSuccess.billId!)}
+                style={{
+                  background: "#16a34a",
+                  color: "#ffffff",
+                  border: "none",
+                  borderRadius: 6,
+                  padding: "4px 12px",
+                  fontSize: 13,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  transition: "background 0.15s ease",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "#15803d")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "#16a34a")}
+                title="Click to view and print this bill"
+              >
+                <span>{billSuccess.billNo || "View Bill"}</span>
+                <ExternalLink size={13} />
+              </button>
+            ) : (
+              <strong style={{ color: "#166534" }}>{billSuccess.billNo}</strong>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => setBillSuccess(null)}
+            style={{ background: "none", border: "none", color: "#166534", cursor: "pointer", padding: "0 4px", fontSize: 16, lineHeight: 1 }}
+            aria-label="Dismiss success message"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* VIEW 1: SALESMEN LEDGER TABLE */}
+      {activeView === "ledger" && (
+        <section className="panel" style={{ padding: "16px 18px" }}>
+          {addSalesmanOpen && (
+            <div style={{ marginBottom: 20 }}>
+              <MasterForm
+                kind="salesmen"
+                date={date}
+                onDone={() => setAddSalesmanOpen(false)}
+              />
+            </div>
+          )}
+
+          <div className="direct-cig-ledger-header">
+            <div>
+              <h2 style={{ margin: 0, fontSize: 18 }}>Salesmen Dues & Ledger</h2>
+              <p className="muted" style={{ margin: "4px 0 0", fontSize: 12 }}>
+                Retail cigarette salesmen personally owe for billed stock. Tap any row to view statement.
+              </p>
+            </div>
+            <div className="direct-cig-search-wrap">
+              <input
+                type="search"
+                className="direct-cig-search-input"
+                placeholder="Search salesman name or code…"
+                value={ledgerSearch}
+                onChange={(e) => setLedgerSearch(e.target.value)}
+              />
+              <div style={{ display: "inline-flex", gap: 4 }}>
+                <Button
+                  className={ledgerFilter === "all" ? "primary" : "secondary"}
+                  onClick={() => setLedgerFilter("all")}
+                  style={{ padding: "6px 12px", minHeight: 38, fontSize: 12 }}
+                >
+                  All
+                </Button>
+                <Button
+                  className={ledgerFilter === "due" ? "primary" : "secondary"}
+                  onClick={() => setLedgerFilter("due")}
+                  style={{ padding: "6px 12px", minHeight: 38, fontSize: 12 }}
+                >
+                  Still to receive
+                </Button>
+                <Button
+                  className={ledgerFilter === "advance" ? "primary" : "secondary"}
+                  onClick={() => setLedgerFilter("advance")}
+                  style={{ padding: "6px 12px", minHeight: 38, fontSize: 12 }}
+                >
+                  Advances
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          {(() => {
+            const people = dashboard ? arr(dashboard.people) : arr(masters.salesmen);
+            const visibleSalesmen = people
+              .filter(
+                (p) =>
+                  !excludeSalesmanId || str(p.id) !== excludeSalesmanId
+              )
+              .filter((p) =>
+                (str(p.name) + " " + str(p.code))
+                  .toLowerCase()
+                  .includes(ledgerSearch.toLowerCase())
+              )
+              .filter((p) => {
+                const bal = str(p.balance ?? "0.00");
+                if (ledgerFilter === "advance") return bal.startsWith("-");
+                if (ledgerFilter === "due") return !bal.startsWith("-") && bal !== "0.00";
+                return true;
+              })
+              .sort((a, b) => {
+                const balA = parseFloat(str(a.balance ?? "0"));
+                const balB = parseFloat(str(b.balance ?? "0"));
+                return balB - balA; // Highest outstanding dues first
+              });
+
+            if (visibleSalesmen.length === 0) {
+              return (
+                <div style={{ padding: 30, textAlign: "center", color: "#64748b" }}>
+                  <p>No salesmen match your search filter.</p>
+                </div>
+              );
+            }
+
+            return (
+              <>
+                {/* Desktop Table View */}
+                <div className="direct-cig-table-desktop">
+                  <div className="table-scroll">
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr style={{ background: "#f8fafc", textAlign: "left", borderBottom: "2px solid #e2e8f0" }}>
+                          <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#64748b" }}>SALESMAN CODE</th>
+                          <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#64748b" }}>SALESMAN NAME</th>
+                          <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#64748b", textAlign: "right" }}>OUTSTANDING DUE</th>
+                          <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#64748b", textAlign: "center", minWidth: 240 }}>ACTIONS</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {visibleSalesmen.map((s) => {
+                          const balStr = str(s.balance ?? "0.00");
+                          const balNum = parseFloat(balStr);
+                          const isAdvance = balStr.startsWith("-");
+                          const hasDue = balNum > 0;
+
+                          return (
+                            <tr
+                              key={str(s.id)}
+                              style={{
+                                borderBottom: "1px solid #f1f5f9",
+                                cursor: "pointer",
+                                background: "#ffffff",
+                              }}
+                              onClick={() => onStatement(str(s.id))}
+                            >
+                              <td style={{ padding: "10px 12px", fontFamily: "monospace", fontSize: 12, color: "#64748b" }}>
+                                {str(s.code)}
+                              </td>
+                              <td style={{ padding: "10px 12px", fontWeight: 600, color: "#1e293b" }}>
+                                {str(s.name)}
+                              </td>
+                              <td
+                                style={{
+                                  padding: "10px 12px",
+                                  textAlign: "right",
+                                  fontWeight: 700,
+                                  fontSize: 14,
+                                  color: isAdvance ? "#16a34a" : hasDue ? "#dc2626" : "#475569",
+                                }}
+                              >
+                                {isAdvance ? `(Advance) ${rupees(s.balance)}` : rupees(s.balance)}
+                              </td>
+                              <td style={{ padding: "10px 12px", textAlign: "center" }}>
+                                <div style={{ display: "inline-flex", gap: 6, alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setBillSalesmanId(str(s.id));
+                                      setSelectedSalesmanId(str(s.id));
+                                      setActiveView("new_bill");
+                                    }}
+                                    title={`Create new bill for ${str(s.name)}`}
+                                    style={{
+                                      background: "#f8fafc",
+                                      border: "1px solid #cbd5e1",
+                                      padding: "4px 8px",
+                                      borderRadius: 6,
+                                      fontSize: 11,
+                                      fontWeight: 600,
+                                      cursor: "pointer",
+                                      color: "#0f172a",
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: 3,
+                                    }}
+                                  >
+                                    <Plus size={12} /> Bill
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setReceiveSalesmanId(str(s.id));
+                                      setSelectedSalesmanId(str(s.id));
+                                      setActiveView("receive_money");
+                                    }}
+                                    title={`Receive money from ${str(s.name)}`}
+                                    style={{
+                                      background: "#f8fafc",
+                                      border: "1px solid #cbd5e1",
+                                      padding: "4px 8px",
+                                      borderRadius: 6,
+                                      fontSize: 11,
+                                      fontWeight: 600,
+                                      cursor: "pointer",
+                                      color: "#0f172a",
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: 3,
+                                    }}
+                                  >
+                                    <IndianRupee size={12} /> Receive
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => onStatement(str(s.id))}
+                                    title={`View passbook statement for ${str(s.name)}`}
+                                    style={{
+                                      background: "#f8fafc",
+                                      border: "1px solid #cbd5e1",
+                                      padding: "4px 8px",
+                                      borderRadius: 6,
+                                      fontSize: 11,
+                                      fontWeight: 600,
+                                      cursor: "pointer",
+                                      color: "#0f172a",
+                                    }}
+                                  >
+                                    Statement →
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Mobile Cards View */}
+                <div className="direct-cig-cards-mobile">
+                  {visibleSalesmen.map((s) => {
+                    const balStr = str(s.balance ?? "0.00");
+                    const balNum = parseFloat(balStr);
+                    const isAdvance = balStr.startsWith("-");
+                    const hasDue = balNum > 0;
+
+                    return (
+                      <div
+                        key={str(s.id)}
+                        className="customer-mobile-card"
+                        onClick={() => onStatement(str(s.id))}
+                      >
+                        <div className="customer-card-header">
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div className="customer-card-name">{str(s.name)}</div>
+                            <div className="customer-card-code">Code: {str(s.code)}</div>
+                          </div>
+                          <span
+                            className="customer-card-beat"
+                            style={{
+                              background: s.active ? "#f0fdf4" : "#f1f5f9",
+                              color: s.active ? "#16a34a" : "#64748b",
+                            }}
+                          >
+                            {s.active ? "Active" : "Inactive"}
+                          </span>
+                        </div>
+
+                        <div style={{ margin: "8px 0", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
+                            {isAdvance ? "Advance Balance" : "Outstanding Due"}
+                          </span>
+                          <span
+                            style={{
+                              fontSize: 15,
+                              fontWeight: 700,
+                              color: isAdvance ? "#16a34a" : hasDue ? "#dc2626" : "#475569",
+                            }}
+                          >
+                            {rupees(s.balance)}
+                          </span>
+                        </div>
+
+                        <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            gap: 6,
+                            paddingTop: 8,
+                            borderTop: "1px solid #f1f5f9",
+                            marginTop: 4,
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setBillSalesmanId(str(s.id));
+                                setSelectedSalesmanId(str(s.id));
+                                setActiveView("new_bill");
+                              }}
+                              style={{
+                                background: "#f8fafc",
+                                border: "1px solid #cbd5e1",
+                                padding: "5px 10px",
+                                borderRadius: 6,
+                                fontSize: 11,
+                                fontWeight: 600,
+                                color: "#0f172a",
+                                cursor: "pointer",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 4,
+                              }}
+                            >
+                              <Plus size={12} /> Bill
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setReceiveSalesmanId(str(s.id));
+                                setSelectedSalesmanId(str(s.id));
+                                setActiveView("receive_money");
+                              }}
+                              style={{
+                                background: "#f8fafc",
+                                border: "1px solid #cbd5e1",
+                                padding: "5px 10px",
+                                borderRadius: 6,
+                                fontSize: 11,
+                                fontWeight: 600,
+                                color: "#0f172a",
+                                cursor: "pointer",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 4,
+                              }}
+                            >
+                              <IndianRupee size={12} /> Receive
+                            </button>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => onStatement(str(s.id))}
+                            style={{
+                              background: "none",
+                              border: "none",
+                              fontSize: 12,
+                              fontWeight: 700,
+                              color: "#64748b",
+                              cursor: "pointer",
+                              padding: "4px",
+                            }}
+                          >
+                            Statement →
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            );
+          })()}
+        </section>
+      )}
+
+      {/* VIEW 2: NEW BILL */}
+      {activeView === "new_bill" && (
+        <section
+          style={{
+            background: "#ffffff",
+            border: "1px solid #e2e8f0",
+            borderRadius: 16,
+            padding: "20px 18px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "flex-start",
+              flexWrap: "wrap",
+              gap: 12,
+              marginBottom: 16,
+            }}
+          >
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span
+                  style={{
+                    background: "#ffedd5",
+                    color: "#c2410c",
+                    padding: "4px 8px",
+                    borderRadius: 6,
+                    fontSize: 11,
+                    fontWeight: 700,
+                  }}
+                >
+                  INVOICE ENTRY
+                </span>
+                <h2 style={{ margin: 0, fontSize: 19, color: "#0f172a" }}>
+                  Create New Bill for Salesman
+                </h2>
+              </div>
+              <p className="muted" style={{ margin: "6px 0 0", fontSize: 12 }}>
+                Products billed here are personally owed by the salesman to the business.
+              </p>
+            </div>
+            {retailBillDrafts.length > 0 && (
+              <Button
+                className="secondary"
+                type="button"
+                onClick={() => switchView("saved_drafts")}
+                style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}
+              >
+                Saved Drafts ({retailBillDrafts.length})
+              </Button>
+            )}
+          </div>
+
+          {billDraftNotice && (
+            <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "10px 14px", color: "#1e40af", marginBottom: 14, fontSize: 13, fontWeight: 500, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>{billDraftNotice}</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setBillDraft(null);
+                  setBillDraftNotice("");
+                }}
+                style={{ background: "none", border: "none", color: "#6b7280", cursor: "pointer", fontSize: 12, fontWeight: 600 }}
+              >
+                Clear draft association
+              </button>
+            </div>
+          )}
+
+          {billError && (
+            <div role="alert" className="error" style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>{billError}</span>
+              <button
+                type="button"
+                onClick={() => setBillError("")}
+                style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", padding: "0 4px", fontSize: 16, lineHeight: 1 }}
+                aria-label="Dismiss error"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              // Accidental form submissions (e.g. from Enter keys) must NEVER post a live financial bill!
+              // At most, save as draft so no financial ledger mutation occurs.
+              handleSaveDraft();
+            }}
+            onKeyDown={(e) => {
+              if ((e.key === "Enter" || e.keyCode === 13) && (e.target as HTMLElement)?.tagName !== "TEXTAREA") {
+                // Prevent accidental submission when scanning or pressing Enter
+                e.preventDefault();
+              }
+            }}
+            style={{ display: "flex", flexDirection: "column", gap: 18 }}
+          >
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+                gap: 14,
+                background: "#f8fafc",
+                padding: "16px 16px",
+                borderRadius: 12,
+                border: "1px solid #e2e8f0",
+              }}
+            >
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>
+                  SALESMAN (DEBTOR) *
+                </label>
+                <select
+                  value={billSalesmanId}
+                  onChange={(e) => setBillSalesmanId(e.target.value)}
+                  required
+                  style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 14 }}
+                >
+                  <option value="">Select salesman…</option>
+                  {salesmenList.map((s) => (
+                    <option key={str(s.id)} value={str(s.id)}>
+                      {str(s.name)} ({str(s.code)})
+                    </option>
+                  ))}
+                </select>
+
+                <div style={{ marginTop: 10 }}>
+                  <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#64748b", marginBottom: 4 }}>
+                    BILL NOTES / REMARKS (OPTIONAL)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Special order remarks, delivery note…"
+                    value={billNote}
+                    onChange={(e) => setBillNote(e.target.value)}
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      borderRadius: 8,
+                      border: "1px solid #cbd5e1",
+                      fontSize: 13,
+                      background: "#ffffff",
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>
+                  BILL DATE *
+                </label>
+                <input
+                  type="date"
+                  value={billDate}
+                  onChange={(e) => setBillDate(e.target.value)}
+                  required
+                  style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 14 }}
+                />
+              </div>
+            </div>
+
+            {/* Barcode / Quick Code Scanner Input */}
+            <BarcodeScannerInput
+              products={cigaretteProducts}
+              onProductScanned={handleProductScanned}
+              externalNotFoundCode={barcodeNotFoundCode}
+              onClearNotFound={() => setBarcodeNotFoundCode(null)}
+              autoFocus={true}
+            />
+
+            {/* Bill Lines Desktop Table */}
+            <div className="bill-lines-desktop" style={{ border: "1px solid #e2e8f0", borderRadius: 12, overflow: "visible" }}>
+              <div className="table-scroll" style={{ overflow: "visible" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ background: "#f8fafc", textAlign: "left", borderBottom: "1px solid #e2e8f0" }}>
+                      <th style={{ width: 40, textAlign: "center", fontSize: 12, color: "#64748b" }}>#</th>
+                      <th style={{ width: 150, padding: "10px 12px", fontSize: 12, color: "#64748b" }}>PRODUCT ID</th>
+                      <th style={{ minWidth: 280, padding: "10px 12px", fontSize: 12, color: "#64748b" }}>PRODUCT NAME</th>
+                      <th style={{ width: 130, padding: "10px 12px", fontSize: 12, color: "#64748b" }}>QUANTITY</th>
+                      <th style={{ width: 130, padding: "10px 12px", fontSize: 12, color: "#64748b" }}>RATE</th>
+                      <th style={{ width: 140, textAlign: "right", padding: "10px 16px", fontSize: 12, color: "#64748b" }}>AMOUNT</th>
+                      <th style={{ width: 50, textAlign: "center" }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {billRowIds.map((rowId, index) => {
+                      const productId = billRowProducts[rowId] ?? "";
+                      const p = cigaretteProducts.find((x) => str(x.id) === productId);
+                      const quantity = quantities[rowId] ?? "";
+                      const normQty = quantity.trim().startsWith(".") ? "0" + quantity.trim() : quantity.trim();
+                      const lineAmount = (() => {
+                        if (!p || !p.rate) return null;
+                        const qNum = Number(normQty);
+                        const rNum = Number(p.rate);
+                        if (isNaN(qNum) || isNaN(rNum) || qNum <= 0 || rNum <= 0) return null;
+                        const basisNum = Number(p.basis || 1) || 1;
+                        return (Math.round((qNum * rNum / basisNum) * 100) / 100).toFixed(2);
+                      })();
+                      const disabledProductIds = [
+                        ...billRowIds.filter((id) => id !== rowId && billRowProducts[id]).map((id) => billRowProducts[id]),
+                        ...confectioneryRows.map((r) => r.productId).filter(Boolean),
+                      ];
+
+                      return (
+                        <tr key={rowId} style={{ borderBottom: "1px solid #f1f5f9", background: index % 2 === 0 ? "#ffffff" : "#fafafa" }}>
+                          <td style={{ textAlign: "center", color: "#94a3b8", fontSize: 13, fontWeight: 500 }}>
+                            {index + 1}
+                          </td>
+                          <td style={{ padding: "8px 12px" }}>
+                            <ProductIdSearchableSelect
+                              products={cigaretteProducts}
+                              selectedId={productId}
+                              disabledIds={disabledProductIds}
+                              onSelect={(selectedProdId) => {
+                                setBillRowProducts((prev) => ({ ...prev, [rowId]: selectedProdId }));
+                              }}
+                            />
+                          </td>
+                          <td style={{ padding: "8px 12px" }}>
+                            <ProductSearchableSelect
+                              products={cigaretteProducts}
+                              selectedId={productId}
+                              disabledIds={disabledProductIds}
+                              onSelect={(selectedProdId) => {
+                                setBillRowProducts((prev) => ({ ...prev, [rowId]: selectedProdId }));
+                              }}
+                            />
+                          </td>
+                          <td style={{ padding: "8px 12px" }}>
+                            <input
+                              id={`qty-input-${rowId}`}
+                              type="text"
+                              inputMode="decimal"
+                              placeholder="0"
+                              value={quantity}
+                              onChange={(e) => setQuantities((prev) => ({ ...prev, [rowId]: e.target.value }))}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.keyCode === 13) {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  // Jump back to scanner or next row
+                                  const scanInput = document.querySelector('input[placeholder*="Scan barcode"]') as HTMLInputElement;
+                                  if (scanInput) scanInput.focus();
+                                }
+                              }}
+                              style={{ width: "100%", padding: "7px 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 13 }}
+                            />
+                          </td>
+                          <td style={{ padding: "8px 12px", fontSize: 13, color: "#64748b" }}>
+                            {p?.rate ? rupees(p.rate) : "—"}
+                          </td>
+                          <td style={{ padding: "8px 16px", textAlign: "right", fontWeight: 700, fontSize: 14, color: "#0f172a" }}>
+                            {lineAmount ? rupees(lineAmount) : "—"}
+                          </td>
+                          <td style={{ textAlign: "center" }}>
+                            {billRowIds.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setBillRowIds((prev) => prev.filter((id) => id !== rowId));
+                                  setBillRowProducts((prev) => {
+                                    const next = { ...prev };
+                                    delete next[rowId];
+                                    return next;
+                                  });
+                                  setQuantities((prev) => {
+                                    const next = { ...prev };
+                                    delete next[rowId];
+                                    return next;
+                                  });
+                                }}
+                                style={{ background: "none", border: "none", color: "#dc2626", cursor: "pointer", padding: 4 }}
+                                title="Delete row"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div style={{ padding: "14px 20px", background: "#f8fafc", display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid #e2e8f0" }}>
+                <Button
+                  className="secondary"
+                  type="button"
+                  onClick={() => setBillRowIds((prev) => [...prev, crypto.randomUUID()])}
+                  style={{ display: "flex", alignItems: "center", gap: 6 }}
+                >
+                  <Plus size={16} /> Add Product Line
+                </Button>
+                <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, paddingRight: 16, borderRight: "1px solid #cbd5e1" }}>
+                    <span style={{ fontSize: 13, color: "#64748b", fontWeight: 500 }}>Cigarettes Qty:</span>
+                    <strong style={{ fontSize: 16, color: "#0f172a" }}>{cigTotalQty} units</strong>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 13, color: "#64748b", fontWeight: 500 }}>Cigarettes Subtotal:</span>
+                    <strong style={{ fontSize: 18, color: "#0f172a" }}>{rupees(cigSubtotal)}</strong>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Bill Lines: Mobile */}
+            <div className="bill-lines-mobile">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#475569", textTransform: "uppercase" }}>
+                  Items ({billRowIds.length})
+                </span>
+              </div>
+
+              {billRowIds.map((rowId, index) => {
+                const productId = billRowProducts[rowId] ?? "";
+                const p = cigaretteProducts.find((x) => str(x.id) === productId);
+                const quantity = quantities[rowId] ?? "";
+                const normQty = quantity.trim().startsWith(".") ? "0" + quantity.trim() : quantity.trim();
+                const lineAmount = (() => {
+                  if (!p || !p.rate) return null;
+                  const qNum = Number(normQty);
+                  const rNum = Number(p.rate);
+                  if (isNaN(qNum) || isNaN(rNum) || qNum <= 0 || rNum <= 0) return null;
+                  const basisNum = Number(p.basis || 1) || 1;
+                  return (Math.round((qNum * rNum / basisNum) * 100) / 100).toFixed(2);
+                })();
+                const disabledProductIds = [
+                  ...billRowIds.filter((id) => id !== rowId && billRowProducts[id]).map((id) => billRowProducts[id]),
+                  ...confectioneryRows.map((r) => r.productId).filter(Boolean),
+                ];
+
+                return (
+                  <div key={rowId} className={`bill-line-card-mobile ${p ? "active-line" : ""}`}>
+                    <div className="bill-line-card-header">
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>
+                        ITEM #{index + 1}
+                      </span>
+                      {billRowIds.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBillRowIds((prev) => prev.filter((id) => id !== rowId));
+                            setBillRowProducts((prev) => {
+                              const next = { ...prev };
+                              delete next[rowId];
+                              return next;
+                            });
+                            setQuantities((prev) => {
+                              const next = { ...prev };
+                              delete next[rowId];
+                              return next;
+                            });
+                          }}
+                          style={{ background: "none", border: "none", color: "#dc2626", cursor: "pointer", padding: "4px 8px" }}
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      <ProductSearchableSelect
+                        products={cigaretteProducts}
+                        selectedId={productId}
+                        disabledIds={disabledProductIds}
+                        onSelect={(selectedProdId) => {
+                          setBillRowProducts((prev) => ({ ...prev, [rowId]: selectedProdId }));
+                        }}
+                      />
+
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                        <div>
+                          <label style={{ display: "block", fontSize: 11, color: "#64748b", marginBottom: 4 }}>Quantity:</label>
+                          <input
+                            id={`qty-input-m-${rowId}`}
+                            type="text"
+                            inputMode="decimal"
+                            placeholder="0"
+                            value={quantity}
+                            onChange={(e) => setQuantities((prev) => ({ ...prev, [rowId]: e.target.value }))}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.keyCode === 13) {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                const scanInput = document.querySelector('input[placeholder*="Scan barcode"]') as HTMLInputElement;
+                                if (scanInput) scanInput.focus();
+                              }
+                            }}
+                            style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 14 }}
+                          />
+                        </div>
+                        <div>
+                          <label style={{ display: "block", fontSize: 11, color: "#64748b", marginBottom: 4 }}>Rate:</label>
+                          <div style={{ padding: "8px 10px", background: "#f8fafc", borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13, color: "#64748b" }}>
+                            {p?.rate ? rupees(p.rate) : "—"}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#f8fafc", padding: "8px 12px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                        <span style={{ fontSize: 12, color: "#64748b" }}>Line Subtotal:</span>
+                        <strong style={{ fontSize: 15, color: lineAmount ? "#0f172a" : "#94a3b8" }}>
+                          {lineAmount ? rupees(lineAmount) : "₹0.00"}
+                        </strong>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+
+              <Button
+                className="secondary full"
+                type="button"
+                onClick={() => setBillRowIds((prev) => [...prev, crypto.randomUUID()])}
+                style={{ minHeight: 44, marginTop: 4, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}
+              >
+                <Plus size={16} /> Add Another Product Line
+              </Button>
+
+              <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 12, padding: "12px 16px", marginTop: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <span style={{ fontSize: 12, fontWeight: 500, color: "#64748b" }}>Cigarettes Qty: </span>
+                  <strong style={{ fontSize: 15, color: "#0f172a" }}>{cigTotalQty} units</strong>
+                </div>
+                <div>
+                  <span style={{ fontSize: 12, fontWeight: 500, color: "#64748b" }}>Cigarettes Subtotal: </span>
+                  <strong style={{ fontSize: 16, color: "#0f172a" }}>{rupees(cigSubtotal)}</strong>
+                </div>
+              </div>
+            </div>
+
+            {/* Confectionery Items Section */}
+            <div
+              style={{
+                border: "1px solid",
+                borderColor: hasConfectionery ? "#fed7aa" : "#e2e8f0",
+                borderRadius: 12,
+                padding: "14px 16px",
+                background: hasConfectionery ? "#fffbeb" : "#f8fafc",
+                transition: "background 0.15s ease, border-color 0.15s ease",
+              }}
+            >
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  fontSize: 13,
+                  fontWeight: 650,
+                  color: hasConfectionery ? "#9a3412" : "#334155",
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={hasConfectionery}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setHasConfectionery(checked);
+                    if (checked && confectioneryRows.length === 0) {
+                      setConfectioneryRows([
+                        { rowId: crypto.randomUUID(), productId: "", code: "", name: "", quantity: "", rate: "", isManual: false },
+                      ]);
+                    }
+                  }}
+                  style={{ width: 17, height: 17, accentColor: "#ea580c", cursor: "pointer" }}
+                />
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <span>🍬</span> Also include confectionery items with this entry
+                </span>
+              </label>
+
+              {hasConfectionery && (
+                <div style={{ marginTop: 14 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+                    <div>
+                      <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#9a3412" }}>
+                        Confectionery Items
+                      </h3>
+                      <p style={{ margin: "2px 0 0", fontSize: 11, color: "#b45309" }}>
+                        Chocolates, candies, mints, biscuits billed along with cigarettes.
+                      </p>
+                    </div>
+                    <Button
+                      className="secondary"
+                      type="button"
+                      onClick={() => {
+                        setConfectioneryRows((prev) => [
+                          ...prev,
+                          { rowId: crypto.randomUUID(), productId: "", code: "", name: "", quantity: "", rate: "", isManual: false },
+                        ]);
+                      }}
+                      style={{ fontSize: 12, padding: "5px 12px", background: "#ffffff", borderColor: "#fcd34d", color: "#9a3412", display: "flex", alignItems: "center", gap: 4 }}
+                    >
+                      <Plus size={14} /> Add Confectionery Item
+                    </Button>
+                  </div>
+
+                  {confectioneryRows.length === 0 ? (
+                    <div style={{ textAlign: "center", padding: "16px", color: "#b45309", fontSize: 12, background: "rgba(255,255,255,0.6)", borderRadius: 8, border: "1px dashed #fde68a" }}>
+                      No confectionery items added. Click <b>+ Add Confectionery Item</b> if this bill includes chocolates, candies or snacks.
+                    </div>
+                  ) : (
+                    <>
+                      {/* Desktop Confectionery Table */}
+                      <div className="bill-lines-desktop" style={{ background: "#ffffff", border: "1px solid #fde68a", borderRadius: 10, overflow: "visible" }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                          <thead>
+                            <tr style={{ background: "#fef3c7", textAlign: "left", borderBottom: "1px solid #fde68a" }}>
+                              <th style={{ width: 40, textAlign: "center", fontSize: 12, color: "#92400e" }}>#</th>
+                              <th style={{ width: 130, padding: "8px 10px", fontSize: 12, color: "#92400e" }}>ID</th>
+                              <th style={{ minWidth: 260, padding: "8px 10px", fontSize: 12, color: "#92400e" }}>NAME</th>
+                              <th style={{ width: 120, padding: "8px 10px", fontSize: 12, color: "#92400e" }}>QUANTITY</th>
+                              <th style={{ width: 130, padding: "8px 10px", fontSize: 12, color: "#92400e" }}>RATE / PIECE</th>
+                              <th style={{ width: 130, textAlign: "right", padding: "8px 14px", fontSize: 12, color: "#92400e" }}>AMOUNT</th>
+                              <th style={{ width: 44, textAlign: "center" }}></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {confectioneryRows.map((row, idx) => {
+                              const qNum = Number(row.quantity.trim().startsWith(".") ? "0" + row.quantity.trim() : row.quantity.trim());
+                              const rNum = Number(row.rate.trim().startsWith(".") ? "0" + row.rate.trim() : row.rate.trim());
+                              const lineAmount = (!isNaN(qNum) && !isNaN(rNum) && qNum > 0 && rNum > 0)
+                                ? (Math.round(qNum * rNum * 100) / 100).toFixed(2)
+                                : null;
+                              const disabledConfIds = [
+                                ...confectioneryRows.filter((r) => r.rowId !== row.rowId && r.productId).map((r) => r.productId),
+                                ...Object.values(billRowProducts).filter(Boolean),
+                              ];
+
+                              return (
+                                <tr key={row.rowId} style={{ borderBottom: "1px solid #fef3c7" }}>
+                                  <td style={{ textAlign: "center", color: "#b45309", fontSize: 12, fontWeight: 600 }}>
+                                    {idx + 1}
+                                  </td>
+                                  <td style={{ padding: "6px 10px" }}>
+                                    <input
+                                      type="text"
+                                      placeholder="e.g. CONF-01"
+                                      value={row.code}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setConfectioneryRows((prev) =>
+                                          prev.map((r) => (r.rowId === row.rowId ? { ...r, code: val } : r))
+                                        );
+                                      }}
+                                      style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 12, fontFamily: "monospace" }}
+                                    />
+                                  </td>
+                                  <td style={{ padding: "6px 10px" }}>
+                                    <ConfectionerySearchableSelect
+                                      products={confectioneryProducts}
+                                      selectedId={row.productId}
+                                      selectedName={row.name}
+                                      disabledIds={disabledConfIds}
+                                      onSelectMaster={(p) => {
+                                        setConfectioneryRows((prev) =>
+                                          prev.map((r) =>
+                                            r.rowId === row.rowId
+                                              ? {
+                                                ...r,
+                                                productId: str(p.id),
+                                                code: str(p.code),
+                                                name: str(p.name),
+                                                rate: str(p.rate || "0.00"),
+                                                isManual: false,
+                                              }
+                                              : r
+                                          )
+                                        );
+                                      }}
+                                      onSelectManual={(customName) => {
+                                        setConfectioneryRows((prev) =>
+                                          prev.map((r) =>
+                                            r.rowId === row.rowId
+                                              ? {
+                                                ...r,
+                                                productId: "",
+                                                code: r.code || "MANUAL",
+                                                name: customName,
+                                                isManual: true,
+                                              }
+                                              : r
+                                          )
+                                        );
+                                      }}
+                                    />
+                                  </td>
+                                  <td style={{ padding: "6px 10px" }}>
+                                    <input
+                                      type="text"
+                                      inputMode="decimal"
+                                      placeholder="0"
+                                      value={row.quantity}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setConfectioneryRows((prev) =>
+                                          prev.map((r) => (r.rowId === row.rowId ? { ...r, quantity: val } : r))
+                                        );
+                                      }}
+                                      style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 13 }}
+                                    />
+                                  </td>
+                                  <td style={{ padding: "6px 10px" }}>
+                                    <input
+                                      type="text"
+                                      inputMode="decimal"
+                                      placeholder="0.00"
+                                      value={row.rate}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setConfectioneryRows((prev) =>
+                                          prev.map((r) => (r.rowId === row.rowId ? { ...r, rate: val } : r))
+                                        );
+                                      }}
+                                      style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 13, fontWeight: 600 }}
+                                    />
+                                  </td>
+                                  <td style={{ padding: "6px 14px", textAlign: "right", fontWeight: 700, fontSize: 13, color: "#0f172a" }}>
+                                    {lineAmount ? rupees(lineAmount) : "—"}
+                                  </td>
+                                  <td style={{ textAlign: "center" }}>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setConfectioneryRows((prev) => prev.filter((r) => r.rowId !== row.rowId));
+                                      }}
+                                      style={{ background: "none", border: "none", color: "#dc2626", cursor: "pointer", padding: 4 }}
+                                      title="Remove confectionery line"
+                                    >
+                                      <Trash2 size={15} />
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                        <div style={{ padding: "12px 18px", background: "#fef9c3", display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid #fde68a" }}>
+                          <span style={{ fontSize: 12, color: "#92400e", fontWeight: 600 }}>Confectionery Lines ({confectioneryRows.length})</span>
+                          <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, paddingRight: 16, borderRight: "1px solid #fcd34d" }}>
+                              <span style={{ fontSize: 13, color: "#92400e", fontWeight: 500 }}>Confectionery Qty:</span>
+                              <strong style={{ fontSize: 16, color: "#78350f" }}>{confTotalQty} pcs</strong>
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              <span style={{ fontSize: 13, color: "#92400e", fontWeight: 500 }}>Confectionery Subtotal:</span>
+                              <strong style={{ fontSize: 18, color: "#78350f" }}>{rupees(confSubtotal)}</strong>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Mobile Confectionery Cards */}
+                      <div className="bill-lines-mobile" style={{ marginTop: 10 }}>
+                        {confectioneryRows.map((row, idx) => {
+                          const qNum = Number(row.quantity.trim().startsWith(".") ? "0" + row.quantity.trim() : row.quantity.trim());
+                          const rNum = Number(row.rate.trim().startsWith(".") ? "0" + row.rate.trim() : row.rate.trim());
+                          const lineAmount = (!isNaN(qNum) && !isNaN(rNum) && qNum > 0 && rNum > 0)
+                            ? (Math.round(qNum * rNum * 100) / 100).toFixed(2)
+                            : null;
+                          const disabledConfIds = [
+                            ...confectioneryRows.filter((r) => r.rowId !== row.rowId && r.productId).map((r) => r.productId),
+                            ...Object.values(billRowProducts).filter(Boolean),
+                          ];
+
+                          return (
+                            <div key={row.rowId} style={{ background: "#ffffff", border: "1px solid #fde68a", borderRadius: 10, padding: 12, marginBottom: 8 }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                                <span style={{ fontSize: 12, fontWeight: 700, color: "#92400e" }}>CONFECTIONERY #{idx + 1}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfectioneryRows((prev) => prev.filter((r) => r.rowId !== row.rowId))}
+                                  style={{ background: "none", border: "none", color: "#dc2626", cursor: "pointer", fontSize: 12 }}
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                <ConfectionerySearchableSelect
+                                  products={confectioneryProducts}
+                                  selectedId={row.productId}
+                                  selectedName={row.name}
+                                  disabledIds={disabledConfIds}
+                                  onSelectMaster={(p) => {
+                                    setConfectioneryRows((prev) =>
+                                      prev.map((r) =>
+                                        r.rowId === row.rowId
+                                          ? { ...r, productId: str(p.id), code: str(p.code), name: str(p.name), rate: str(p.rate || "0.00"), isManual: false }
+                                          : r
+                                      )
+                                    );
+                                  }}
+                                  onSelectManual={(customName) => {
+                                    setConfectioneryRows((prev) =>
+                                      prev.map((r) =>
+                                        r.rowId === row.rowId
+                                          ? { ...r, productId: "", code: r.code || "MANUAL", name: customName, isManual: true }
+                                          : r
+                                      )
+                                    );
+                                  }}
+                                />
+                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                                  <div>
+                                    <label style={{ display: "block", fontSize: 10, color: "#64748b", marginBottom: 2 }}>ID/CODE:</label>
+                                    <input
+                                      type="text"
+                                      placeholder="CONF-01"
+                                      value={row.code}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setConfectioneryRows((prev) => prev.map((r) => (r.rowId === row.rowId ? { ...r, code: val } : r)));
+                                      }}
+                                      style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 12 }}
+                                    />
+                                  </div>
+                                  <div>
+                                    <label style={{ display: "block", fontSize: 10, color: "#64748b", marginBottom: 2 }}>QTY:</label>
+                                    <input
+                                      type="text"
+                                      inputMode="decimal"
+                                      placeholder="0"
+                                      value={row.quantity}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setConfectioneryRows((prev) => prev.map((r) => (r.rowId === row.rowId ? { ...r, quantity: val } : r)));
+                                      }}
+                                      style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 12 }}
+                                    />
+                                  </div>
+                                  <div>
+                                    <label style={{ display: "block", fontSize: 10, color: "#64748b", marginBottom: 2 }}>RATE/PC:</label>
+                                    <input
+                                      type="text"
+                                      inputMode="decimal"
+                                      placeholder="0.00"
+                                      value={row.rate}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setConfectioneryRows((prev) => prev.map((r) => (r.rowId === row.rowId ? { ...r, rate: val } : r)));
+                                      }}
+                                      style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 12, fontWeight: 600 }}
+                                    />
+                                  </div>
+                                </div>
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#fef3c7", padding: "6px 10px", borderRadius: 6 }}>
+                                  <span style={{ fontSize: 11, color: "#92400e" }}>Line Subtotal:</span>
+                                  <strong style={{ fontSize: 13, color: "#92400e" }}>{lineAmount ? rupees(lineAmount) : "₹0.00"}</strong>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        {confectioneryRows.length > 0 && (
+                          <div style={{ background: "#fef9c3", border: "1px solid #fde68a", borderRadius: 10, padding: "10px 14px", marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <div>
+                              <span style={{ fontSize: 12, fontWeight: 500, color: "#92400e" }}>Conf Qty: </span>
+                              <strong style={{ fontSize: 14, color: "#78350f" }}>{confTotalQty} pcs</strong>
+                            </div>
+                            <div>
+                              <span style={{ fontSize: 12, fontWeight: 500, color: "#92400e" }}>Conf Subtotal: </span>
+                              <strong style={{ fontSize: 16, color: "#78350f" }}>{rupees(confSubtotal)}</strong>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Bill Discount Card */}
+            <div
+              style={{
+                border: "1px solid #e2e8f0",
+                borderRadius: 12,
+                padding: "14px 16px",
+                background: "#f8fafc",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+                <div>
+                  <label style={{ display: "block", fontSize: 13, fontWeight: 650, color: "#334155" }}>
+                    Overall Bill Discount (₹)
+                  </label>
+                  <p style={{ margin: "2px 0 0", fontSize: 12, color: "#64748b" }}>
+                    Optional flat rupee discount deducted from total bill
+                  </p>
+                </div>
+                <div style={{ width: 180 }}>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="0.00"
+                    value={billDiscount}
+                    onChange={(e) => setBillDiscount(e.target.value)}
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      borderRadius: 8,
+                      border: "1px solid #cbd5e1",
+                      fontSize: 14,
+                      fontWeight: 600,
+                      textAlign: "right",
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Overall Net Bill Total Summary */}
+            <div
+              style={{
+                border: "2px solid #0284c7",
+                borderRadius: 12,
+                padding: "16px 20px",
+                background: "linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 16,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 13, color: "#0369a1", fontWeight: 600 }}>Total Bill Quantity:</span>
+                <strong style={{ fontSize: 18, color: "#0c4a6e" }}>{estimatedTotalQty} units</strong>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
+                {Number(estimatedDiscount) > 0 && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, paddingRight: 16, borderRight: "1px solid #bae6fd" }}>
+                    <span style={{ fontSize: 13, color: "#0369a1", fontWeight: 500 }}>Subtotal:</span>
+                    <span style={{ fontSize: 16, color: "#0369a1" }}>{rupees(grossSubtotal)}</span>
+                    <span style={{ fontSize: 13, color: "#dc2626", fontWeight: 600 }}>(-{rupees(estimatedDiscount)})</span>
+                  </div>
+                )}
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ fontSize: 14, color: "#0369a1", fontWeight: 600 }}>Net Bill Total:</span>
+                  <strong style={{ fontSize: 22, color: "#0c4a6e" }}>{rupees(estimatedBillTotal)}</strong>
+                </div>
+              </div>
+            </div>
+
+            {/* Optional Immediate Payment Entry */}
+            <div
+              style={{
+                border: "1px solid #e2e8f0",
+                borderRadius: 12,
+                padding: "14px 16px",
+                background: billWithPayments ? "#f0fdf4" : "#f8fafc",
+                transition: "background 0.15s ease",
+              }}
+            >
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  fontSize: 13,
+                  fontWeight: 650,
+                  color: billWithPayments ? "#166534" : "#334155",
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={billWithPayments}
+                  onChange={(e) => setBillWithPayments(e.target.checked)}
+                />
+                Receive payment at time of billing
+              </label>
+
+              {billWithPayments && (
+                <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 12 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
+                    <div>
+                      <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#334155", marginBottom: 4 }}>
+                        Cash Amount (₹)
+                      </label>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        placeholder="0.00"
+                        value={billCashPay}
+                        onChange={(e) => setBillCashPay(e.target.value)}
+                        style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 14 }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#334155", marginBottom: 4 }}>
+                        Online / Bank Amount (₹)
+                      </label>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        placeholder="0.00"
+                        value={billOnlinePay}
+                        onChange={(e) => setBillOnlinePay(e.target.value)}
+                        style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 14 }}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#334155", marginBottom: 4 }}>
+                      Payment Remarks / Reference (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. UPI Ref, Slip details…"
+                      value={billPaymentNote}
+                      onChange={(e) => setBillPaymentNote(e.target.value)}
+                      style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 14 }}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="form-actions-mobile" style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 8 }}>
+              <Button className="secondary" type="button" onClick={() => setActiveView("ledger")}>
+                Cancel
+              </Button>
+              <Button
+                className="secondary"
+                disabled={billBusy}
+                type="button"
+                onClick={handleSaveDraft}
+              >
+                Save draft
+              </Button>
+              <Button
+                className="primary"
+                disabled={billBusy}
+                type="button"
+                onClick={handleCreateBill}
+                style={{ background: "#ea580c", borderColor: "#c2410c", minWidth: 170, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}
+              >
+                <Eye size={15} /> Review & Post Bill
+              </Button>
+            </div>
+          </form>
+        </section>
+      )}
+
+      {/* VIEW 3: RECEIVE MONEY */}
+      {activeView === "receive_money" && (
+        <section
+          style={{
+            background: "#ffffff",
+            border: "1px solid #e2e8f0",
+            borderRadius: 16,
+            padding: "20px 18px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+          }}
+        >
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span
+                style={{
+                  background: "#dcfce7",
+                  color: "#15803d",
+                  padding: "4px 8px",
+                  borderRadius: 6,
+                  fontSize: 11,
+                  fontWeight: 700,
+                }}
+              >
+                COLLECTION RECEIPT
+              </span>
+              <h2 style={{ margin: 0, fontSize: 19, color: "#0f172a" }}>
+                Receive Money from Salesman
+              </h2>
+            </div>
+            <p className="muted" style={{ margin: "6px 0 0", fontSize: 12 }}>
+              Physical cash deposited in drawer or verified digital payment reducing salesman's outstanding due.
+            </p>
+          </div>
+
+          {receiveError && <p className="error" style={{ marginBottom: 16 }}>{receiveError}</p>}
+          {receiveSuccess && (
+            <div
+              style={{
+                background: "#f0fdf4",
+                border: "1px solid #86efac",
+                borderRadius: 10,
+                padding: "12px 16px",
+                color: "#166534",
+                marginBottom: 20,
+                fontWeight: 600,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              <CheckCircle2 size={18} color="#16a34a" /> {receiveSuccess}
+            </div>
+          )}
+
+          <form onSubmit={handleReceiveMoney} style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                gap: 14,
+                background: "#f8fafc",
+                padding: 16,
+                borderRadius: 12,
+                border: "1px solid #e2e8f0",
+              }}
+            >
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>
+                  SELECT SALESMAN *
+                </label>
+                <select
+                  value={receiveSalesmanId}
+                  onChange={(e) => setReceiveSalesmanId(e.target.value)}
+                  required
+                  style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 14 }}
+                >
+                  <option value="">Select salesman…</option>
+                  {salesmenList.map((s) => (
+                    <option key={str(s.id)} value={str(s.id)}>
+                      {str(s.name)} ({str(s.code)})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>
+                  PAYMENT DATE *
+                </label>
+                <input
+                  type="date"
+                  value={receivePaymentDate}
+                  onChange={(e) => setReceivePaymentDate(e.target.value)}
+                  required
+                  style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 14 }}
+                />
+              </div>
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+                gap: 16,
+              }}
+            >
+              <div style={{ background: "#ffffff", border: "1.5px solid #e2e8f0", borderRadius: 12, padding: "16px 16px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <Banknote size={16} color="#16a34a" />
+                  <label style={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>Cash Amount (₹)</label>
+                </div>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  value={receiveCashAmount}
+                  onChange={(e) => setReceiveCashAmount(e.target.value)}
+                  style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1.5px solid #cbd5e1", fontSize: 16, fontWeight: 700 }}
+                />
+                {accounts.filter((a) => a.type === "cash").length > 1 && (
+                  <div style={{ marginTop: 8 }}>
+                    <label style={{ fontSize: 11, color: "#64748b" }}>Deposited into Drawer:</label>
+                    <select
+                      value={activeReceiveCashId}
+                      onChange={(e) => setReceiveCashAccountId(e.target.value)}
+                      style={{ marginTop: 4, width: "100%", padding: "8px 10px", fontSize: 12, borderRadius: 6, border: "1px solid #cbd5e1" }}
+                    >
+                      {accounts.filter((a) => a.type === "cash").map((a) => (
+                        <option key={str(a.id)} value={str(a.id)}>{str(a.name)}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              <div style={{ background: "#ffffff", border: "1.5px solid #e2e8f0", borderRadius: 12, padding: "16px 16px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <CreditCard size={16} color="#0284c7" />
+                  <label style={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>Bank / Online Amount (₹)</label>
+                </div>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  value={receiveBankAmount}
+                  onChange={(e) => setReceiveBankAmount(e.target.value)}
+                  style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1.5px solid #cbd5e1", fontSize: 16, fontWeight: 700 }}
+                />
+                {accounts.filter((a) => a.type === "bank").length > 1 && (
+                  <div style={{ marginTop: 8 }}>
+                    <label style={{ fontSize: 11, color: "#64748b" }}>Received into Bank Account:</label>
+                    <select
+                      value={activeReceiveBankId}
+                      onChange={(e) => setReceiveBankAccountId(e.target.value)}
+                      style={{ marginTop: 4, width: "100%", padding: "8px 10px", fontSize: 12, borderRadius: 6, border: "1px solid #cbd5e1" }}
+                    >
+                      {accounts.filter((a) => a.type === "bank").map((a) => (
+                        <option key={str(a.id)} value={str(a.id)}>{str(a.name)}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>
+                NOTE / REFERENCE (OPTIONAL)
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. UPI Ref #, Slip number, or payment remark…"
+                value={receiveNote}
+                onChange={(e) => setReceiveNote(e.target.value)}
+                style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid #cbd5e1", fontSize: 13 }}
+              />
+            </div>
+
+            <div className="form-actions-mobile" style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
+              <Button className="secondary" type="button" onClick={() => setActiveView("ledger")}>
+                Cancel
+              </Button>
+              <Button
+                className="primary"
+                disabled={receiveBusy}
+                type="submit"
+                style={{ background: "#16a34a", borderColor: "#15803d" }}
+              >
+                {receiveBusy ? "Recording Receipt…" : "Save Payment"}
+              </Button>
+            </div>
+          </form>
+
+          {/* Verification section */}
+          {dashboard && arr(dashboard.claims).length > 0 && (
+            <div style={{ marginTop: 24, borderTop: "1px solid #e2e8f0", paddingTop: 16 }}>
+              <h3 style={{ fontSize: 15, marginBottom: 10 }}>Awaiting Verification</h3>
+              {arr(dashboard.claims).map((r) => (
+                <div className="claim" key={str(r.id)} style={{ marginBottom: 8 }}>
+                  <div>
+                    <strong>{str(r.salesman_name)}</strong>
+                    <small>
+                      {str(r.account_name)} · reported {dateLabel(r.actual_date)} · {str(r.reference)}
+                    </small>
+                  </div>
+                  <b>{rupees(r.amount)}</b>
+                  <Button className="secondary" onClick={() => onSelect("verify:" + r.id)}>
+                    Review
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* VIEW 4: CONSOLIDATED REGISTER (BILLS, RECEIPTS, RETURNS, REVERSALS) */}
+      {activeView === "register" && (
+        <Documents
+          onSelect={onSelect}
+          kind="bill,receipt,return,reversal"
+          excludeSalesmanId={excludeSalesmanId}
+          requireSalesman={true}
+          title="Retail Salesman Register"
+        />
+      )}
+
+      {activeView === "saved_drafts" && (
+        <section className="panel" style={{ padding: "20px 22px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: 18, color: "#0f172a" }}>Saved Drafts · Retail Salesman Bills</h2>
+              <p className="muted" style={{ margin: "4px 0 0", fontSize: 12 }}>
+                Drafts are kept safely in your ledger workspace without any financial impact. Resume to continue editing or post.
+              </p>
+            </div>
+            <Button className="secondary" onClick={() => switchView("new_bill")} style={{ fontSize: 12 }}>
+              <Plus size={14} /> New Bill
+            </Button>
+          </div>
+
+          {retailBillDrafts.length === 0 ? (
+            <Empty text="No saved drafts for retail salesman bills." />
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {retailBillDrafts.map((dr) => {
+                const dData = (dr.data ?? {}) as Row;
+                const values = (dData.values ?? {}) as Row;
+                const sName = dData.salesmanName || values.salesmanName
+                  ? str(dData.salesmanName || values.salesmanName)
+                  : "Unknown Salesman";
+                const bDate = dData.date || values.date ? str(dData.date || values.date) : "No date";
+                const rowCnt = Array.isArray(dData.rowIds)
+                  ? dData.rowIds.length
+                  : Object.keys(dData.rowProducts || {}).length || Object.keys(dData.quantities || {}).length;
+
+                return (
+                  <div
+                    key={str(dr.id)}
+                    onClick={() => setReviewDraftRecord(dr)}
+                    style={{
+                      background: "#f8fafc",
+                      border: "1px solid #e2e8f0",
+                      borderRadius: 12,
+                      padding: "14px 16px",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: 12,
+                      flexWrap: "wrap",
+                      cursor: "pointer",
+                      transition: "all 0.15s ease",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.borderColor = "#94a3b8";
+                      e.currentTarget.style.background = "#f1f5f9";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.borderColor = "#e2e8f0";
+                      e.currentTarget.style.background = "#f8fafc";
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 15, color: "#0f172a", display: "flex", alignItems: "center", gap: 8 }}>
+                        {sName}
+                        <span style={{ fontSize: 11, background: "#e2e8f0", color: "#475569", padding: "2px 8px", borderRadius: 10, fontWeight: 600 }}>Draft</span>
+                      </div>
+                      <div style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>
+                        Bill Date: <b>{bDate}</b> · {rowCnt} line item{rowCnt === 1 ? "" : "s"} · saved on {formatDateTime(dr.created_at || dr.createdAt)}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }} onClick={(e) => e.stopPropagation()}>
+                      <Button
+                        className="secondary"
+                        onClick={async () => {
+                          try {
+                            await api(`drafts/${str(dr.id)}`, z.unknown(), undefined, "DELETE");
+                            await qc.invalidateQueries({ queryKey: ["drafts"] });
+                            if (billDraft?.id === str(dr.id)) {
+                              setBillDraft(null);
+                              setBillDraftNotice("");
+                            }
+                          } catch {
+                            // ignore
+                          }
+                        }}
+                        style={{ color: "#dc2626", borderColor: "#fca5a5", fontSize: 12, padding: "6px 12px" }}
+                      >
+                        <Trash2 size={14} /> Delete
+                      </Button>
+                      <Button
+                        className="secondary"
+                        onClick={() => {
+                          loadDraftIntoRetailBill(dr);
+                        }}
+                        style={{ fontSize: 12, padding: "6px 12px" }}
+                      >
+                        <Pencil size={14} /> Edit
+                      </Button>
+                      <Button
+                        className="primary"
+                        onClick={() => {
+                          setReviewDraftRecord(dr);
+                        }}
+                        style={{ fontSize: 12, padding: "6px 14px", display: "flex", alignItems: "center", gap: 6 }}
+                        title="Review all products and details in this draft bill before posting"
+                      >
+                        <Eye size={14} /> Review Bill
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
+
+      {reviewDraftRecord && (
+        <DraftReviewModal
+          draft={reviewDraftRecord}
+          masters={masters}
+          salesmanList={salesmenList}
+          onClose={() => setReviewDraftRecord(null)}
+          onResumeEdit={() => {
+            const d = reviewDraftRecord;
+            setReviewDraftRecord(null);
+            if (d) loadDraftIntoRetailBill(d);
+          }}
+          onPostSuccess={({ id, number }) => {
+            setReviewDraftRecord(null);
+            setBillSuccess({
+              text: "Bill created successfully! Number: ",
+              billNo: number || "POSTED",
+              billId: id,
+            });
+            setBillRowIds([crypto.randomUUID()]);
+            setBillRowProducts({});
+            setQuantities({});
+            setBillNote("");
+            setHasConfectionery(false);
+            setConfectioneryRows([]);
+            setBillDiscount("");
+            setBillPaperRef("");
+            setBillWithPayments(false);
+            setBillCashPay("");
+            setBillOnlinePay("");
+            setBillPaymentNote("");
+            setBillDraft(null);
+            setBillDraftNotice("");
+            setActiveView("new_bill");
+            window.scrollTo({ top: 0, behavior: "smooth" });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function DirectCigSalesPage({
+  date,
+  masters,
+  owner: _owner,
+  onSelect,
+  onCustomerStatement,
+  restoreDraftRecord,
+  onClearRestoreDraft,
+  lockedSalesmanId,
+  activeView: externalActiveView,
+  onViewChange,
+  initialBillCustomerId,
+  initialReceiveCustomerId,
+  onClearInitialBillCustomer,
+  onClearInitialReceiveCustomer,
+  initialSalesmanId,
+}: {
+  date: string;
+  masters: Row;
+  owner: boolean;
+  onSelect: (id: string) => void;
+  onCustomerStatement: (customerId: string) => void;
+  restoreDraftRecord?: Row | null;
+  onClearRestoreDraft?: () => void;
+  lockedSalesmanId?: string;
+  activeView?: "ledger" | "new_bill" | "receive_money" | "loading_sheet" | "register" | "saved_drafts" | "handovers";
+  onViewChange?: (view: "ledger" | "new_bill" | "receive_money" | "loading_sheet" | "register" | "saved_drafts" | "handovers") => void;
+  initialBillCustomerId?: string | null;
+  initialReceiveCustomerId?: string | null;
+  onClearInitialBillCustomer?: () => void;
+  onClearInitialReceiveCustomer?: () => void;
+  initialSalesmanId?: string | null;
+}) {
+  const qc = useQueryClient();
+  const salesmenList = arr(masters.salesmen).filter((s) => s.active);
+  // Default to Mubashir/Muddasir if found
+  const mubashir = salesmenList.find(
+    (s) =>
+      str((s.details as Row)?.is_direct_route) === "true" ||
+      str((s.details as Row)?.direct_route) === "true" ||
+      str((s.details as Row)?.isDirectRoute) === "true" ||
+      str(s.name).toLowerCase().includes("mubashir") ||
+      str(s.name).toLowerCase().includes("muddasir") ||
+      str((s.details as Row)?.itc_id) === "1HG2",
+  );
+  const [selectedSalesmanId, setSelectedSalesmanId] = useState<string>(
+    lockedSalesmanId || (mubashir ? str(mubashir.id) : str(salesmenList[0]?.id ?? "")),
+  );
+  useEffect(() => {
+    if (lockedSalesmanId) setSelectedSalesmanId(lockedSalesmanId);
+  }, [lockedSalesmanId]);
+  const [selectedBeat, setSelectedBeat] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
+
+  // Sub-view: "ledger" | "new_bill" | "receive_money" | "loading_sheet" | "register" | "saved_drafts" | "handovers"
+  const [internalView, setInternalView] = useState<"ledger" | "new_bill" | "receive_money" | "loading_sheet" | "register" | "saved_drafts" | "handovers">(externalActiveView ?? "ledger");
+  const activeView = externalActiveView ?? internalView;
+  const setActiveView = (nextView: "ledger" | "new_bill" | "receive_money" | "loading_sheet" | "register" | "saved_drafts" | "handovers") => {
+    setInternalView(nextView);
+    onViewChange?.(nextView);
+  };
+
+  // Loading sheet state
+  const [loadingSheetFrom, setLoadingSheetFrom] = useState(date);
+  const [loadingSheetTo, setLoadingSheetTo] = useState(date);
+  const [loadingSheetScope, setLoadingSheetScope] = useState<"route" | "all">("route");
+  const [showReversedBills, setShowReversedBills] = useState(false);
+  const [hasManuallySelectedBills, setHasManuallySelectedBills] = useState(false);
+  const [selectedBillIds, setSelectedBillIds] = useState<string[]>([]);
+  const [loadingSheetBillSearch, setLoadingSheetBillSearch] = useState("");
+  const [copyFeedback, setCopyFeedback] = useState(false);
+  const [loadingSheetBillsCollapsed, setLoadingSheetBillsCollapsed] = useState(false);
+
+  const switchView = (nextView: "ledger" | "new_bill" | "receive_money" | "loading_sheet" | "register" | "saved_drafts" | "handovers") => {
+    setBillSuccess(null);
+    setBillError("");
+    setPaySuccess("");
+    setPayError("");
+    setHandoverModalOpen(false);
+    if (nextView === "new_bill") {
+      // Direct click on New Bill clears customer and all line items
+      setBillCustomerId("");
+      setBillRowIds([crypto.randomUUID()]);
+      setBillRowProducts({});
+      setQuantities({});
+      setConfectioneryRows([]);
+      setBillDiscount("");
+      setBillWithPayments(false);
+      setBillCashPay("");
+      setBillOnlinePay("");
+      setBillPaymentNote("");
+      setBillDraft(null);
+      setBillDraftNotice("");
+    }
+    setActiveView(nextView);
+  };
+
+  // Query summary & customer balances
+  const summaryQuery = useQuery({
+    queryKey: ["direct-cig-summary", selectedSalesmanId, selectedBeat, date],
+    queryFn: () =>
+      api(
+        `direct-cig/summary?salesmanId=${encodeURIComponent(selectedSalesmanId)}&beat=${encodeURIComponent(selectedBeat)}&date=${encodeURIComponent(date)}`,
+      ),
+  });
+
+  const rawCustomers = arr(summaryQuery.data?.customers);
+  const customers = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase();
+    const filtered = term
+      ? rawCustomers.filter((c) => {
+        const name = str(c.customer_name).toLowerCase();
+        const code = str(c.customer_id).toLowerCase();
+        const beatName = str(c.beat_name).toLowerCase();
+        return name.includes(term) || code.includes(term) || beatName.includes(term);
+      })
+      : rawCustomers;
+
+    return [...filtered].sort((a, b) => {
+      const balA = parseFloat(str(a.balance ?? "0"));
+      const balB = parseFloat(str(b.balance ?? "0"));
+      return balB - balA; // Highest outstanding dues first
+    });
+  }, [rawCustomers, searchTerm]);
+  const stats = (summaryQuery.data?.stats ?? {}) as Row;
+  const beats = arr(summaryQuery.data?.beats);
+
+  // Forms state
+  // New Direct Bill state
+  const [billCustomerId, setBillCustomerId] = useState("");
+  const [billNote, setBillNote] = useState("");
+  const [billDate, setBillDate] = useState(date);
+  const [billRowIds, setBillRowIds] = useState<string[]>(() => [crypto.randomUUID()]);
+  const [billRowProducts, setBillRowProducts] = useState<Record<string, string>>({});
+  const [quantities, setQuantities] = useState<Record<string, string>>({});
+  const [hasConfectionery, setHasConfectionery] = useState(false);
+  const [confectioneryRows, setConfectioneryRows] = useState<ConfectioneryRowItem[]>([]);
+  const [billDiscount, setBillDiscount] = useState("");
+
+  const cigaretteProducts = useMemo(
+    () => arr(masters.products).filter((x) => x.active && (x.category === "CG-01 CIGARETTE" || x.category === "cigarette" || !x.category)),
+    [masters.products]
+  );
+  const confectioneryProducts = useMemo(
+    () => arr(masters.products).filter((x) => x.active && (x.category === "CF-05 CONFECTIONERY" || x.category === "confectionery")),
+    [masters.products]
+  );
+
+  const handleProductScanned = (scannedProduct: Row) => {
+    const prodId = str(scannedProduct.id);
+    let targetRowId = billRowIds.find((id) => billRowProducts[id] === prodId);
+
+    if (!targetRowId) {
+      // Find empty row or create new
+      const emptyRowId = billRowIds.find((id) => !billRowProducts[id]);
+      if (emptyRowId) {
+        targetRowId = emptyRowId;
+        setBillRowProducts((prev) => ({ ...prev, [emptyRowId]: prodId }));
+      } else {
+        const newId = crypto.randomUUID();
+        targetRowId = newId;
+        setBillRowIds((prev) => [...prev, newId]);
+        setBillRowProducts((prev) => ({ ...prev, [newId]: prodId }));
+      }
+    }
+
+    setTimeout(() => {
+      const el =
+        (document.getElementById(`qty-input-${targetRowId}`) as HTMLInputElement | null) ||
+        (document.getElementById(`qty-input-m-${targetRowId}`) as HTMLInputElement | null);
+      if (el) {
+        el.focus();
+        el.select?.();
+      }
+    }, 50);
+  };
+
+  const [barcodeNotFoundCode, setBarcodeNotFoundCode] = useState<string | null>(null);
+
+  useGlobalBarcodeScanner({
+    enabled: activeView === "new_bill",
+    products: cigaretteProducts,
+    onProductScanned: handleProductScanned,
+    onRestoreQuantity: (rowId, prevVal) => {
+      setQuantities((prev) => ({ ...prev, [rowId]: prevVal }));
+    },
+    onScanNotFound: (rawBarcode) => {
+      setBarcodeNotFoundCode(rawBarcode);
+    },
+  });
+  const [billWithPayments, setBillWithPayments] = useState(false);
+  const [billCashPay, setBillCashPay] = useState("");
+  const [billOnlinePay, setBillOnlinePay] = useState("");
+  const [billPaymentNote, setBillPaymentNote] = useState("");
+  const [billCashAccountId, setBillCashAccountId] = useState("");
+  const [billBankAccountId, setBillBankAccountId] = useState("");
+  const [billBusy, setBillBusy] = useState(false);
+  const [billError, setBillError] = useState("");
+  const [billSuccess, setBillSuccess] = useState<{ text: string; billNo?: string; billId?: string } | null>(null);
+  const [billDraft, setBillDraft] = useState<{ id?: string; version?: number } | null>(null);
+  const [billDraftNotice, setBillDraftNotice] = useState("");
+  const [reviewDraftRecord, setReviewDraftRecord] = useState<Row | null>(null);
+
+  // Query drafts for direct bills
+  const directDraftsQuery = useQuery({
+    queryKey: ["drafts"],
+    queryFn: () => api("drafts", rowsSchema),
+  });
+  const directCigDrafts = (directDraftsQuery.data ?? []).filter(
+    (d) => (d.data as Row)?.name === "direct_cig_bill",
+  );
+
+  // Helper to load a draft into form
+  const loadDraftIntoBill = (draftRow: Row) => {
+    const data = (draftRow.data ?? {}) as Row;
+    if (data.salesmanId) setSelectedSalesmanId(str(data.salesmanId));
+    if (data.customerId) setBillCustomerId(str(data.customerId));
+    setBillNote(str(data.note || ""));
+    if (data.date) setBillDate(str(data.date));
+    if (Array.isArray(data.rowIds) && data.rowIds.length > 0) {
+      setBillRowIds(data.rowIds.map(String));
+    } else if (data.rowProducts && typeof data.rowProducts === "object") {
+      const keys = Object.keys(data.rowProducts);
+      setBillRowIds(keys.length > 0 ? keys : [crypto.randomUUID()]);
+    }
+    if (data.rowProducts && typeof data.rowProducts === "object") {
+      setBillRowProducts(data.rowProducts as Record<string, string>);
+    }
+    if (data.quantities && typeof data.quantities === "object") {
+      setQuantities(data.quantities as Record<string, string>);
+    }
+    if (typeof data.hasConfectionery === "boolean") {
+      setHasConfectionery(data.hasConfectionery);
+    } else if (Array.isArray(data.confectioneryRows) && data.confectioneryRows.length > 0) {
+      setHasConfectionery(true);
+    } else {
+      setHasConfectionery(false);
+    }
+    if (typeof data.hasConfectionery === "boolean") {
+      setHasConfectionery(data.hasConfectionery);
+    } else if (Array.isArray(data.confectioneryRows) && data.confectioneryRows.length > 0) {
+      setHasConfectionery(true);
+    } else {
+      setHasConfectionery(false);
+    }
+    if (Array.isArray(data.confectioneryRows)) {
+      setConfectioneryRows(data.confectioneryRows as ConfectioneryRowItem[]);
+    } else {
+      setConfectioneryRows([]);
+    }
+    setBillDiscount(str(data.discount || (data.values as Row | undefined)?.discount || ""));
+    setBillWithPayments(Boolean(data.withPayments));
+    setBillCashPay(str(data.cashPay || ""));
+    setBillOnlinePay(str(data.onlinePay || ""));
+    setBillPaymentNote(str(data.paymentNote || ""));
+    if (data.cashAccountId) setBillCashAccountId(str(data.cashAccountId));
+    if (data.bankAccountId) setBillBankAccountId(str(data.bankAccountId));
+    setBillDraft({ id: str(draftRow.id), version: Number(draftRow.version) });
+    setBillDraftNotice(`Restored draft from ${str(draftRow.created_at)}.`);
+    setBillError("");
+    setBillSuccess(null);
+    setActiveView("new_bill");
+  };
+
+  // Restore draft passed from parent if any
+  useEffect(() => {
+    if (restoreDraftRecord) {
+      loadDraftIntoBill(restoreDraftRecord);
+      onClearRestoreDraft?.();
+    }
+  }, [restoreDraftRecord]);
+
+  // Direct Receive Money state
+  const [receiveCustomerId, setReceiveCustomerId] = useState("");
+
+  useEffect(() => {
+    if (initialBillCustomerId) {
+      setBillCustomerId(initialBillCustomerId);
+      setSelectedBeat("");
+      onClearInitialBillCustomer?.();
+    }
+  }, [initialBillCustomerId]);
+
+  useEffect(() => {
+    if (initialReceiveCustomerId) {
+      setReceiveCustomerId(initialReceiveCustomerId);
+      setSelectedBeat("");
+      onClearInitialReceiveCustomer?.();
+    }
+  }, [initialReceiveCustomerId]);
+
+  useEffect(() => {
+    if (initialSalesmanId) {
+      setSelectedSalesmanId(initialSalesmanId);
+    }
+  }, [initialSalesmanId]);
+  const [paymentDate, setPaymentDate] = useState(date);
+  const [cashAmount, setCashAmount] = useState("");
+  const [bankAmount, setBankAmount] = useState("");
+  const [selectedCashAccountId, setSelectedCashAccountId] = useState("");
+  const [selectedBankAccountId, setSelectedBankAccountId] = useState("");
+  const [paymentNote, setPaymentNote] = useState("");
+  const [payBusy, setPayBusy] = useState(false);
+  const [payError, setPayError] = useState("");
+  const [paySuccess, setPaySuccess] = useState("");
+  const [customerPageOffset, setCustomerPageOffset] = useState(0);
+  const CUSTOMER_PAGE_SIZE = 15;
+
+  const accounts = arr(masters.accounts);
+  const defaultCash = str(accounts.find((a) => a.type === "cash")?.id ?? accounts[0]?.id ?? "");
+  const defaultBank = str(accounts.find((a) => a.type === "bank")?.id ?? accounts[0]?.id ?? "");
+  const activeCashAccountId = selectedCashAccountId || defaultCash;
+  const activeBankAccountId = selectedBankAccountId || defaultBank;
+
+  // Client estimated bill total & subtotals
+  const {
+    cigSubtotal,
+    cigTotalQty,
+    confSubtotal,
+    confTotalQty,
+    grossSubtotal,
+    estimatedDiscount,
+    estimatedBillTotal,
+    estimatedTotalQty,
+  } = (() => {
+    let sum = 0;
+    let qtySum = 0;
+    for (const rId of billRowIds) {
+      const pId = billRowProducts[rId];
+      const rawQ = (quantities[rId] ?? "").trim();
+      const qStr = rawQ.startsWith(".") ? "0" + rawQ : rawQ;
+      const q = Number(qStr);
+      if (!isNaN(q) && q > 0) {
+        qtySum += q;
+      }
+      const prod = arr(masters.products).find((x) => str(x.id) === pId);
+      if (!prod || !prod.rate) continue;
+      const r = Number(prod.rate);
+      const b = Number(prod.basis || 1) || 1;
+      if (isNaN(q) || isNaN(r) || q <= 0 || r <= 0) continue;
+      sum += (q * r) / b;
+    }
+    let confSum = 0;
+    let confQtySum = 0;
+    if (hasConfectionery) {
+      for (const cr of confectioneryRows) {
+        const rawQ = cr.quantity.trim();
+        const qStr = rawQ.startsWith(".") ? "0" + rawQ : rawQ;
+        const q = Number(qStr);
+        const rawR = cr.rate.trim();
+        const rStr = rawR.startsWith(".") ? "0" + rawR : rawR;
+        const r = Number(rStr);
+        if (!isNaN(q) && q > 0) {
+          confQtySum += q;
+        }
+        if (!isNaN(q) && !isNaN(r) && q > 0 && r > 0) {
+          confSum += q * r;
+        }
+      }
+    }
+    const totalGross = sum + confSum;
+    const cleanDisc = cleanMoney(billDiscount);
+    const discNum = cleanDisc ? parseMoneyNumber(cleanDisc) : 0;
+    const netSum = Math.max(0, totalGross - (isNaN(discNum) ? 0 : discNum));
+    const totalQty = qtySum + confQtySum;
+    const fmtQty = (q: number) =>
+      Number.isInteger(q) ? String(q) : (Math.round(q * 100) / 100).toFixed(2);
+
+    return {
+      cigSubtotal: sum > 0 ? (Math.round(sum * 100) / 100).toFixed(2) : "0.00",
+      cigTotalQty: fmtQty(qtySum),
+      confSubtotal: confSum > 0 ? (Math.round(confSum * 100) / 100).toFixed(2) : "0.00",
+      confTotalQty: fmtQty(confQtySum),
+      grossSubtotal: totalGross > 0 ? (Math.round(totalGross * 100) / 100).toFixed(2) : "0.00",
+      estimatedDiscount: discNum > 0 ? (Math.round(discNum * 100) / 100).toFixed(2) : "0.00",
+      estimatedBillTotal: netSum > 0 ? (Math.round(netSum * 100) / 100).toFixed(2) : "0.00",
+      estimatedTotalQty: fmtQty(totalQty),
+    };
+  })();
+
+  const handleCreateBill = async (e?: React.SyntheticEvent) => {
+    e?.preventDefault();
+    setBillError("");
+    setBillSuccess(null);
+
+    if (!selectedSalesmanId) {
+      setBillError("Please select a salesman route.");
+      return;
+    }
+    if (!billCustomerId) {
+      setBillError("Please select a customer.");
+      return;
+    }
+
+    const lines: Array<{
+      productId?: string;
+      name?: string;
+      code?: string;
+      category?: string;
+      quantity: string;
+      rate?: string;
+    }> = [];
+    for (const rId of billRowIds) {
+      const pId = billRowProducts[rId];
+      const rawQ = (quantities[rId] ?? "").trim();
+      const qStr = rawQ.startsWith(".") ? "0" + rawQ : rawQ;
+      if (pId && Number(qStr) > 0) {
+        lines.push({ productId: pId, quantity: qStr, category: "CG-01 CIGARETTE" });
+      }
+    }
+    if (hasConfectionery) {
+      for (const cr of confectioneryRows) {
+        const rawQ = cr.quantity.trim();
+        const qStr = rawQ.startsWith(".") ? "0" + rawQ : rawQ;
+        const rawR = cr.rate.trim();
+        const rStr = rawR.startsWith(".") ? "0" + rawR : rawR;
+        if (Number(qStr) > 0 && Number(rStr) > 0 && (cr.productId || cr.name.trim())) {
+          lines.push({
+            ...(cr.productId ? { productId: cr.productId } : {}),
+            name: cr.name.trim() || undefined,
+            code: cr.code.trim() || undefined,
+            category: "CF-05 CONFECTIONERY",
+            quantity: qStr,
+            rate: rStr,
+          });
+        }
+      }
+    }
+
+    if (lines.length === 0) {
+      setBillError("Please add at least one cigarette or confectionery item with quantity > 0.");
+      return;
+    }
+
+    if (billWithPayments) {
+      const cleanCash = cleanMoney(billCashPay);
+      const cleanOnline = cleanMoney(billOnlinePay);
+      const hasCash = Boolean(cleanCash && parseMoneyNumber(cleanCash) > 0);
+      const hasOnline = Boolean(cleanOnline && parseMoneyNumber(cleanOnline) > 0);
+      if (!hasCash && !hasOnline) {
+        setBillError("Enter at least one payment amount (cash or online) or uncheck 'Record payment'.");
+        return;
+      }
+    }
+
+    const sObj = salesmenList.find((s) => str(s.id) === selectedSalesmanId);
+    const custObj = customers.find((c) => str(c.id) === billCustomerId);
+    setReviewDraftRecord({
+      id: billDraft?.id || "",
+      data: {
+        name: "direct_cig_bill",
+        salesmanId: selectedSalesmanId,
+        salesmanName: sObj ? str(sObj.name) : "",
+        customerId: billCustomerId,
+        customerName: custObj ? str(custObj.customer_name) : "",
+        date: billDate,
+        rowIds: billRowIds,
+        rowProducts: billRowProducts,
+        quantities,
+        hasConfectionery,
+        confectioneryRows,
+        discount: billDiscount,
+        note: billNote,
+        withPayments: billWithPayments,
+        cashPay: billCashPay,
+        onlinePay: billOnlinePay,
+        paymentNote: billPaymentNote,
+        cashAccountId: billCashAccountId || defaultCash,
+        bankAccountId: billBankAccountId || defaultBank,
+      },
+    });
+  };
+
+  const handleSaveDraft = async () => {
+    setBillBusy(true);
+    setBillError("");
+    setBillDraftNotice("");
+    try {
+      const custObj = customers.find((c) => str(c.id) === billCustomerId);
+      const r = await api("drafts", rowSchema, {
+        ...(billDraft ?? {}),
+        data: {
+          name: "direct_cig_bill",
+          salesmanId: selectedSalesmanId,
+          customerId: billCustomerId,
+          customerName: custObj ? str(custObj.customer_name) : "",
+          date: billDate,
+          note: billNote,
+          rowIds: billRowIds,
+          rowProducts: billRowProducts,
+          quantities,
+          hasConfectionery,
+          confectioneryRows,
+          discount: billDiscount,
+          withPayments: billWithPayments,
+          cashPay: billCashPay,
+          onlinePay: billOnlinePay,
+          paymentNote: billPaymentNote,
+          cashAccountId: billCashAccountId,
+          bankAccountId: billBankAccountId,
+        },
+      });
+      setBillDraft({ id: str(r.id), version: Number(r.version) });
+      setBillDraftNotice("Draft saved. No financial posting.");
+      await qc.invalidateQueries({ queryKey: ["drafts"] });
+    } catch (e) {
+      setBillError((e as Error).message);
+    } finally {
+      setBillBusy(false);
+    }
+  };
+
+  const handleReceiveMoney = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPayError("");
+    setPaySuccess("");
+
+    if (!selectedSalesmanId) {
+      setPayError("Please select a salesman route.");
+      return;
+    }
+    if (!receiveCustomerId) {
+      setPayError("Please select a customer.");
+      return;
+    }
+
+    const cleanCash = cleanMoney(cashAmount);
+    const cleanBank = cleanMoney(bankAmount);
+    const hasCash = Boolean(cleanCash && parseMoneyNumber(cleanCash) > 0);
+    const hasBank = Boolean(cleanBank && parseMoneyNumber(cleanBank) > 0);
+    if (!hasCash && !hasBank) {
+      setPayError("Enter either a cash amount or a bank amount.");
+      return;
+    }
+
+    if (hasCash && !activeCashAccountId) {
+      setPayError("No cash receiving account found in master accounts.");
+      return;
+    }
+    if (hasBank && !activeBankAccountId) {
+      setPayError("No bank receiving account found in master accounts.");
+      return;
+    }
+
+    setPayBusy(true);
+    try {
+      const receipts: Row[] = [];
+      if (hasCash) {
+        receipts.push({
+          amount: cleanCash,
+          accountId: activeCashAccountId,
+          method: "cash",
+          actualDate: paymentDate,
+          reference: "",
+          verified: false,
+        });
+      }
+      if (hasBank) {
+        receipts.push({
+          amount: cleanBank,
+          accountId: activeBankAccountId,
+          method: "online",
+          actualDate: paymentDate,
+          reference: paymentNote || "Direct Cigarette Online Payment",
+          verified: false,
+        });
+      }
+
+      await api(
+        "commands/receiptBatch",
+        commandResult,
+        {
+          date: paymentDate,
+          salesmanId: selectedSalesmanId,
+          customerId: receiveCustomerId,
+          note: paymentNote,
+          receipts,
+        },
+        "POST",
+        crypto.randomUUID(),
+      );
+
+      setPaySuccess("Customer payment recorded successfully.");
+      setCashAmount("");
+      setBankAmount("");
+      setPaymentNote("");
+      await qc.invalidateQueries();
+      summaryQuery.refetch();
+    } catch (err) {
+      setPayError((err as Error).message);
+    } finally {
+      setPayBusy(false);
+    }
+  };
+
+  // Handover state
+  const [handoverModalOpen, setHandoverModalOpen] = useState(false);
+  const [handoverAmount, setHandoverAmount] = useState("");
+  const [handoverNote, setHandoverNote] = useState("");
+  const [handoverBusy, setHandoverBusy] = useState(false);
+  const [handoverError, setHandoverError] = useState("");
+  const [handoverSuccess, setHandoverSuccess] = useState("");
+
+  const cashInHand = str(stats.cashInHand ?? "0.00");
+  const handoversHistory = arr(summaryQuery.data?.handovers);
+
+  const handleInitiateHandover = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setHandoverError("");
+    setHandoverSuccess("");
+    const cleanAmt = cleanMoney(handoverAmount);
+    const entered = parseMoneyNumber(cleanAmt);
+    if (isNaN(entered) || entered <= 0) {
+      setHandoverError("Please enter a valid cash amount to transfer.");
+      return;
+    }
+    const maxHand = parseMoneyNumber(cashInHand);
+    if (entered > maxHand && maxHand > 0) {
+      setHandoverError(`Amount exceeds current cash in hand of ${rupees(cashInHand)}.`);
+      return;
+    }
+    setHandoverBusy(true);
+    try {
+      await api(
+        "commands/initiateCashHandover",
+        commandResult,
+        {
+          date,
+          salesmanId: selectedSalesmanId,
+          amount: cleanAmt,
+          salesmanNote: handoverNote.trim() || undefined,
+        },
+        "POST",
+        crypto.randomUUID(),
+      );
+      setHandoverSuccess(`Cash handover of ${rupees(cleanAmt)} initiated. Awaiting manager confirmation.`);
+      setHandoverAmount("");
+      setHandoverNote("");
+      setHandoverModalOpen(false);
+      await qc.invalidateQueries();
+      summaryQuery.refetch();
+    } catch (err) {
+      setHandoverError((err as Error).message);
+    } finally {
+      setHandoverBusy(false);
+    }
+  };
+
+  const selectedBillCustomer = customers.find((c) => str(c.id) === billCustomerId);
+  const selectedReceiveCustomer = customers.find((c) => str(c.id) === receiveCustomerId);
+
+  // Loading Sheet / Bill Products Queries & Processing
+  const loadingSheetBillsQuery = useQuery({
+    queryKey: [
+      "loading-sheet-bills",
+      loadingSheetScope === "all" ? "all" : selectedSalesmanId,
+      loadingSheetFrom,
+      loadingSheetTo,
+    ],
+    queryFn: () => {
+      const params = new URLSearchParams({ kind: "bill", limit: "1000" });
+      if (loadingSheetScope === "route" && selectedSalesmanId) {
+        params.set("salesmanId", selectedSalesmanId);
+      }
+      if (loadingSheetFrom.trim()) {
+        params.set("from", loadingSheetFrom.trim());
+      }
+      if (loadingSheetTo.trim()) {
+        params.set("to", loadingSheetTo.trim());
+      }
+      return api<Row[]>(`documents?${params.toString()}`, rowsSchema);
+    },
+    enabled: activeView === "loading_sheet",
+  });
+
+  const loadingBills = useMemo(() => {
+    const list = arr(loadingSheetBillsQuery.data).filter((b) => showReversedBills || !b.reversed);
+    if (!loadingSheetBillSearch.trim()) return list;
+    const q = loadingSheetBillSearch.toLowerCase().trim();
+    return list.filter((b) => {
+      const num = str(b.number).toLowerCase();
+      const cName = str((b.data as Row)?.customerName || (b.data as Row)?.customerRef || "").toLowerCase();
+      const sName = str(b.salesman_name || "").toLowerCase();
+      return num.includes(q) || cName.includes(q) || sName.includes(q);
+    });
+  }, [loadingSheetBillsQuery.data, loadingSheetBillSearch, showReversedBills]);
+
+  const reversedBillsCount = useMemo(() => {
+    return arr(loadingSheetBillsQuery.data).filter((b) => b.reversed).length;
+  }, [loadingSheetBillsQuery.data]);
+
+  // Auto-select all available bills on initial load unless user has explicitly customized selection
+  useEffect(() => {
+    if (!hasManuallySelectedBills && loadingBills.length > 0 && selectedBillIds.length === 0) {
+      setSelectedBillIds(loadingBills.map((b) => str(b.id)));
+    }
+  }, [loadingBills, hasManuallySelectedBills, selectedBillIds.length]);
+
+  const loadingSheetLinesQuery = useQuery({
+    queryKey: ["loading-sheet-lines", selectedBillIds],
+    queryFn: async () => {
+      if (selectedBillIds.length === 0) return [];
+      return api<Row[]>("documents/lines", rowsSchema, { documentIds: selectedBillIds });
+    },
+    enabled: activeView === "loading_sheet" && selectedBillIds.length > 0,
+  });
+
+  const aggregatedProducts = useMemo(() => {
+    const lines = arr(loadingSheetLinesQuery.data);
+    const map = new Map<
+      string,
+      {
+        id: string;
+        name: string;
+        code: string;
+        category: string;
+        unit: string;
+        rate: string;
+        quantity: Decimal;
+        grossQuantity: Decimal;
+        returnedQuantity: Decimal;
+        amount: Decimal;
+        billNumbers: string[];
+      }
+    >();
+
+    for (const l of lines) {
+      const snap = (l.snapshot || {}) as Row;
+      const name = str(snap.name || l.name || "Item");
+      const unit = str(snap.unit || "unit");
+      const rawRate = str(snap.rate || snap.masterRate || "0.00");
+      const rate = cleanMoney(rawRate) || rawRate;
+      const code = str(snap.code || "");
+      const category = str(snap.category || "CG-01 CIGARETTE");
+      const pId = str(l.product_id || snap.id || "");
+      const key = pId ? `p_${pId}` : (code ? `c_${code.toLowerCase()}` : `n_${name.toLowerCase()}`);
+      const docNum = str(l.document_number);
+
+      const qty = D(cleanDecimal(l.quantity) || "0");
+      const retQty = D(cleanDecimal(l.returned_quantity) || "0");
+      const netQty = Decimal.max(0, qty.minus(retQty));
+      const amt = D(cleanMoney(l.amount) || "0");
+      const unitPrice = qty.gt(0) ? amt.div(qty) : D(0);
+      const netAmt = unitPrice.times(netQty);
+
+      const existing = map.get(key);
+      if (existing) {
+        existing.quantity = existing.quantity.plus(netQty);
+        existing.grossQuantity = existing.grossQuantity.plus(qty);
+        existing.returnedQuantity = existing.returnedQuantity.plus(retQty);
+        existing.amount = existing.amount.plus(netAmt);
+        if (docNum && !existing.billNumbers.includes(docNum)) {
+          existing.billNumbers.push(docNum);
+        }
+      } else {
+        map.set(key, {
+          id: key,
+          name,
+          code,
+          category,
+          unit,
+          rate,
+          quantity: netQty,
+          grossQuantity: qty,
+          returnedQuantity: retQty,
+          amount: netAmt,
+          billNumbers: docNum ? [docNum] : [],
+        });
+      }
+    }
+
+    return Array.from(map.values()).sort((a, b) => {
+      if (a.category !== b.category) {
+        const aIsCig = a.category === "CG-01 CIGARETTE" || a.category === "cigarette";
+        const bIsCig = b.category === "CG-01 CIGARETTE" || b.category === "cigarette";
+        if (aIsCig && !bIsCig) return -1;
+        if (!aIsCig && bIsCig) return 1;
+      }
+      return a.name.localeCompare(b.name);
+    });
+  }, [loadingSheetLinesQuery.data]);
+
+  const totalLoadedQty = useMemo(() => {
+    return aggregatedProducts.reduce((sum, p) => sum.plus(p.quantity), D(0));
+  }, [aggregatedProducts]);
+
+  const totalLoadedAmount = useMemo(() => {
+    return aggregatedProducts.reduce((sum, p) => sum.plus(p.amount), D(0));
+  }, [aggregatedProducts]);
+
+  const handleCopyList = () => {
+    if (aggregatedProducts.length === 0) return;
+    const salesmanName =
+      loadingSheetScope === "all"
+        ? "All Salesmen / Routes"
+        : str(salesmenList.find((s) => str(s.id) === selectedSalesmanId)?.name || "Mudhashir");
+    const dateStr =
+      !loadingSheetFrom && !loadingSheetTo
+        ? "All Dates"
+        : loadingSheetFrom === loadingSheetTo
+          ? loadingSheetFrom
+          : `${loadingSheetFrom || "Start"} to ${loadingSheetTo || "End"}`;
+
+    const lines: string[] = [];
+    lines.push(`Product Loading Sheet - ${salesmanName}`);
+    lines.push(`Date: ${dateStr} | Bills: ${selectedBillIds.length}`);
+    lines.push(`----------------------------------------`);
+    lines.push(`#\tProduct Name\tTotal Qty\tMRP / Rate\tTotal Value\tBills`);
+    aggregatedProducts.forEach((p, idx) => {
+      const retDetail = p.returnedQuantity.gt(0) ? ` (Billed: ${p.grossQuantity.toString()}, Ret: ${p.returnedQuantity.toString()})` : "";
+      lines.push(
+        `${idx + 1}\t${p.name}${p.code ? ` (${p.code})` : ""}\t${p.quantity.toString()} ${p.unit}${retDetail}\t₹${p.rate}\t₹${p.amount.toFixed(2)}\t${p.billNumbers.length} bills`,
+      );
+    });
+    lines.push(`----------------------------------------`);
+    lines.push(`Grand Total:\t\t${totalLoadedQty.toString()}\t\t₹${totalLoadedAmount.toFixed(2)}\t${selectedBillIds.length} bills`);
+
+    navigator.clipboard.writeText(lines.join("\n"));
+    setCopyFeedback(true);
+    setTimeout(() => setCopyFeedback(false), 2500);
+  };
+
+  const toggleAllBills = () => {
+    setHasManuallySelectedBills(true);
+    if (selectedBillIds.length === loadingBills.length) {
+      setSelectedBillIds([]);
+    } else {
+      setSelectedBillIds(loadingBills.map((b) => str(b.id)));
+    }
+  };
+
+  const toggleBill = (id: string) => {
+    setHasManuallySelectedBills(true);
+    setSelectedBillIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      {/* 1. Route & Beat Filter Section */}
+      <div className="direct-cig-header no-print" style={{ padding: "14px 18px" }}>
+        <div className="direct-cig-filters">
+          <div>
+            <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.5 }}>
+              Salesman Route
+            </label>
+            <div style={{ marginTop: 6 }}>
+              <select
+                className="direct-cig-select"
+                value={selectedSalesmanId}
+                disabled={!!lockedSalesmanId}
+                onChange={(e) => {
+                  setSelectedSalesmanId(e.target.value);
+                  setSelectedBeat("");
+                  setBillCustomerId("");
+                  setReceiveCustomerId("");
+                }}
+              >
+                {salesmenList.map((s) => (
+                  <option key={str(s.id)} value={str(s.id)}>
+                    {str(s.name)} {str((s.details as Row)?.itc_id) ? `(${str((s.details as Row)?.itc_id)})` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.5 }}>
+              Beat / Area Filter
+            </label>
+            <div style={{ marginTop: 6 }}>
+              <select
+                className="direct-cig-select"
+                value={selectedBeat}
+                onChange={(e) => {
+                  setSelectedBeat(e.target.value);
+                  setCustomerPageOffset(0);
+                }}
+              >
+                <option value="">All Beats ({beats.length})</option>
+                {beats.map((b) => (
+                  <option key={str(b.code)} value={str(b.code)}>
+                    {str(b.name) || `Beat ${str(b.code)}`}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 2. 5 Metric Stats Boxes Directly Below including Cash in Hand */}
+      <div className="stats no-print" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
+        <Metric
+          label="Customers Dues"
+          value={stats.customerDues ?? stats.totalBalance ?? "0.00"}
+          caption={`Overall billed: ${rupees(stats.totalBilled ?? "0.00")} · Received: ${rupees(stats.totalReceived ?? "0.00")}`}
+          accent
+        />
+        <Metric
+          label="Cash in Hand (Mudhasir)"
+          value={cashInHand}
+          caption="Cash held with salesman · manager receives directly on dashboard"
+          icon={Wallet}
+          tone="cash"
+        />
+        <Metric
+          label="Total Products Sold"
+          value={stats.todayQty ?? "0"}
+          caption={`Today: ${stats.todayQty ?? "0"} · Overall: ${stats.totalQty ?? "0"}`}
+          icon={FileText}
+          tone="bills"
+          isCurrency={false}
+        />
+        <Metric
+          label="Today's Billed"
+          value={stats.todayBilled ?? "0.00"}
+          caption={formatBilledCaption(
+            stats.todayGrossBilled ?? stats.todayBilled,
+            stats.todayReversed,
+            stats.todayReturned,
+          )}
+          tone="bills"
+        />
+        <Metric
+          label="Today's Received"
+          value={stats.todayReceived ?? "0.00"}
+          caption="Total collections received today"
+          icon={IndianRupee}
+          tone="cash"
+        />
+      </div>
+
+      {handoverSuccess && (
+        <div className="notice no-print" role="status" style={{ margin: "4px 0" }}>
+          {handoverSuccess}
+        </div>
+      )}
+      {handoverError && (
+        <div className="error no-print" role="alert" style={{ margin: "4px 0" }}>
+          {handoverError}
+        </div>
+      )}
+
+      {/* 3. Navigation Tabs (Line tab style) */}
+      <div className="direct-cig-tabs-line no-print">
+        <button
+          type="button"
+          className={`direct-cig-tab-btn ${activeView === "ledger" ? "active" : ""}`}
+          onClick={() => switchView("ledger")}
+        >
+          <Users size={17} /> Ledger
+        </button>
+        <button
+          type="button"
+          className={`direct-cig-tab-btn ${activeView === "new_bill" ? "active" : ""}`}
+          onClick={() => switchView("new_bill")}
+        >
+          <FileText size={17} /> New Bill
+        </button>
+        <button
+          type="button"
+          className={`direct-cig-tab-btn ${activeView === "receive_money" ? "active" : ""}`}
+          onClick={() => switchView("receive_money")}
+        >
+          <IndianRupee size={17} /> Receive
+        </button>
+        <button
+          type="button"
+          className={`direct-cig-tab-btn ${activeView === "loading_sheet" ? "active" : ""}`}
+          onClick={() => switchView("loading_sheet")}
+        >
+          <Package size={17} /> Loading Sheet {selectedBillIds.length > 0 ? `(${selectedBillIds.length})` : ""}
+        </button>
+        <button
+          type="button"
+          className={`direct-cig-tab-btn ${activeView === "handovers" ? "active" : ""}`}
+          onClick={() => switchView("handovers")}
+        >
+          <ArrowLeftRight size={17} /> Settlements & History
+        </button>
+        <button
+          type="button"
+          className={`direct-cig-tab-btn ${activeView === "register" ? "active" : ""}`}
+          onClick={() => switchView("register")}
+        >
+          <Layers size={17} /> Register
+        </button>
+        <button
+          type="button"
+          className={`direct-cig-tab-btn ${activeView === "saved_drafts" ? "active" : ""}`}
+          onClick={() => switchView("saved_drafts")}
+        >
+          <Layers size={17} /> Saved Drafts {directCigDrafts.length > 0 ? `(${directCigDrafts.length})` : ""}
+        </button>
+      </div>
+
+      {billSuccess && (
+        <div
+          style={{
+            background: "#f0fdf4",
+            border: "1px solid #86efac",
+            borderRadius: 10,
+            padding: "12px 16px",
+            color: "#166534",
+            marginBottom: 16,
+            fontWeight: 600,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 8,
+            boxShadow: "0 2px 4px rgba(22, 101, 52, 0.08)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <CheckCircle2 size={18} color="#16a34a" />
+            <span>{billSuccess.text}</span>
+            {billSuccess.billId ? (
+              <button
+                type="button"
+                onClick={() => onSelect(billSuccess.billId!)}
+                style={{
+                  background: "#16a34a",
+                  color: "#ffffff",
+                  border: "none",
+                  borderRadius: 6,
+                  padding: "4px 12px",
+                  fontSize: 13,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  transition: "background 0.15s ease",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "#15803d")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "#16a34a")}
+                title="Click to view and print this bill"
+              >
+                <span>{billSuccess.billNo || "View Bill"}</span>
+                <ExternalLink size={13} />
+              </button>
+            ) : (
+              <strong style={{ color: "#166534" }}>{billSuccess.billNo}</strong>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => setBillSuccess(null)}
+            style={{ background: "none", border: "none", color: "#166534", cursor: "pointer", padding: "0 4px", fontSize: 16, lineHeight: 1 }}
+            aria-label="Dismiss success message"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* VIEW 1: CUSTOMER LEDGER & BALANCES TABLE */}
+      {activeView === "ledger" && (
+        <section className="panel" style={{ padding: "16px 18px" }}>
+          <div className="direct-cig-ledger-header">
+            <div>
+              <h2 style={{ margin: 0, fontSize: 18 }}>Customer Dues & Ledger</h2>
+              <p className="muted" style={{ margin: "4px 0 0", fontSize: 12 }}>
+                Customers under this salesman route owe directly to the business. Tap any customer to view full transaction statement.
+              </p>
+            </div>
+            <div className="direct-cig-search-wrap">
+              <input
+                type="search"
+                className="direct-cig-search-input"
+                placeholder="Search customer name or ID…"
+                value={searchTerm}
+                onChange={(e) => {
+                  setSearchTerm(e.target.value);
+                  setCustomerPageOffset(0);
+                }}
+              />
+              <Button
+                className="secondary"
+                onClick={() => summaryQuery.refetch()}
+                title="Refresh customer balances"
+                style={{ padding: "8px 12px", minHeight: 40 }}
+              >
+                <RefreshCw size={15} /> <span className="hidden sm:inline">Refresh</span>
+              </Button>
+            </div>
+          </div>
+
+          {summaryQuery.isLoading ? (
+            <p style={{ padding: 16 }}>Loading customer balances…</p>
+          ) : customers.length === 0 ? (
+            <div style={{ padding: 30, textAlign: "center", color: "#64748b" }}>
+              <p>{searchTerm.trim() ? "No customers match your search." : "No customers found for this selection."}</p>
+            </div>
+          ) : (
+            <>
+              {/* DESKTOP TABLE VIEW (hidden on screens < 768px) */}
+              <div className="direct-cig-table-desktop">
+                <div className="table-scroll">
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ background: "#f8fafc", textAlign: "left", borderBottom: "2px solid #e2e8f0" }}>
+                        <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#64748b" }}>CUSTOMER CODE</th>
+                        <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#64748b" }}>CUSTOMER NAME</th>
+                        <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#64748b" }}>BEAT / AREA</th>
+                        <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#64748b", textAlign: "right" }}>OUTSTANDING DUE</th>
+                        <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#64748b", textAlign: "center", minWidth: 220 }}>ACTIONS</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {customers
+                        .slice(customerPageOffset, customerPageOffset + CUSTOMER_PAGE_SIZE)
+                        .map((c) => {
+                          const balNum = parseFloat(str(c.balance || "0"));
+                          const hasDue = balNum > 0;
+                          return (
+                            <tr
+                              key={str(c.id)}
+                              style={{
+                                borderBottom: "1px solid #f1f5f9",
+                                cursor: "pointer",
+                                background: "#ffffff",
+                              }}
+                              onClick={() => onCustomerStatement(str(c.id))}
+                            >
+                              <td style={{ padding: "10px 12px", fontFamily: "monospace", fontSize: 12, color: "#64748b" }}>
+                                {str(c.customer_id)}
+                              </td>
+                              <td style={{ padding: "10px 12px", fontWeight: 600, color: "#1e293b" }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                  <span>{str(c.customer_name)}</span>
+                                  {c.is_gst ? (
+                                    <span
+                                      style={{
+                                        fontSize: "0.68rem",
+                                        fontWeight: 700,
+                                        padding: "1px 5px",
+                                        borderRadius: 4,
+                                        backgroundColor: "#fef3c7",
+                                        color: "#92400e",
+                                        border: "1px solid #fde68a",
+                                      }}
+                                    >
+                                      GST
+                                    </span>
+                                  ) : null}
+                                </div>
+                              </td>
+                              <td style={{ padding: "10px 12px", fontSize: 13, color: "#475569" }}>
+                                <span style={{ background: "#f1f5f9", padding: "2px 6px", borderRadius: 4 }}>
+                                  {str(c.beat_name) || `Beat ${str(c.beat_code)}`}
+                                </span>
+                              </td>
+                              <td
+                                style={{
+                                  padding: "10px 12px",
+                                  textAlign: "right",
+                                  fontWeight: 700,
+                                  fontSize: 14,
+                                  color: hasDue ? "#dc2626" : "#475569",
+                                }}
+                              >
+                                {rupees(c.balance)}
+                              </td>
+                              <td style={{ padding: "10px 12px", textAlign: "center" }}>
+                                <div style={{ display: "inline-flex", gap: 6, alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setBillCustomerId(str(c.id));
+                                      setActiveView("new_bill");
+                                    }}
+                                    title={`Create new direct bill for ${str(c.customer_name)}`}
+                                    style={{
+                                      background: "#f8fafc",
+                                      border: "1px solid #cbd5e1",
+                                      padding: "4px 8px",
+                                      borderRadius: 6,
+                                      fontSize: 11,
+                                      fontWeight: 600,
+                                      cursor: "pointer",
+                                      color: "#0f172a",
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: 3,
+                                    }}
+                                  >
+                                    <Plus size={12} /> Bill
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setReceiveCustomerId(str(c.id));
+                                      setActiveView("receive_money");
+                                    }}
+                                    title={`Receive money from ${str(c.customer_name)}`}
+                                    style={{
+                                      background: "#f8fafc",
+                                      border: "1px solid #cbd5e1",
+                                      padding: "4px 8px",
+                                      borderRadius: 6,
+                                      fontSize: 11,
+                                      fontWeight: 600,
+                                      cursor: "pointer",
+                                      color: "#0f172a",
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: 3,
+                                    }}
+                                  >
+                                    <IndianRupee size={12} /> Receive
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => onCustomerStatement(str(c.id))}
+                                    title={`View statement for ${str(c.customer_name)}`}
+                                    style={{
+                                      background: "#f8fafc",
+                                      border: "1px solid #cbd5e1",
+                                      padding: "4px 8px",
+                                      borderRadius: 6,
+                                      fontSize: 11,
+                                      fontWeight: 600,
+                                      cursor: "pointer",
+                                      color: "#0f172a",
+                                    }}
+                                  >
+                                    Statement →
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* MOBILE CARDS VIEW (visible on screens < 768px) */}
+              <div className="direct-cig-cards-mobile">
+                {customers
+                  .slice(customerPageOffset, customerPageOffset + CUSTOMER_PAGE_SIZE)
+                  .map((c) => {
+                    const balNum = parseFloat(str(c.balance || "0"));
+                    const hasDue = balNum > 0;
+                    return (
+                      <div
+                        key={str(c.id)}
+                        className="customer-mobile-card"
+                        onClick={() => onCustomerStatement(str(c.id))}
+                      >
+                        <div className="customer-card-header">
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div className="customer-card-name">{str(c.customer_name)}</div>
+                            <div className="customer-card-code">ID: {str(c.customer_id)}</div>
+                          </div>
+                          <span className="customer-card-beat">
+                            {str(c.beat_name) || `Beat ${str(c.beat_code)}`}
+                          </span>
+                        </div>
+
+                        <div className="customer-card-stats" style={{ gridTemplateColumns: "1fr", padding: "10px 14px", background: hasDue ? "#fef2f2" : "#f0fdf4", border: `1px solid ${hasDue ? "#fecaca" : "#bbf7d0"}` }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <span style={{ fontSize: 12, fontWeight: 600, color: hasDue ? "#991b1b" : "#166534" }}>Outstanding Due</span>
+                            <span
+                              style={{
+                                fontSize: 16,
+                                fontWeight: 800,
+                                color: hasDue ? "#dc2626" : "#16a34a",
+                              }}
+                            >
+                              {rupees(c.balance)}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Action buttons row */}
+                        <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            gap: 8,
+                            paddingTop: 8,
+                            borderTop: "1px solid #f1f5f9",
+                            marginTop: 4,
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setBillCustomerId(str(c.id));
+                                setActiveView("new_bill");
+                              }}
+                              style={{
+                                background: "#f8fafc",
+                                border: "1px solid #cbd5e1",
+                                padding: "5px 10px",
+                                borderRadius: 6,
+                                fontSize: 11,
+                                fontWeight: 600,
+                                color: "#0f172a",
+                                cursor: "pointer",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 4,
+                              }}
+                            >
+                              <Plus size={12} /> Bill
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setReceiveCustomerId(str(c.id));
+                                setActiveView("receive_money");
+                              }}
+                              style={{
+                                background: "#f8fafc",
+                                border: "1px solid #cbd5e1",
+                                padding: "5px 10px",
+                                borderRadius: 6,
+                                fontSize: 11,
+                                fontWeight: 600,
+                                color: "#0f172a",
+                                cursor: "pointer",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 4,
+                              }}
+                            >
+                              <IndianRupee size={12} /> Receive
+                            </button>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => onCustomerStatement(str(c.id))}
+                            style={{
+                              background: "none",
+                              border: "none",
+                              fontSize: 12,
+                              fontWeight: 700,
+                              color: "#64748b",
+                              cursor: "pointer",
+                              padding: "4px",
+                            }}
+                          >
+                            Statement →
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+
+              {/* PAGINATION (Responsive for mobile & desktop) */}
+              <div
+                className="pagination pagination-mobile"
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  padding: "12px 14px",
+                  background: "#f8fafc",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: 10,
+                  marginTop: 12,
+                }}
+              >
+                <div className="button-group">
+                  <Button
+                    className="secondary"
+                    disabled={customerPageOffset === 0}
+                    onClick={() => setCustomerPageOffset((prev) => Math.max(0, prev - CUSTOMER_PAGE_SIZE))}
+                    style={{ minHeight: 38 }}
+                  >
+                    ← Previous
+                  </Button>
+                  <Button
+                    className="secondary"
+                    disabled={customerPageOffset + CUSTOMER_PAGE_SIZE >= customers.length}
+                    onClick={() => setCustomerPageOffset((prev) => prev + CUSTOMER_PAGE_SIZE)}
+                    style={{ minHeight: 38 }}
+                  >
+                    Next →
+                  </Button>
+                </div>
+                <span style={{ fontSize: 12, color: "#475569" }}>
+                  Page <b>{Math.floor(customerPageOffset / CUSTOMER_PAGE_SIZE) + 1}</b> · Showing <b>{customers.length ? customerPageOffset + 1 : 0}–{Math.min(customerPageOffset + CUSTOMER_PAGE_SIZE, customers.length)}</b> of <b>{customers.length}</b>
+                </span>
+              </div>
+            </>
+          )}
+        </section>
+      )}
+
+      {/* VIEW 2: NEW DIRECT BILL */}
+      {activeView === "new_bill" && (
+        <section
+          style={{
+            background: "#ffffff",
+            border: "1px solid #e2e8f0",
+            borderRadius: 16,
+            padding: "20px 18px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ background: "#ffedd5", color: "#c2410c", padding: "4px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>
+                  INVOICE ENTRY
+                </span>
+                <h2 style={{ margin: 0, fontSize: 19, color: "#0f172a" }}>Create New Direct Customer Bill</h2>
+              </div>
+              <p className="muted" style={{ margin: "6px 0 0", fontSize: 12 }}>
+                Items billed here post directly to the customer's ledger under route: <b>{str(salesmenList.find((s) => str(s.id) === selectedSalesmanId)?.name || "this route")}</b>.
+              </p>
+            </div>
+            {directCigDrafts.length > 0 && (
+              <Button
+                className="secondary"
+                type="button"
+                onClick={() => switchView("saved_drafts")}
+                style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}
+              >
+                Saved Drafts ({directCigDrafts.length})
+              </Button>
+            )}
+          </div>
+
+          {billDraftNotice && (
+            <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "10px 14px", color: "#1e40af", marginBottom: 14, fontSize: 13, fontWeight: 500, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>{billDraftNotice}</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setBillDraft(null);
+                  setBillDraftNotice("");
+                }}
+                style={{ background: "none", border: "none", color: "#6b7280", cursor: "pointer", fontSize: 12, fontWeight: 600 }}
+              >
+                Clear draft association
+              </button>
+            </div>
+          )}
+
+          {billError && (
+            <div role="alert" className="error" style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>{billError}</span>
+              <button
+                type="button"
+                onClick={() => setBillError("")}
+                style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", padding: "0 4px", fontSize: 16, lineHeight: 1 }}
+                aria-label="Dismiss error"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              // Accidental form submissions (e.g. from Enter keys) must NEVER post a live financial bill!
+              // At most, save as draft so no financial ledger mutation occurs.
+              handleSaveDraft();
+            }}
+            onKeyDown={(e) => {
+              if ((e.key === "Enter" || e.keyCode === 13) && (e.target as HTMLElement)?.tagName !== "TEXTAREA") {
+                // Prevent accidental submission when scanning or pressing Enter
+                e.preventDefault();
+              }
+            }}
+            style={{ display: "flex", flexDirection: "column", gap: 18 }}
+          >
+            {/* Customer & Date Selection Cards */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+                gap: 14,
+                background: "#f8fafc",
+                padding: "16px 16px",
+                borderRadius: 12,
+                border: "1px solid #e2e8f0",
+              }}
+            >
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>
+                  SELECT CUSTOMER *
+                </label>
+                <CustomerSearchableSelect
+                  customers={customers}
+                  selectedId={billCustomerId}
+                  onSelect={(id) => setBillCustomerId(id)}
+                  placeholder="Search customer by name, code or beat…"
+                />
+                {selectedBillCustomer && (
+                  <div style={{ marginTop: 8, fontSize: 12, color: "#64748b", display: "flex", gap: 14, flexWrap: "wrap" }}>
+                    <span>Beat: <b>{str(selectedBillCustomer.beat_name) || `Beat ${str(selectedBillCustomer.beat_code)}`}</b></span>
+                    <span>Current Due: <b style={{ color: parseFloat(str(selectedBillCustomer.balance || "0")) > 0 ? "#dc2626" : "#16a34a" }}>{rupees(selectedBillCustomer.balance)}</b></span>
+                  </div>
+                )}
+                <div style={{ marginTop: 10 }}>
+                  <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#64748b", marginBottom: 4 }}>
+                    BILL NOTES / REMARKS (OPTIONAL)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Special order remarks, delivery note, customer request…"
+                    value={billNote}
+                    onChange={(e) => setBillNote(e.target.value)}
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      borderRadius: 8,
+                      border: "1px solid #cbd5e1",
+                      fontSize: 13,
+                      background: "#ffffff",
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>
+                  BILL DATE *
+                </label>
+                <input
+                  type="date"
+                  value={billDate}
+                  onChange={(e) => setBillDate(e.target.value)}
+                  style={{
+                    width: "100%",
+                    padding: "9px 12px",
+                    borderRadius: 10,
+                    border: "1px solid #cbd5e1",
+                    fontSize: 13,
+                    background: "#ffffff",
+                    fontWeight: 500,
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Barcode / Quick Code Scanner Input */}
+            <BarcodeScannerInput
+              products={cigaretteProducts}
+              onProductScanned={handleProductScanned}
+              externalNotFoundCode={barcodeNotFoundCode}
+              onClearNotFound={() => setBarcodeNotFoundCode(null)}
+              autoFocus={true}
+            />
+
+            {/* Bill Lines: DESKTOP TABLE */}
+            <div className="bill-lines-desktop" style={{ border: "1px solid #e2e8f0", borderRadius: 12, overflow: "visible", boxShadow: "0 1px 2px rgba(0,0,0,0.02)" }}>
+              <div className="table-scroll" style={{ overflow: "visible" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ background: "#f8fafc", textAlign: "left", borderBottom: "1.5px solid #e2e8f0" }}>
+                      <th style={{ width: 44, textAlign: "center", padding: "10px 8px", fontSize: 12, color: "#64748b" }}>#</th>
+                      <th style={{ width: 150, padding: "10px 12px", fontSize: 12, color: "#64748b" }}>PRODUCT ID</th>
+                      <th style={{ minWidth: 280, padding: "10px 12px", fontSize: 12, color: "#64748b" }}>PRODUCT NAME</th>
+                      <th style={{ width: 130, padding: "10px 12px", fontSize: 12, color: "#64748b" }}>QUANTITY (m)</th>
+                      <th style={{ width: 130, padding: "10px 12px", fontSize: 12, color: "#64748b" }}>RATE / m</th>
+                      <th style={{ width: 140, textAlign: "right", padding: "10px 16px", fontSize: 12, color: "#64748b" }}>AMOUNT</th>
+                      <th style={{ width: 50, textAlign: "center" }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {billRowIds.map((rowId, index) => {
+                      const productId = billRowProducts[rowId] ?? "";
+                      const p = cigaretteProducts.find((x) => str(x.id) === productId);
+                      const quantity = quantities[rowId] ?? "";
+                      const normQty = quantity.trim().startsWith(".") ? "0" + quantity.trim() : quantity.trim();
+                      const lineAmount = (() => {
+                        if (!p || !p.rate) return null;
+                        const qNum = Number(normQty);
+                        const rNum = Number(p.rate);
+                        if (isNaN(qNum) || isNaN(rNum) || qNum <= 0 || rNum <= 0) return null;
+                        const basisNum = Number(p.basis || 1) || 1;
+                        return (Math.round((qNum * rNum / basisNum) * 100) / 100).toFixed(2);
+                      })();
+                      const disabledProductIds = [
+                        ...billRowIds.filter((id) => id !== rowId && billRowProducts[id]).map((id) => billRowProducts[id]),
+                        ...confectioneryRows.map((r) => r.productId).filter(Boolean),
+                      ];
+
+                      return (
+                        <tr key={rowId} style={{ borderBottom: "1px solid #f1f5f9", background: index % 2 === 0 ? "#ffffff" : "#fafafa" }}>
+                          <td style={{ textAlign: "center", color: "#94a3b8", fontSize: 13, fontWeight: 500 }}>
+                            {index + 1}
+                          </td>
+                          <td style={{ padding: "8px 12px" }}>
+                            <ProductIdSearchableSelect
+                              products={cigaretteProducts}
+                              selectedId={productId}
+                              disabledIds={disabledProductIds}
+                              onSelect={(selectedProdId) => {
+                                setBillRowProducts((prev) => ({ ...prev, [rowId]: selectedProdId }));
+                              }}
+                            />
+                          </td>
+                          <td style={{ padding: "8px 12px" }}>
+                            <ProductSearchableSelect
+                              products={cigaretteProducts}
+                              selectedId={productId}
+                              disabledIds={disabledProductIds}
+                              onSelect={(selectedProdId) => {
+                                setBillRowProducts((prev) => ({ ...prev, [rowId]: selectedProdId }));
+                              }}
+                            />
+                          </td>
+                          <td style={{ padding: "8px 12px" }}>
+                            <input
+                              id={`qty-input-${rowId}`}
+                              type="text"
+                              inputMode="decimal"
+                              placeholder="e.g. 0.2"
+                              value={quantity}
+                              onChange={(e) => setQuantities((prev) => ({ ...prev, [rowId]: e.target.value }))}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.keyCode === 13) {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  const scanInput = document.querySelector('input[placeholder*="Scan barcode"]') as HTMLInputElement;
+                                  if (scanInput) scanInput.focus();
+                                }
+                              }}
+                              style={{ width: "100%", padding: "7px 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 13 }}
+                            />
+                          </td>
+                          <td style={{ padding: "8px 12px", fontSize: 13, color: "#64748b" }}>
+                            {p?.rate ? rupees(p.rate) : "—"}
+                          </td>
+                          <td style={{ padding: "8px 16px", textAlign: "right", fontWeight: 700, fontSize: 14, color: "#0f172a" }}>
+                            {lineAmount ? rupees(lineAmount) : "—"}
+                          </td>
+                          <td style={{ textAlign: "center" }}>
+                            {billRowIds.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setBillRowIds((prev) => prev.filter((id) => id !== rowId));
+                                  setBillRowProducts((prev) => {
+                                    const next = { ...prev };
+                                    delete next[rowId];
+                                    return next;
+                                  });
+                                  setQuantities((prev) => {
+                                    const next = { ...prev };
+                                    delete next[rowId];
+                                    return next;
+                                  });
+                                }}
+                                style={{ background: "none", border: "none", color: "#dc2626", cursor: "pointer", padding: 4 }}
+                                title="Delete row"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div style={{ padding: "14px 20px", background: "#f8fafc", display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid #e2e8f0" }}>
+                <Button
+                  className="secondary"
+                  type="button"
+                  onClick={() => setBillRowIds((prev) => [...prev, crypto.randomUUID()])}
+                  style={{ display: "flex", alignItems: "center", gap: 6 }}
+                >
+                  <Plus size={16} /> Add Product Line
+                </Button>
+                <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, paddingRight: 16, borderRight: "1px solid #cbd5e1" }}>
+                    <span style={{ fontSize: 13, color: "#64748b", fontWeight: 500 }}>Cigarettes Qty:</span>
+                    <strong style={{ fontSize: 16, color: "#0f172a" }}>{cigTotalQty} units</strong>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 13, color: "#64748b", fontWeight: 500 }}>Cigarettes Subtotal:</span>
+                    <strong style={{ fontSize: 18, color: "#0f172a" }}>{rupees(cigSubtotal)}</strong>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Bill Lines: MOBILE TOUCH-FRIENDLY CARDS (< 768px) */}
+            <div className="bill-lines-mobile">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#475569", textTransform: "uppercase" }}>
+                  Items ({billRowIds.length})
+                </span>
+              </div>
+
+              {billRowIds.map((rowId, index) => {
+                const productId = billRowProducts[rowId] ?? "";
+                const p = cigaretteProducts.find((x) => str(x.id) === productId);
+                const quantity = quantities[rowId] ?? "";
+                const normQty = quantity.trim().startsWith(".") ? "0" + quantity.trim() : quantity.trim();
+                const lineAmount = (() => {
+                  if (!p || !p.rate) return null;
+                  const qNum = Number(normQty);
+                  const rNum = Number(p.rate);
+                  if (isNaN(qNum) || isNaN(rNum) || qNum <= 0 || rNum <= 0) return null;
+                  const basisNum = Number(p.basis || 1) || 1;
+                  return (Math.round((qNum * rNum / basisNum) * 100) / 100).toFixed(2);
+                })();
+                const disabledProductIds = [
+                  ...billRowIds.filter((id) => id !== rowId && billRowProducts[id]).map((id) => billRowProducts[id]),
+                  ...confectioneryRows.map((r) => r.productId).filter(Boolean),
+                ];
+
+                return (
+                  <div key={rowId} className={`bill-line-card-mobile ${p ? "active-line" : ""}`}>
+                    <div className="bill-line-card-header">
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>
+                        ITEM #{index + 1}
+                      </span>
+                      {billRowIds.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBillRowIds((prev) => prev.filter((id) => id !== rowId));
+                            setBillRowProducts((prev) => {
+                              const next = { ...prev };
+                              delete next[rowId];
+                              return next;
+                            });
+                            setQuantities((prev) => {
+                              const next = { ...prev };
+                              delete next[rowId];
+                              return next;
+                            });
+                          }}
+                          style={{ background: "none", border: "none", color: "#dc2626", cursor: "pointer", padding: "4px 8px" }}
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      <div>
+                        <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>
+                          SELECT PRODUCT
+                        </label>
+                        <ProductSearchableSelect
+                          products={cigaretteProducts}
+                          selectedId={productId}
+                          disabledIds={disabledProductIds}
+                          onSelect={(selectedProdId) => {
+                            setBillRowProducts((prev) => ({ ...prev, [rowId]: selectedProdId }));
+                          }}
+                        />
+                      </div>
+
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, alignItems: "center" }}>
+                        <div>
+                          <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>
+                            QUANTITY (m)
+                          </label>
+                          <input
+                            id={`qty-input-m-${rowId}`}
+                            type="text"
+                            inputMode="decimal"
+                            placeholder="e.g. 0.2"
+                            value={quantity}
+                            onChange={(e) => setQuantities((prev) => ({ ...prev, [rowId]: e.target.value }))}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.keyCode === 13) {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                const scanInput = document.querySelector('input[placeholder*="Scan barcode"]') as HTMLInputElement;
+                                if (scanInput) scanInput.focus();
+                              }
+                            }}
+                            style={{ width: "100%", padding: "9px 10px", borderRadius: 8, border: "1.5px solid #cbd5e1", fontSize: 14, fontWeight: 600 }}
+                          />
+                        </div>
+
+                        <div style={{ background: "#f8fafc", padding: "8px 10px", borderRadius: 8, border: "1px solid #f1f5f9" }}>
+                          <div style={{ fontSize: 10, color: "#64748b", fontWeight: 700 }}>RATE / BASIS</div>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: "#334155", marginTop: 2 }}>
+                            {p?.rate ? `${rupees(p.rate)} / ${p.basis || 1}m` : "—"}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#f8fafc", padding: "8px 12px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                        <span style={{ fontSize: 12, color: "#64748b" }}>Line Subtotal:</span>
+                        <strong style={{ fontSize: 15, color: lineAmount ? "#0f172a" : "#94a3b8" }}>
+                          {lineAmount ? rupees(lineAmount) : "₹0.00"}
+                        </strong>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+
+              <Button
+                className="secondary full"
+                type="button"
+                onClick={() => setBillRowIds((prev) => [...prev, crypto.randomUUID()])}
+                style={{ minHeight: 44, marginTop: 4, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}
+              >
+                <Plus size={16} /> Add Another Product Line
+              </Button>
+
+              <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 12, padding: "12px 16px", marginTop: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <span style={{ fontSize: 12, fontWeight: 500, color: "#64748b" }}>Cigarettes Qty: </span>
+                  <strong style={{ fontSize: 15, color: "#0f172a" }}>{cigTotalQty} units</strong>
+                </div>
+                <div>
+                  <span style={{ fontSize: 12, fontWeight: 500, color: "#64748b" }}>Cigarettes Subtotal: </span>
+                  <strong style={{ fontSize: 16, color: "#0f172a" }}>{rupees(cigSubtotal)}</strong>
+                </div>
+              </div>
+            </div>
+
+            {/* Confectionery Items Section */}
+            <div
+              style={{
+                border: "1px solid",
+                borderColor: hasConfectionery ? "#fed7aa" : "#e2e8f0",
+                borderRadius: 12,
+                padding: "14px 16px",
+                background: hasConfectionery ? "#fffbeb" : "#f8fafc",
+                transition: "background 0.15s ease, border-color 0.15s ease",
+              }}
+            >
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  fontSize: 13,
+                  fontWeight: 650,
+                  color: hasConfectionery ? "#9a3412" : "#334155",
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={hasConfectionery}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setHasConfectionery(checked);
+                    if (checked && confectioneryRows.length === 0) {
+                      setConfectioneryRows([
+                        { rowId: crypto.randomUUID(), productId: "", code: "", name: "", quantity: "", rate: "", isManual: false },
+                      ]);
+                    }
+                  }}
+                  style={{ width: 17, height: 17, accentColor: "#ea580c", cursor: "pointer" }}
+                />
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <span>🍬</span> Also include confectionery items with this entry
+                </span>
+              </label>
+
+              {hasConfectionery && (
+                <div style={{ marginTop: 14 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+                    <div>
+                      <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#9a3412" }}>
+                        Confectionery Items
+                      </h3>
+                      <p style={{ margin: "2px 0 0", fontSize: 11, color: "#b45309" }}>
+                        Chocolates, candies, mints, biscuits billed along with cigarettes.
+                      </p>
+                    </div>
+                    <Button
+                      className="secondary"
+                      type="button"
+                      onClick={() => {
+                        setConfectioneryRows((prev) => [
+                          ...prev,
+                          { rowId: crypto.randomUUID(), productId: "", code: "", name: "", quantity: "", rate: "", isManual: false },
+                        ]);
+                      }}
+                      style={{ fontSize: 12, padding: "5px 12px", background: "#ffffff", borderColor: "#fcd34d", color: "#9a3412", display: "flex", alignItems: "center", gap: 4 }}
+                    >
+                      <Plus size={14} /> Add Confectionery Item
+                    </Button>
+                  </div>
+
+                  {confectioneryRows.length === 0 ? (
+                    <div style={{ textAlign: "center", padding: "16px", color: "#b45309", fontSize: 12, background: "rgba(255,255,255,0.6)", borderRadius: 8, border: "1px dashed #fde68a" }}>
+                      No confectionery items added. Click <b>+ Add Confectionery Item</b> if this bill includes chocolates, candies or snacks.
+                    </div>
+                  ) : (
+                    <>
+                      {/* Desktop Confectionery Table */}
+                      <div className="bill-lines-desktop" style={{ background: "#ffffff", border: "1px solid #fde68a", borderRadius: 10, overflow: "visible" }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                          <thead>
+                            <tr style={{ background: "#fef3c7", textAlign: "left", borderBottom: "1px solid #fde68a" }}>
+                              <th style={{ width: 40, textAlign: "center", fontSize: 12, color: "#92400e" }}>#</th>
+                              <th style={{ width: 130, padding: "8px 10px", fontSize: 12, color: "#92400e" }}>ID</th>
+                              <th style={{ minWidth: 260, padding: "8px 10px", fontSize: 12, color: "#92400e" }}>NAME</th>
+                              <th style={{ width: 120, padding: "8px 10px", fontSize: 12, color: "#92400e" }}>QUANTITY</th>
+                              <th style={{ width: 130, padding: "8px 10px", fontSize: 12, color: "#92400e" }}>RATE / PIECE</th>
+                              <th style={{ width: 130, textAlign: "right", padding: "8px 14px", fontSize: 12, color: "#92400e" }}>AMOUNT</th>
+                              <th style={{ width: 44, textAlign: "center" }}></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {confectioneryRows.map((row, idx) => {
+                              const qNum = Number(row.quantity.trim().startsWith(".") ? "0" + row.quantity.trim() : row.quantity.trim());
+                              const rNum = Number(row.rate.trim().startsWith(".") ? "0" + row.rate.trim() : row.rate.trim());
+                              const lineAmount = (!isNaN(qNum) && !isNaN(rNum) && qNum > 0 && rNum > 0)
+                                ? (Math.round(qNum * rNum * 100) / 100).toFixed(2)
+                                : null;
+                              const disabledConfIds = [
+                                ...confectioneryRows.filter((r) => r.rowId !== row.rowId && r.productId).map((r) => r.productId),
+                                ...Object.values(billRowProducts).filter(Boolean),
+                              ];
+
+                              return (
+                                <tr key={row.rowId} style={{ borderBottom: "1px solid #fef3c7" }}>
+                                  <td style={{ textAlign: "center", color: "#b45309", fontSize: 12, fontWeight: 600 }}>
+                                    {idx + 1}
+                                  </td>
+                                  <td style={{ padding: "6px 10px" }}>
+                                    <input
+                                      type="text"
+                                      placeholder="e.g. CONF-01"
+                                      value={row.code}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setConfectioneryRows((prev) =>
+                                          prev.map((r) => (r.rowId === row.rowId ? { ...r, code: val } : r))
+                                        );
+                                      }}
+                                      style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 12, fontFamily: "monospace" }}
+                                    />
+                                  </td>
+                                  <td style={{ padding: "6px 10px" }}>
+                                    <ConfectionerySearchableSelect
+                                      products={confectioneryProducts}
+                                      selectedId={row.productId}
+                                      selectedName={row.name}
+                                      disabledIds={disabledConfIds}
+                                      onSelectMaster={(p) => {
+                                        setConfectioneryRows((prev) =>
+                                          prev.map((r) =>
+                                            r.rowId === row.rowId
+                                              ? {
+                                                ...r,
+                                                productId: str(p.id),
+                                                code: str(p.code),
+                                                name: str(p.name),
+                                                rate: str(p.rate || "0.00"),
+                                                isManual: false,
+                                              }
+                                              : r
+                                          )
+                                        );
+                                      }}
+                                      onSelectManual={(customName) => {
+                                        setConfectioneryRows((prev) =>
+                                          prev.map((r) =>
+                                            r.rowId === row.rowId
+                                              ? {
+                                                ...r,
+                                                productId: "",
+                                                code: r.code || "MANUAL",
+                                                name: customName,
+                                                isManual: true,
+                                              }
+                                              : r
+                                          )
+                                        );
+                                      }}
+                                    />
+                                  </td>
+                                  <td style={{ padding: "6px 10px" }}>
+                                    <input
+                                      type="text"
+                                      inputMode="decimal"
+                                      placeholder="0"
+                                      value={row.quantity}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setConfectioneryRows((prev) =>
+                                          prev.map((r) => (r.rowId === row.rowId ? { ...r, quantity: val } : r))
+                                        );
+                                      }}
+                                      style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 13 }}
+                                    />
+                                  </td>
+                                  <td style={{ padding: "6px 10px" }}>
+                                    <input
+                                      type="text"
+                                      inputMode="decimal"
+                                      placeholder="0.00"
+                                      value={row.rate}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setConfectioneryRows((prev) =>
+                                          prev.map((r) => (r.rowId === row.rowId ? { ...r, rate: val } : r))
+                                        );
+                                      }}
+                                      style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 13, fontWeight: 600 }}
+                                    />
+                                  </td>
+                                  <td style={{ padding: "6px 14px", textAlign: "right", fontWeight: 700, fontSize: 13, color: "#0f172a" }}>
+                                    {lineAmount ? rupees(lineAmount) : "—"}
+                                  </td>
+                                  <td style={{ textAlign: "center" }}>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setConfectioneryRows((prev) => prev.filter((r) => r.rowId !== row.rowId));
+                                      }}
+                                      style={{ background: "none", border: "none", color: "#dc2626", cursor: "pointer", padding: 4 }}
+                                      title="Remove confectionery line"
+                                    >
+                                      <Trash2 size={15} />
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                        <div style={{ padding: "12px 18px", background: "#fef9c3", display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid #fde68a" }}>
+                          <span style={{ fontSize: 12, color: "#92400e", fontWeight: 600 }}>Confectionery Lines ({confectioneryRows.length})</span>
+                          <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, paddingRight: 16, borderRight: "1px solid #fcd34d" }}>
+                              <span style={{ fontSize: 13, color: "#92400e", fontWeight: 500 }}>Confectionery Qty:</span>
+                              <strong style={{ fontSize: 16, color: "#78350f" }}>{confTotalQty} pcs</strong>
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              <span style={{ fontSize: 13, color: "#92400e", fontWeight: 500 }}>Confectionery Subtotal:</span>
+                              <strong style={{ fontSize: 18, color: "#78350f" }}>{rupees(confSubtotal)}</strong>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Mobile Confectionery Cards */}
+                      <div className="bill-lines-mobile" style={{ marginTop: 10 }}>
+                        {confectioneryRows.map((row, idx) => {
+                          const qNum = Number(row.quantity.trim().startsWith(".") ? "0" + row.quantity.trim() : row.quantity.trim());
+                          const rNum = Number(row.rate.trim().startsWith(".") ? "0" + row.rate.trim() : row.rate.trim());
+                          const lineAmount = (!isNaN(qNum) && !isNaN(rNum) && qNum > 0 && rNum > 0)
+                            ? (Math.round(qNum * rNum * 100) / 100).toFixed(2)
+                            : null;
+                          const disabledConfIds = [
+                            ...confectioneryRows.filter((r) => r.rowId !== row.rowId && r.productId).map((r) => r.productId),
+                            ...Object.values(billRowProducts).filter(Boolean),
+                          ];
+
+                          return (
+                            <div key={row.rowId} style={{ background: "#ffffff", border: "1px solid #fde68a", borderRadius: 10, padding: 12, marginBottom: 8 }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                                <span style={{ fontSize: 12, fontWeight: 700, color: "#92400e" }}>CONFECTIONERY #{idx + 1}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfectioneryRows((prev) => prev.filter((r) => r.rowId !== row.rowId))}
+                                  style={{ background: "none", border: "none", color: "#dc2626", cursor: "pointer", fontSize: 12 }}
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                <ConfectionerySearchableSelect
+                                  products={confectioneryProducts}
+                                  selectedId={row.productId}
+                                  selectedName={row.name}
+                                  disabledIds={disabledConfIds}
+                                  onSelectMaster={(p) => {
+                                    setConfectioneryRows((prev) =>
+                                      prev.map((r) =>
+                                        r.rowId === row.rowId
+                                          ? { ...r, productId: str(p.id), code: str(p.code), name: str(p.name), rate: str(p.rate || "0.00"), isManual: false }
+                                          : r
+                                      )
+                                    );
+                                  }}
+                                  onSelectManual={(customName) => {
+                                    setConfectioneryRows((prev) =>
+                                      prev.map((r) =>
+                                        r.rowId === row.rowId
+                                          ? { ...r, productId: "", code: r.code || "MANUAL", name: customName, isManual: true }
+                                          : r
+                                      )
+                                    );
+                                  }}
+                                />
+                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                                  <div>
+                                    <label style={{ display: "block", fontSize: 10, color: "#64748b", marginBottom: 2 }}>ID/CODE:</label>
+                                    <input
+                                      type="text"
+                                      placeholder="CONF-01"
+                                      value={row.code}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setConfectioneryRows((prev) => prev.map((r) => (r.rowId === row.rowId ? { ...r, code: val } : r)));
+                                      }}
+                                      style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 12 }}
+                                    />
+                                  </div>
+                                  <div>
+                                    <label style={{ display: "block", fontSize: 10, color: "#64748b", marginBottom: 2 }}>QTY:</label>
+                                    <input
+                                      type="text"
+                                      inputMode="decimal"
+                                      placeholder="0"
+                                      value={row.quantity}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setConfectioneryRows((prev) => prev.map((r) => (r.rowId === row.rowId ? { ...r, quantity: val } : r)));
+                                      }}
+                                      style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 12 }}
+                                    />
+                                  </div>
+                                  <div>
+                                    <label style={{ display: "block", fontSize: 10, color: "#64748b", marginBottom: 2 }}>RATE/PC:</label>
+                                    <input
+                                      type="text"
+                                      inputMode="decimal"
+                                      placeholder="0.00"
+                                      value={row.rate}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setConfectioneryRows((prev) => prev.map((r) => (r.rowId === row.rowId ? { ...r, rate: val } : r)));
+                                      }}
+                                      style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 12, fontWeight: 600 }}
+                                    />
+                                  </div>
+                                </div>
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#fef3c7", padding: "6px 10px", borderRadius: 6 }}>
+                                  <span style={{ fontSize: 11, color: "#92400e" }}>Line Subtotal:</span>
+                                  <strong style={{ fontSize: 13, color: "#92400e" }}>{lineAmount ? rupees(lineAmount) : "₹0.00"}</strong>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        {confectioneryRows.length > 0 && (
+                          <div style={{ background: "#fef9c3", border: "1px solid #fde68a", borderRadius: 10, padding: "10px 14px", marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <div>
+                              <span style={{ fontSize: 12, fontWeight: 500, color: "#92400e" }}>Conf Qty: </span>
+                              <strong style={{ fontSize: 14, color: "#78350f" }}>{confTotalQty} pcs</strong>
+                            </div>
+                            <div>
+                              <span style={{ fontSize: 12, fontWeight: 500, color: "#92400e" }}>Conf Subtotal: </span>
+                              <strong style={{ fontSize: 16, color: "#78350f" }}>{rupees(confSubtotal)}</strong>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Bill Discount Card */}
+            <div
+              style={{
+                border: "1px solid #e2e8f0",
+                borderRadius: 12,
+                padding: "14px 16px",
+                background: "#f8fafc",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+                <div>
+                  <label style={{ display: "block", fontSize: 13, fontWeight: 650, color: "#334155" }}>
+                    Overall Bill Discount (₹)
+                  </label>
+                  <p style={{ margin: "2px 0 0", fontSize: 12, color: "#64748b" }}>
+                    Optional flat rupee discount deducted from total bill
+                  </p>
+                </div>
+                <div style={{ width: 180 }}>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="0.00"
+                    value={billDiscount}
+                    onChange={(e) => setBillDiscount(e.target.value)}
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      borderRadius: 8,
+                      border: "1px solid #cbd5e1",
+                      fontSize: 14,
+                      fontWeight: 600,
+                      textAlign: "right",
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Overall Net Bill Total Summary */}
+            <div
+              style={{
+                border: "2px solid #0284c7",
+                borderRadius: 12,
+                padding: "16px 20px",
+                background: "linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 16,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 13, color: "#0369a1", fontWeight: 600 }}>Total Bill Quantity:</span>
+                <strong style={{ fontSize: 18, color: "#0c4a6e" }}>{estimatedTotalQty} units</strong>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
+                {Number(estimatedDiscount) > 0 && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, paddingRight: 16, borderRight: "1px solid #bae6fd" }}>
+                    <span style={{ fontSize: 13, color: "#0369a1", fontWeight: 500 }}>Subtotal:</span>
+                    <span style={{ fontSize: 16, color: "#0369a1" }}>{rupees(grossSubtotal)}</span>
+                    <span style={{ fontSize: 13, color: "#dc2626", fontWeight: 600 }}>(-{rupees(estimatedDiscount)})</span>
+                  </div>
+                )}
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ fontSize: 14, color: "#0369a1", fontWeight: 600 }}>Net Bill Total:</span>
+                  <strong style={{ fontSize: 22, color: "#0c4a6e" }}>{rupees(estimatedBillTotal)}</strong>
+                </div>
+              </div>
+            </div>
+
+            {/* Optional Immediate Payment Entry */}
+            <div
+              style={{
+                border: "1px solid #e2e8f0",
+                borderRadius: 12,
+                padding: "14px 16px",
+                background: billWithPayments ? "#f0fdf4" : "#f8fafc",
+                transition: "background 0.15s ease",
+              }}
+            >
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  fontSize: 13,
+                  fontWeight: 650,
+                  color: billWithPayments ? "#166534" : "#334155",
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={billWithPayments}
+                  onChange={(e) => setBillWithPayments(e.target.checked)}
+                  style={{ width: 17, height: 17, accentColor: "#16a34a", cursor: "pointer" }}
+                />
+                Also record money received with this entry
+              </label>
+
+              {billWithPayments && (
+                <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 12 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+                    <div style={{ background: "#ffffff", border: "1px solid #cbd5e1", borderRadius: 10, padding: "12px 14px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                        <Wallet size={15} color="#059669" />
+                        <label style={{ fontSize: 12, fontWeight: 700, color: "#0f172a" }}>Cash amount received (₹)</label>
+                      </div>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        placeholder="0.00"
+                        value={billCashPay}
+                        onChange={(e) => setBillCashPay(e.target.value)}
+                        style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 14, fontWeight: 600 }}
+                      />
+                      {accounts.filter((a) => a.type === "cash").length > 1 && (
+                        <div style={{ marginTop: 6 }}>
+                          <select
+                            value={billCashAccountId || defaultCash}
+                            onChange={(e) => setBillCashAccountId(e.target.value)}
+                            style={{ width: "100%", padding: "5px 8px", fontSize: 11, borderRadius: 6, border: "1px solid #cbd5e1" }}
+                          >
+                            {accounts.filter((a) => a.type === "cash").map((a) => (
+                              <option key={str(a.id)} value={str(a.id)}>{str(a.name)}</option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
+
+                    <div style={{ background: "#ffffff", border: "1px solid #cbd5e1", borderRadius: 10, padding: "12px 14px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                        <CreditCard size={15} color="#0284c7" />
+                        <label style={{ fontSize: 12, fontWeight: 700, color: "#0f172a" }}>Online / Bank amount (₹)</label>
+                      </div>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        placeholder="0.00"
+                        value={billOnlinePay}
+                        onChange={(e) => setBillOnlinePay(e.target.value)}
+                        style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 14, fontWeight: 600 }}
+                      />
+                      {accounts.filter((a) => a.type === "bank").length > 1 && (
+                        <div style={{ marginTop: 6 }}>
+                          <select
+                            value={billBankAccountId || defaultBank}
+                            onChange={(e) => setBillBankAccountId(e.target.value)}
+                            style={{ width: "100%", padding: "5px 8px", fontSize: 11, borderRadius: 6, border: "1px solid #cbd5e1" }}
+                          >
+                            {accounts.filter((a) => a.type === "bank").map((a) => (
+                              <option key={str(a.id)} value={str(a.id)}>{str(a.name)}</option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <input
+                      type="text"
+                      placeholder="Payment remarks / reference (e.g. UPI ref #, cheque #)"
+                      value={billPaymentNote}
+                      onChange={(e) => setBillPaymentNote(e.target.value)}
+                      style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 12 }}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="form-actions-mobile" style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
+              <Button className="secondary" type="button" onClick={() => setActiveView("ledger")}>
+                Cancel
+              </Button>
+              <Button
+                className="secondary"
+                disabled={billBusy}
+                type="button"
+                onClick={handleSaveDraft}
+              >
+                Save draft
+              </Button>
+              <Button
+                className="primary"
+                disabled={billBusy}
+                type="button"
+                onClick={handleCreateBill}
+                style={{ background: "#ea580c", borderColor: "#c2410c", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}
+              >
+                <Eye size={15} /> Review & Post Bill ({rupees(estimatedBillTotal)})
+              </Button>
+            </div>
+          </form>
+        </section>
+      )}
+
+      {/* VIEW 3: RECEIVE CUSTOMER MONEY */}
+      {activeView === "receive_money" && (
+        <section
+          style={{
+            background: "#ffffff",
+            border: "1px solid #e2e8f0",
+            borderRadius: 16,
+            padding: "20px 18px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ background: "#dcfce7", color: "#166534", padding: "4px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700 }}>
+                  COLLECTION ENTRY
+                </span>
+                <h2 style={{ margin: 0, fontSize: 19, color: "#0f172a" }}>Receive Money from Customer</h2>
+              </div>
+              <p className="muted" style={{ margin: "6px 0 0", fontSize: 12 }}>
+                Record money collected from a direct customer. Credits their individual account immediately.
+              </p>
+            </div>
+          </div>
+
+          {payError && <p className="error" style={{ marginBottom: 16 }}>{payError}</p>}
+          {paySuccess && (
+            <div style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 10, padding: "12px 16px", color: "#166534", marginBottom: 20, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
+              <CheckCircle2 size={18} color="#16a34a" /> {paySuccess}
+            </div>
+          )}
+
+          <form onSubmit={handleReceiveMoney} style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+                gap: 14,
+                background: "#f8fafc",
+                padding: "16px 16px",
+                borderRadius: 12,
+                border: "1px solid #e2e8f0",
+              }}
+            >
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>
+                  SELECT CUSTOMER *
+                </label>
+                <CustomerSearchableSelect
+                  customers={customers}
+                  selectedId={receiveCustomerId}
+                  onSelect={(id) => setReceiveCustomerId(id)}
+                  placeholder="Search customer to credit…"
+                />
+                {selectedReceiveCustomer && (
+                  <div style={{ marginTop: 8, fontSize: 12, color: "#64748b", display: "flex", gap: 14, flexWrap: "wrap" }}>
+                    <span>Beat: <b>{str(selectedReceiveCustomer.beat_name) || `Beat ${str(selectedReceiveCustomer.beat_code)}`}</b></span>
+                    <span>Outstanding Due: <b style={{ color: parseFloat(str(selectedReceiveCustomer.balance || "0")) > 0 ? "#dc2626" : "#16a34a" }}>{rupees(selectedReceiveCustomer.balance)}</b></span>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>
+                  PAYMENT DATE *
+                </label>
+                <input
+                  type="date"
+                  value={paymentDate}
+                  onChange={(e) => setPaymentDate(e.target.value)}
+                  style={{
+                    width: "100%",
+                    padding: "9px 12px",
+                    borderRadius: 10,
+                    border: "1px solid #cbd5e1",
+                    fontSize: 13,
+                    background: "#ffffff",
+                    fontWeight: 500,
+                  }}
+                />
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14 }}>
+              <div style={{ background: "#ffffff", border: "1.5px solid #e2e8f0", borderRadius: 12, padding: "16px 16px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <Wallet size={16} color="#059669" />
+                  <label style={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>Cash Amount (₹)</label>
+                </div>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  value={cashAmount}
+                  onChange={(e) => setCashAmount(e.target.value)}
+                  style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1.5px solid #cbd5e1", fontSize: 16, fontWeight: 700 }}
+                />
+                {accounts.filter((a) => a.type === "cash").length > 1 && (
+                  <div style={{ marginTop: 8 }}>
+                    <label style={{ fontSize: 11, color: "#64748b" }}>Deposited into Cash Drawer:</label>
+                    <select
+                      value={activeCashAccountId}
+                      onChange={(e) => setSelectedCashAccountId(e.target.value)}
+                      style={{ marginTop: 4, width: "100%", padding: "8px 10px", fontSize: 12, borderRadius: 6, border: "1px solid #cbd5e1" }}
+                    >
+                      {accounts.filter((a) => a.type === "cash").map((a) => (
+                        <option key={str(a.id)} value={str(a.id)}>{str(a.name)}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              <div style={{ background: "#ffffff", border: "1.5px solid #e2e8f0", borderRadius: 12, padding: "16px 16px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <CreditCard size={16} color="#0284c7" />
+                  <label style={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>Bank / Online Amount (₹)</label>
+                </div>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  value={bankAmount}
+                  onChange={(e) => setBankAmount(e.target.value)}
+                  style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1.5px solid #cbd5e1", fontSize: 16, fontWeight: 700 }}
+                />
+                {accounts.filter((a) => a.type === "bank").length > 1 && (
+                  <div style={{ marginTop: 8 }}>
+                    <label style={{ fontSize: 11, color: "#64748b" }}>Received into Bank Account:</label>
+                    <select
+                      value={activeBankAccountId}
+                      onChange={(e) => setSelectedBankAccountId(e.target.value)}
+                      style={{ marginTop: 4, width: "100%", padding: "8px 10px", fontSize: 12, borderRadius: 6, border: "1px solid #cbd5e1" }}
+                    >
+                      {accounts.filter((a) => a.type === "bank").map((a) => (
+                        <option key={str(a.id)} value={str(a.id)}>{str(a.name)}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>
+                NOTE / REFERENCE (OPTIONAL)
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. UPI Ref #, Cheque number, or payment remark…"
+                value={paymentNote}
+                onChange={(e) => setPaymentNote(e.target.value)}
+                style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid #cbd5e1", fontSize: 13 }}
+              />
+            </div>
+
+            <div className="form-actions-mobile" style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
+              <Button className="secondary" type="button" onClick={() => setActiveView("ledger")}>
+                Cancel
+              </Button>
+              <Button
+                className="primary"
+                disabled={payBusy}
+                type="submit"
+                style={{ background: "#16a34a", borderColor: "#15803d" }}
+              >
+                {payBusy ? "Recording Receipt…" : "Save Payment"}
+              </Button>
+            </div>
+          </form>
+        </section>
+      )}
+
+      {/* VIEW: LOADING SHEET & PRODUCTS SUMMARY */}
+      {activeView === "loading_sheet" && (
+        <section className="panel" style={{ padding: "20px 22px" }}>
+          {/* Top Header & Date Range Bar */}
+          <div
+            className="no-print"
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "flex-start",
+              flexWrap: "wrap",
+              gap: 16,
+              marginBottom: 20,
+              paddingBottom: 16,
+              borderBottom: "1px solid #e2e8f0",
+            }}
+          >
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <h2 style={{ margin: 0, fontSize: 19, color: "#0f172a" }}>
+                  Product Loading Sheet
+                </h2>
+                <span
+                  style={{
+                    background: "#e0f2fe",
+                    color: "#0369a1",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    padding: "3px 9px",
+                    borderRadius: 6,
+                  }}
+                >
+                  {loadingSheetScope === "all"
+                    ? "All Salesmen / Routes"
+                    : str(salesmenList.find((s) => str(s.id) === selectedSalesmanId)?.name || "Mudhashir")}
+                </span>
+              </div>
+              <p className="muted" style={{ margin: "4px 0 0", fontSize: 13 }}>
+                Select bills across the date range to aggregate all required products, quantities, and MRP/rates for vehicle loading.
+              </p>
+            </div>
+
+            {/* Controls Bar: Scope Toggle & Date Range Selector */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 12,
+              }}
+            >
+              {/* Salesman Scope Toggle */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  background: "#f8fafc",
+                  padding: "6px 12px",
+                  borderRadius: 10,
+                  border: "1px solid #e2e8f0",
+                }}
+              >
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#475569" }}>Route:</span>
+                <div style={{ display: "flex", gap: 4 }}>
+                  <button
+                    type="button"
+                    onClick={() => setLoadingSheetScope("route")}
+                    style={{
+                      padding: "4px 8px",
+                      fontSize: 11,
+                      fontWeight: 600,
+                      borderRadius: 5,
+                      border: "1px solid #cbd5e1",
+                      background: loadingSheetScope === "route" ? "#0284c7" : "#ffffff",
+                      color: loadingSheetScope === "route" ? "#ffffff" : "#475569",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {str(salesmenList.find((s) => str(s.id) === selectedSalesmanId)?.name || "Mudhashir")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLoadingSheetScope("all")}
+                    style={{
+                      padding: "4px 8px",
+                      fontSize: 11,
+                      fontWeight: 600,
+                      borderRadius: 5,
+                      border: "1px solid #cbd5e1",
+                      background: loadingSheetScope === "all" ? "#0284c7" : "#ffffff",
+                      color: loadingSheetScope === "all" ? "#ffffff" : "#475569",
+                      cursor: "pointer",
+                    }}
+                  >
+                    All Routes
+                  </button>
+                </div>
+              </div>
+
+              {/* Date Range Selector */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: 10,
+                  background: "#f8fafc",
+                  padding: "8px 12px",
+                  borderRadius: 10,
+                  border: "1px solid #e2e8f0",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <Calendar size={15} style={{ color: "#64748b" }} />
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "#475569" }}>From:</span>
+                  <input
+                    type="date"
+                    value={loadingSheetFrom}
+                    onChange={(e) => setLoadingSheetFrom(e.target.value)}
+                    style={{
+                      padding: "4px 8px",
+                      borderRadius: 6,
+                      border: "1px solid #cbd5e1",
+                      fontSize: 13,
+                      background: "#ffffff",
+                    }}
+                  />
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "#475569" }}>To:</span>
+                  <input
+                    type="date"
+                    value={loadingSheetTo}
+                    onChange={(e) => setLoadingSheetTo(e.target.value)}
+                    style={{
+                      padding: "4px 8px",
+                      borderRadius: 6,
+                      border: "1px solid #cbd5e1",
+                      fontSize: 13,
+                      background: "#ffffff",
+                    }}
+                  />
+                </div>
+
+                {/* Quick Preset Buttons */}
+                <div style={{ display: "flex", gap: 4 }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLoadingSheetFrom(date);
+                      setLoadingSheetTo(date);
+                    }}
+                    style={{
+                      padding: "4px 8px",
+                      fontSize: 11,
+                      fontWeight: 600,
+                      borderRadius: 5,
+                      border: "1px solid #cbd5e1",
+                      background: loadingSheetFrom === date && loadingSheetTo === date ? "#0284c7" : "#ffffff",
+                      color: loadingSheetFrom === date && loadingSheetTo === date ? "#ffffff" : "#475569",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Today
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const prev = new Date(date + "T12:00:00+05:30");
+                      prev.setDate(prev.getDate() - 1);
+                      const prevStr = prev.toISOString().slice(0, 10);
+                      setLoadingSheetFrom(prevStr);
+                      setLoadingSheetTo(prevStr);
+                    }}
+                    style={{
+                      padding: "4px 8px",
+                      fontSize: 11,
+                      fontWeight: 600,
+                      borderRadius: 5,
+                      border: "1px solid #cbd5e1",
+                      background: "#ffffff",
+                      color: "#475569",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Yesterday
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const past = new Date(date + "T12:00:00+05:30");
+                      past.setDate(past.getDate() - 7);
+                      setLoadingSheetFrom(past.toISOString().slice(0, 10));
+                      setLoadingSheetTo(date);
+                    }}
+                    style={{
+                      padding: "4px 8px",
+                      fontSize: 11,
+                      fontWeight: 600,
+                      borderRadius: 5,
+                      border: "1px solid #cbd5e1",
+                      background: "#ffffff",
+                      color: "#475569",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Last 7 Days
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLoadingSheetFrom("");
+                      setLoadingSheetTo("");
+                    }}
+                    style={{
+                      padding: "4px 8px",
+                      fontSize: 11,
+                      fontWeight: 600,
+                      borderRadius: 5,
+                      border: "1px solid #cbd5e1",
+                      background: !loadingSheetFrom && !loadingSheetTo ? "#0284c7" : "#ffffff",
+                      color: !loadingSheetFrom && !loadingSheetTo ? "#ffffff" : "#475569",
+                      cursor: "pointer",
+                    }}
+                  >
+                    All Dates
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Quick Metrics Banner */}
+          <div
+            className="no-print"
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+              gap: 12,
+              marginBottom: 20,
+              padding: 14,
+              background: "#f8fafc",
+              border: "1px solid #e2e8f0",
+              borderRadius: 12,
+            }}
+          >
+            <div>
+              <small style={{ color: "#64748b", textTransform: "uppercase", fontSize: 11, fontWeight: 700 }}>
+                Selected Bills
+              </small>
+              <div style={{ fontSize: 20, fontWeight: 800, color: "#0f172a", marginTop: 2 }}>
+                {selectedBillIds.length} <span style={{ fontSize: 12, fontWeight: 500, color: "#64748b" }}>of {loadingBills.length}</span>
+              </div>
+            </div>
+
+            <div>
+              <small style={{ color: "#64748b", textTransform: "uppercase", fontSize: 11, fontWeight: 700 }}>
+                Unique Products
+              </small>
+              <div style={{ fontSize: 20, fontWeight: 800, color: "#0284c7", marginTop: 2 }}>
+                {aggregatedProducts.length} items
+              </div>
+            </div>
+
+            <div>
+              <small style={{ color: "#64748b", textTransform: "uppercase", fontSize: 11, fontWeight: 700 }}>
+                Total Quantity to Load
+              </small>
+              <div style={{ fontSize: 20, fontWeight: 800, color: "#16a34a", marginTop: 2 }}>
+                {totalLoadedQty.toString()}
+              </div>
+            </div>
+
+            <div>
+              <small style={{ color: "#64748b", textTransform: "uppercase", fontSize: 11, fontWeight: 700 }}>
+                Total Billed Value
+              </small>
+              <div style={{ fontSize: 20, fontWeight: 800, color: "#0f172a", marginTop: 2 }}>
+                {rupees(totalLoadedAmount.toString())}
+              </div>
+            </div>
+          </div>
+
+          {/* Main 2-Column Split: Bills on Left (40%), Products on Right (60%) */}
+          <div
+            className="loading-sheet-grid"
+            style={{ gridTemplateColumns: loadingSheetBillsCollapsed ? "52px 1fr" : undefined }}
+          >
+            {/* LEFT COLUMN: BILL SELECTOR */}
+            {loadingSheetBillsCollapsed ? (
+              <div
+                className="no-print"
+                onClick={() => setLoadingSheetBillsCollapsed(false)}
+                title="Click to expand Bills selector"
+                style={{
+                  background: "#ffffff",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: 12,
+                  padding: "14px 6px",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  gap: 12,
+                  cursor: "pointer",
+                  userSelect: "none",
+                  transition: "all 0.15s ease",
+                  minHeight: "420px",
+                  boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
+                }}
+              >
+                <button
+                  type="button"
+                  className="sidebar-toggle-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setLoadingSheetBillsCollapsed(false);
+                  }}
+                  title="Expand bills selector"
+                  style={{
+                    background: "#f1f5f9",
+                    border: "1px solid #cbd5e1",
+                    borderRadius: 8,
+                    padding: "6px",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: "#0f172a",
+                  }}
+                >
+                  <PanelLeftOpen size={16} />
+                </button>
+
+                <div
+                  style={{
+                    background: "#eff6ff",
+                    color: "#1d4ed8",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    padding: "3px 6px",
+                    borderRadius: 6,
+                    border: "1px solid #bfdbfe",
+                  }}
+                  title={`${selectedBillIds.length} bills selected`}
+                >
+                  {selectedBillIds.length}
+                </div>
+
+                <div
+                  style={{
+                    writingMode: "vertical-rl",
+                    textOrientation: "mixed",
+                    transform: "rotate(180deg)",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: "#64748b",
+                    letterSpacing: "0.8px",
+                    textTransform: "uppercase",
+                    marginTop: 8,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  Bills ({selectedBillIds.length}/{loadingBills.length})
+                </div>
+              </div>
+            ) : (
+              <div
+                className="no-print"
+                style={{
+                  background: "#ffffff",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: 12,
+                  padding: "16px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 12,
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: 15, color: "#0f172a", fontWeight: 700 }}>
+                      Select Bills ({loadingBills.length})
+                    </h3>
+                    <small style={{ color: "#64748b" }}>Check bills to include in sheet</small>
+                  </div>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <Button
+                      className="secondary"
+                      type="button"
+                      onClick={toggleAllBills}
+                      style={{ fontSize: 11, padding: "4px 8px" }}
+                    >
+                      {selectedBillIds.length === loadingBills.length && loadingBills.length > 0
+                        ? "Deselect All"
+                        : "Select All"}
+                    </Button>
+                    {selectedBillIds.length > 0 && (
+                      <Button
+                        className="secondary"
+                        type="button"
+                        onClick={() => {
+                          setHasManuallySelectedBills(true);
+                          setSelectedBillIds([]);
+                        }}
+                        style={{ fontSize: 11, padding: "4px 8px", color: "#dc2626" }}
+                      >
+                        Clear
+                      </Button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setLoadingSheetBillsCollapsed(true)}
+                      title="Collapse bill selector to rail"
+                      style={{
+                        background: "#f8fafc",
+                        border: "1px solid #cbd5e1",
+                        borderRadius: 6,
+                        padding: "4px 6px",
+                        display: "flex",
+                        alignItems: "center",
+                        cursor: "pointer",
+                        color: "#475569",
+                      }}
+                    >
+                      <PanelLeftClose size={15} />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Bill Search & Reversed Filter */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ position: "relative" }}>
+                    <Search
+                      size={14}
+                      style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "#94a3b8" }}
+                    />
+                    <input
+                      type="text"
+                      placeholder="Search bill #, customer, or salesman..."
+                      value={loadingSheetBillSearch}
+                      onChange={(e) => setLoadingSheetBillSearch(e.target.value)}
+                      style={{
+                        width: "100%",
+                        padding: "7px 10px 7px 32px",
+                        borderRadius: 8,
+                        border: "1px solid #cbd5e1",
+                        fontSize: 12,
+                        boxSizing: "border-box",
+                      }}
+                    />
+                  </div>
+
+                  {reversedBillsCount > 0 && (
+                    <label
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        fontSize: 11,
+                        color: "#64748b",
+                        cursor: "pointer",
+                        userSelect: "none",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={showReversedBills}
+                        onChange={(e) => setShowReversedBills(e.target.checked)}
+                        style={{ width: 14, height: 14, cursor: "pointer" }}
+                      />
+                      <span>
+                        Include {reversedBillsCount} reversed {reversedBillsCount === 1 ? "bill" : "bills"}
+                      </span>
+                    </label>
+                  )}
+                </div>
+
+                {/* Scrollable Bills List */}
+                <div
+                  style={{
+                    maxHeight: "560px",
+                    overflowY: "auto",
+                    border: "1px solid #f1f5f9",
+                    borderRadius: 8,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 4,
+                    padding: 4,
+                  }}
+                >
+                  {loadingSheetBillsQuery.isLoading ? (
+                    <div style={{ padding: 20, textAlign: "center", color: "#64748b", fontSize: 13 }}>
+                      Loading bills…
+                    </div>
+                  ) : loadingBills.length === 0 ? (
+                    <div style={{ padding: 24, textAlign: "center", color: "#94a3b8", fontSize: 13 }}>
+                      No bills found for this selection.
+                    </div>
+                  ) : (
+                    loadingBills.map((b) => {
+                      const bId = str(b.id);
+                      const isSelected = selectedBillIds.includes(bId);
+                      const bData = (b.data ?? {}) as Row;
+                      const cName = str(bData.customerName || bData.customerRef || "Direct Customer");
+                      const sName = str(b.salesman_name || "");
+                      const linesCount = Number(b.lines_count ?? 0);
+                      const qtyTotal = str(b.total_quantity ?? "");
+
+                      return (
+                        <div
+                          key={bId}
+                          onClick={() => toggleBill(bId)}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            padding: "10px 12px",
+                            borderRadius: 8,
+                            cursor: "pointer",
+                            transition: "all 0.15s ease",
+                            background: isSelected ? "#eff6ff" : "#ffffff",
+                            border: isSelected ? "1.5px solid #3b82f6" : "1px solid #f1f5f9",
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => { }} // parent onClick handles toggle
+                              style={{ cursor: "pointer", width: 16, height: 16 }}
+                            />
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                <DocLink
+                                  id={bId}
+                                  number={str(b.number)}
+                                  onSelect={onSelect}
+                                  style={{
+                                    fontWeight: 700,
+                                    fontSize: 13,
+                                    color: isSelected ? "#1d4ed8" : "#2563eb",
+                                  }}
+                                />
+                                <span style={{ fontSize: 11, color: "#64748b" }}>· {str(b.business_date)}</span>
+                                {b.reversed ? (
+                                  <span
+                                    style={{
+                                      fontSize: 10,
+                                      fontWeight: 700,
+                                      color: "#dc2626",
+                                      background: "#fee2e2",
+                                      padding: "1px 5px",
+                                      borderRadius: 4,
+                                    }}
+                                  >
+                                    REVERSED
+                                  </span>
+                                ) : b.returned ? (
+                                  <span
+                                    style={{
+                                      fontSize: 10,
+                                      fontWeight: 700,
+                                      color: "#b45309",
+                                      background: "#fef3c7",
+                                      padding: "1px 5px",
+                                      borderRadius: 4,
+                                    }}
+                                  >
+                                    RETURNED
+                                  </span>
+                                ) : null}
+                              </div>
+                              <div
+                                style={{
+                                  fontSize: 12,
+                                  color: "#475569",
+                                  whiteSpace: "nowrap",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                }}
+                              >
+                                {cName}
+                                {loadingSheetScope === "all" && sName ? (
+                                  <span
+                                    style={{
+                                      marginLeft: 6,
+                                      fontSize: 10,
+                                      fontWeight: 600,
+                                      color: "#0369a1",
+                                      background: "#e0f2fe",
+                                      padding: "1px 5px",
+                                      borderRadius: 4,
+                                    }}
+                                  >
+                                    {sName}
+                                  </span>
+                                ) : null}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div style={{ textAlign: "right", flexShrink: 0, paddingLeft: 8 }}>
+                            <div style={{ fontWeight: 700, fontSize: 13, color: "#0f172a" }}>
+                              {rupees(b.amount)}
+                            </div>
+                            <div style={{ fontSize: 11, color: "#64748b" }}>
+                              {linesCount} {linesCount === 1 ? "line" : "lines"}
+                              {qtyTotal ? ` · ${qtyTotal} qty` : ""}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* RIGHT COLUMN: AGGREGATED PRODUCTS & LOADING SHEET */}
+            <div className="loading-sheet-print-container">
+              {/* Top Controls & Action Buttons */}
+              <div
+                className="no-print"
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: 10,
+                  paddingBottom: 12,
+                  borderBottom: "1px solid #e2e8f0",
+                }}
+              >
+                <div>
+                  <h3 style={{ margin: 0, fontSize: 16, color: "#0f172a", fontWeight: 700 }}>
+                    Products to Load ({aggregatedProducts.length})
+                  </h3>
+                  <small style={{ color: "#64748b" }}>
+                    Combined items across {selectedBillIds.length} selected bills
+                  </small>
+                </div>
+
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <Button
+                    className="secondary"
+                    type="button"
+                    onClick={() => setLoadingSheetBillsCollapsed((prev) => !prev)}
+                    style={{ fontSize: 12, padding: "6px 10px", display: "flex", alignItems: "center", gap: 5 }}
+                    title={loadingSheetBillsCollapsed ? "Expand bills sidebar" : "Collapse bills to sidebar rail"}
+                  >
+                    {loadingSheetBillsCollapsed ? <PanelLeftOpen size={14} /> : <PanelLeftClose size={14} />}
+                    {loadingSheetBillsCollapsed ? "Expand Bills" : "Collapse Bills"}
+                  </Button>
+                  <Button
+                    className="secondary"
+                    type="button"
+                    disabled={aggregatedProducts.length === 0}
+                    onClick={handleCopyList}
+                    style={{ fontSize: 12, padding: "6px 12px", display: "flex", alignItems: "center", gap: 6 }}
+                  >
+                    <Copy size={14} />
+                    {copyFeedback ? "✓ Copied Table!" : "Copy Table"}
+                  </Button>
+                  <Button
+                    className="secondary"
+                    type="button"
+                    disabled={aggregatedProducts.length === 0}
+                    onClick={() => window.print()}
+                    style={{ fontSize: 12, padding: "6px 12px", display: "flex", alignItems: "center", gap: 6 }}
+                  >
+                    <Printer size={14} />
+                    Print Sheet
+                  </Button>
+                </div>
+              </div>
+
+              {selectedBillIds.length === 0 ? (
+                <div
+                  style={{
+                    padding: "48px 20px",
+                    textAlign: "center",
+                    background: "#f8fafc",
+                    borderRadius: 10,
+                    border: "1px dashed #cbd5e1",
+                  }}
+                >
+                  <Package size={36} style={{ color: "#94a3b8", marginBottom: 8 }} />
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "#334155" }}>
+                    No Bills Selected Yet
+                  </div>
+                  <p style={{ fontSize: 13, color: "#64748b", margin: "4px 0 0" }}>
+                    Select one or more bills on the left to see the aggregated products and quantities to load.
+                  </p>
+                </div>
+              ) : loadingSheetLinesQuery.isLoading ? (
+                <div style={{ padding: 40, textAlign: "center", color: "#64748b", fontSize: 14 }}>
+                  Fetching and combining product lines…
+                </div>
+              ) : loadingSheetLinesQuery.isError ? (
+                <div style={{ padding: 30, textAlign: "center", color: "#dc2626", background: "#fef2f2", borderRadius: 10, border: "1px solid #fecaca" }}>
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>Failed to fetch bill products</div>
+                  <div style={{ fontSize: 12, marginTop: 4, color: "#7f1d1d" }}>
+                    {(loadingSheetLinesQuery.error as Error)?.message || "Error communicating with server"}
+                  </div>
+                  <Button
+                    className="secondary"
+                    type="button"
+                    onClick={() => loadingSheetLinesQuery.refetch()}
+                    style={{ marginTop: 12, fontSize: 12 }}
+                  >
+                    Retry Loading Products
+                  </Button>
+                </div>
+              ) : aggregatedProducts.length === 0 ? (
+                <div style={{ padding: 30, textAlign: "center", color: "#94a3b8", fontSize: 13 }}>
+                  The selected bills do not have any product lines recorded.
+                </div>
+              ) : (
+                <>
+                  {/* PRINT-ONLY CLEAN HEADER */}
+                  <div className="print-only" style={{ marginBottom: 14 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", borderBottom: "2px solid #0f172a", paddingBottom: 8, marginBottom: 8 }}>
+                      <div>
+                        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: "#0f172a" }}>Product Loading Sheet</h2>
+                        <div style={{ fontSize: 13, color: "#334155", marginTop: 3 }}>
+                          Route / Salesman: <strong>{loadingSheetScope === "all" ? "All Routes / Salesmen" : str(salesmenList.find((s) => str(s.id) === selectedSalesmanId)?.name || "Mudhashir")}</strong>
+                        </div>
+                      </div>
+                      <div style={{ textAlign: "right", fontSize: 12, color: "#334155" }}>
+                        <div>Date: <strong>{!loadingSheetFrom && !loadingSheetTo ? "All Dates" : loadingSheetFrom === loadingSheetTo ? loadingSheetFrom : `${loadingSheetFrom || "Start"} to ${loadingSheetTo || "End"}`}</strong></div>
+                        <div>Bills Included: <strong>{selectedBillIds.length}</strong></div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* STRUCTURED ITEMIZED BREAKDOWN TABLE */}
+                  <div className="loading-sheet-table-wrap" style={{ overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: 8 }}>
+                    <table className="ledger-table loading-sheet-table" style={{ width: "100%", fontSize: 13 }}>
+                      <thead>
+                        <tr style={{ background: "#f1f5f9", textAlign: "left" }}>
+                          <th style={{ padding: "8px 10px", width: 40 }}>#</th>
+                          <th style={{ padding: "8px 10px" }}>Product Name</th>
+                          <th style={{ padding: "8px 10px", textAlign: "right" }}>Total Qty</th>
+                          <th style={{ padding: "8px 10px", textAlign: "right" }}>MRP / Rate</th>
+                          <th style={{ padding: "8px 10px", textAlign: "right" }}>Total Value</th>
+                          <th style={{ padding: "8px 10px", textAlign: "center" }}>In Bills</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {aggregatedProducts.map((p, idx) => (
+                          <tr
+                            key={p.id}
+                            style={{
+                              borderBottom: "1px solid #f1f5f9",
+                              background: idx % 2 === 0 ? "#ffffff" : "#fbfcfe",
+                            }}
+                          >
+                            <td style={{ padding: "8px 10px", color: "#94a3b8", fontSize: 11 }}>
+                              {idx + 1}
+                            </td>
+                            <td style={{ padding: "8px 10px", fontWeight: 600, color: "#0f172a" }}>
+                              {p.name}
+                              {p.code ? (
+                                <small style={{ color: "#64748b", marginLeft: 6 }}>({p.code})</small>
+                              ) : null}
+                            </td>
+                            <td
+                              style={{
+                                padding: "8px 10px",
+                                textAlign: "right",
+                                fontWeight: 800,
+                                color: p.quantity.isZero() ? "#94a3b8" : "#0369a1",
+                              }}
+                            >
+                              <div>{p.quantity.toString()} {p.unit}</div>
+                              {p.returnedQuantity.gt(0) ? (
+                                <div style={{ fontSize: 10, fontWeight: 600, color: "#d97706" }}>
+                                  ({p.grossQuantity.toString()} billed - {p.returnedQuantity.toString()} ret)
+                                </div>
+                              ) : null}
+                            </td>
+                            <td style={{ padding: "8px 10px", textAlign: "right" }}>
+                              {rupees(p.rate)}
+                            </td>
+                            <td
+                              style={{
+                                padding: "8px 10px",
+                                textAlign: "right",
+                                fontWeight: 700,
+                                color: "#166534",
+                              }}
+                            >
+                              {rupees(p.amount.toString())}
+                            </td>
+                            <td style={{ padding: "8px 10px", textAlign: "center" }}>
+                              <span
+                                style={{
+                                  fontSize: 11,
+                                  color: "#475569",
+                                  background: "#e2e8f0",
+                                  padding: "2px 7px",
+                                  borderRadius: 10,
+                                }}
+                                title={`Present in: ${p.billNumbers.join(", ")}`}
+                              >
+                                {p.billNumbers.length} {p.billNumbers.length === 1 ? "bill" : "bills"}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr style={{ background: "#f8fafc", fontWeight: 800, borderTop: "2px solid #cbd5e1" }}>
+                          <td colSpan={2} style={{ padding: "10px", textAlign: "right", textTransform: "uppercase", fontSize: 12, color: "#475569" }}>
+                            Grand Total:
+                          </td>
+                          <td style={{ padding: "10px", textAlign: "right", color: "#0369a1", fontSize: 15 }}>
+                            {totalLoadedQty.toString()}
+                          </td>
+                          <td style={{ padding: "10px", textAlign: "right" }}></td>
+                          <td style={{ padding: "10px", textAlign: "right", color: "#166534", fontSize: 15 }}>
+                            {rupees(totalLoadedAmount.toString())}
+                          </td>
+                          <td style={{ padding: "10px", textAlign: "center", fontSize: 11, color: "#64748b" }}>
+                            {selectedBillIds.length} bills
+                          </td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* VIEW 4: CONSOLIDATED ROUTE REGISTER (BILLS, RECEIPTS, RETURNS, REVERSALS) */}
+      {activeView === "register" && (
+        <Documents
+          onSelect={onSelect}
+          kind="bill,receipt,return,reversal"
+          salesmanId={selectedSalesmanId}
+          title={`Route Register (${str(salesmenList.find((s) => str(s.id) === selectedSalesmanId)?.name || "This Route")})`}
+        />
+      )}
+
+      {/* VIEW 5: CASH HANDOVERS & SETTLEMENTS */}
+      {activeView === "handovers" && (
+        <section className="panel" style={{ padding: "20px 22px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 14, marginBottom: 18 }}>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <h2 style={{ margin: 0, fontSize: 18, color: "#0f172a" }}>Cash Settlements & Handover History</h2>
+                <span
+                  style={{
+                    background: "#dcfce7",
+                    color: "#166534",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    padding: "3px 8px",
+                    borderRadius: 6,
+                  }}
+                >
+                  Direct Flow
+                </span>
+              </div>
+              <p className="muted" style={{ margin: "4px 0 0", fontSize: 12 }}>
+                Cash collected by salesman appears directly in manager's dashboard and moves to business physical till upon manager confirmation.
+              </p>
+            </div>
+          </div>
+
+          {/* Quick summary banner */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+              gap: 12,
+              marginBottom: 20,
+              padding: 14,
+              background: "#f8fafc",
+              border: "1px solid #e2e8f0",
+              borderRadius: 12,
+            }}
+          >
+            <div>
+              <small style={{ color: "#64748b", textTransform: "uppercase", fontSize: 11, fontWeight: 700 }}>
+                Cash Currently In Hand
+              </small>
+              <div style={{ fontSize: 20, fontWeight: 800, color: "#0f172a", marginTop: 2 }}>
+                {rupees(cashInHand)}
+              </div>
+              <small style={{ color: "#64748b", fontSize: 11 }}>Awaiting physical receipt by manager</small>
+            </div>
+          </div>
+
+          {handoversHistory.length === 0 ? (
+            <Empty text="No cash handover records found for this salesman." />
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table className="ledger-table" style={{ width: "100%", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: "#f1f5f9", textAlign: "left" }}>
+                    <th style={{ padding: "10px 12px" }}>Date</th>
+                    <th style={{ padding: "10px 12px" }}>Handed Over</th>
+                    <th style={{ padding: "10px 12px" }}>Accepted</th>
+                    <th style={{ padding: "10px 12px" }}>Status</th>
+                    <th style={{ padding: "10px 12px" }}>Salesman Note</th>
+                    <th style={{ padding: "10px 12px" }}>Manager Note / Verification</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {handoversHistory.map((h) => {
+                    const status = str(h.status);
+                    return (
+                      <tr key={str(h.id)} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                        <td style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>
+                          <div>{str(h.date)}</div>
+                          {h.created_at ? (
+                            <div style={{ fontSize: 11, color: "#94a3b8" }}>{timeOnlyLabel(h.created_at)}</div>
+                          ) : null}
+                        </td>
+                        <td style={{ padding: "10px 12px", fontWeight: 700 }}>
+                          {rupees(h.amount)}
+                        </td>
+                        <td style={{ padding: "10px 12px" }}>
+                          {h.accepted_amount ? (
+                            <span style={{ fontWeight: 700, color: "#166534" }}>
+                              {rupees(h.accepted_amount)}
+                            </span>
+                          ) : (
+                            <span style={{ color: "#94a3b8" }}>—</span>
+                          )}
+                        </td>
+                        <td style={{ padding: "10px 12px" }}>
+                          {status === "pending" && (
+                            <span
+                              style={{
+                                background: "#fef3c7",
+                                color: "#b45309",
+                                padding: "3px 8px",
+                                borderRadius: 6,
+                                fontSize: 11,
+                                fontWeight: 700,
+                              }}
+                            >
+                              🟡 PENDING CONFIRMATION
+                            </span>
+                          )}
+                          {status === "confirmed" && (
+                            <span
+                              style={{
+                                background: "#dcfce7",
+                                color: "#166534",
+                                padding: "3px 8px",
+                                borderRadius: 6,
+                                fontSize: 11,
+                                fontWeight: 700,
+                              }}
+                            >
+                              🟢 RECEIVED & CLEARED
+                            </span>
+                          )}
+                          {status === "rejected" && (
+                            <span
+                              style={{
+                                background: "#fee2e2",
+                                color: "#991b1b",
+                                padding: "3px 8px",
+                                borderRadius: 6,
+                                fontSize: 11,
+                                fontWeight: 700,
+                              }}
+                            >
+                              🔴 DISPUTED / REJECTED
+                            </span>
+                          )}
+                        </td>
+                        <td style={{ padding: "10px 12px", color: "#475569" }}>
+                          {str(h.salesman_note) || "—"}
+                        </td>
+                        <td style={{ padding: "10px 12px", color: "#475569" }}>
+                          {str(h.manager_note) || (h.verified_at ? `Verified on ${formatDateTime(h.verified_at)}` : "—")}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Transfer Cash Modal */}
+      {handoverModalOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.6)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            padding: 16,
+          }}
+        >
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: 16,
+              maxWidth: 480,
+              width: "100%",
+              padding: 24,
+              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <ArrowLeftRight size={20} color="#2563eb" />
+                <h3 style={{ margin: 0, fontSize: 17, color: "#0f172a" }}>Transfer Cash to Manager</h3>
+              </div>
+              <button
+                type="button"
+                style={{ background: "none", border: "none", fontSize: 20, cursor: "pointer", color: "#64748b" }}
+                onClick={() => setHandoverModalOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+
+            <p style={{ margin: "0 0 16px", fontSize: 13, color: "#64748b" }}>
+              Hand over physical cash collected to the manager. You can transfer full or partial amount. The manager will count and confirm receipt into the business till.
+            </p>
+
+            <div
+              style={{
+                background: "#f0fdf4",
+                border: "1px solid #bbf7d0",
+                borderRadius: 10,
+                padding: "10px 14px",
+                marginBottom: 16,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <div>
+                <small style={{ color: "#166534", fontSize: 11, fontWeight: 700, textTransform: "uppercase" }}>
+                  Available In Hand
+                </small>
+                <div style={{ fontSize: 17, fontWeight: 800, color: "#15803d" }}>
+                  {rupees(cashInHand)}
+                </div>
+              </div>
+              <Button
+                type="button"
+                className="secondary"
+                style={{ fontSize: 11, padding: "4px 8px" }}
+                onClick={() => setHandoverAmount(cashInHand !== "0.00" ? cashInHand : "")}
+              >
+                Transfer Full
+              </Button>
+            </div>
+
+            <form onSubmit={handleInitiateHandover} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <Field label="Cash Amount to Transfer (₹) * (Supports Partial Amount)">
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={handoverAmount}
+                  onChange={(e) => setHandoverAmount(e.target.value)}
+                  placeholder="e.g. 10000.00"
+                  required
+                  autoFocus
+                />
+              </Field>
+
+              <Field label="Handover Note / Remarks (Optional)">
+                <input
+                  type="text"
+                  value={handoverNote}
+                  onChange={(e) => setHandoverNote(e.target.value)}
+                  placeholder="e.g. Morning beat collections, 20x500 notes"
+                />
+              </Field>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 6 }}>
+                <Button
+                  type="button"
+                  className="secondary"
+                  disabled={handoverBusy}
+                  onClick={() => setHandoverModalOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  className="primary"
+                  disabled={handoverBusy}
+                >
+                  {handoverBusy ? "Initiating Handover…" : `Send ${rupees(handoverAmount || "0")} to Manager`}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {activeView === "saved_drafts" && (
+        <section className="panel" style={{ padding: "20px 22px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: 18, color: "#0f172a" }}>Saved Drafts · Mudashir New Bills</h2>
+              <p className="muted" style={{ margin: "4px 0 0", fontSize: 12 }}>
+                Drafts are saved locally in the database with no financial effect. Resume anytime to complete and post.
+              </p>
+            </div>
+            <Button className="secondary" onClick={() => switchView("new_bill")} style={{ fontSize: 12 }}>
+              <Plus size={14} /> New Bill
+            </Button>
+          </div>
+
+          {directCigDrafts.length === 0 ? (
+            <Empty text="No saved drafts for Mudashir bills." />
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {directCigDrafts.map((dr) => {
+                const dData = (dr.data ?? {}) as Row;
+                const cName = dData.customerName ? str(dData.customerName) : "Unknown Customer";
+                const bDate = dData.date ? str(dData.date) : "No date";
+                const rowCnt = Array.isArray(dData.rowIds) ? dData.rowIds.length : Object.keys(dData.rowProducts || {}).length;
+
+                return (
+                  <div
+                    key={str(dr.id)}
+                    onClick={() => setReviewDraftRecord(dr)}
+                    style={{
+                      background: "#f8fafc",
+                      border: "1px solid #e2e8f0",
+                      borderRadius: 12,
+                      padding: "14px 16px",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: 12,
+                      flexWrap: "wrap",
+                      cursor: "pointer",
+                      transition: "all 0.15s ease",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.borderColor = "#94a3b8";
+                      e.currentTarget.style.background = "#f1f5f9";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.borderColor = "#e2e8f0";
+                      e.currentTarget.style.background = "#f8fafc";
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 15, color: "#0f172a", display: "flex", alignItems: "center", gap: 8 }}>
+                        {cName}
+                        <span style={{ fontSize: 11, background: "#e2e8f0", color: "#475569", padding: "2px 8px", borderRadius: 10, fontWeight: 600 }}>Draft</span>
+                      </div>
+                      <div style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>
+                        Bill Date: <b>{bDate}</b> · {rowCnt} line item{rowCnt === 1 ? "" : "s"} · saved on {formatDateTime(dr.created_at || dr.createdAt)}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }} onClick={(e) => e.stopPropagation()}>
+                      <Button
+                        className="secondary"
+                        onClick={async () => {
+                          try {
+                            await api(`drafts/${str(dr.id)}`, z.unknown(), undefined, "DELETE");
+                            await qc.invalidateQueries({ queryKey: ["drafts"] });
+                            if (billDraft?.id === str(dr.id)) {
+                              setBillDraft(null);
+                              setBillDraftNotice("");
+                            }
+                          } catch {
+                            // ignore
+                          }
+                        }}
+                        style={{ color: "#dc2626", borderColor: "#fca5a5", fontSize: 12, padding: "6px 12px" }}
+                      >
+                        <Trash2 size={14} /> Delete
+                      </Button>
+                      <Button
+                        className="secondary"
+                        onClick={() => {
+                          loadDraftIntoBill(dr);
+                        }}
+                        style={{ fontSize: 12, padding: "6px 12px" }}
+                      >
+                        <Pencil size={14} /> Edit
+                      </Button>
+                      <Button
+                        className="primary"
+                        onClick={() => {
+                          setReviewDraftRecord(dr);
+                        }}
+                        style={{ fontSize: 12, padding: "6px 14px", display: "flex", alignItems: "center", gap: 6 }}
+                        title="Review all products and details in this draft bill before posting"
+                      >
+                        <Eye size={14} /> Review Bill
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
+
+      {reviewDraftRecord && (
+        <DraftReviewModal
+          draft={reviewDraftRecord}
+          masters={masters}
+          customerList={customers}
+          salesmanList={salesmenList}
+          onClose={() => setReviewDraftRecord(null)}
+          onResumeEdit={() => {
+            const d = reviewDraftRecord;
+            setReviewDraftRecord(null);
+            if (d) loadDraftIntoBill(d);
+          }}
+          onPostSuccess={({ id, number }) => {
+            setReviewDraftRecord(null);
+            setBillSuccess({
+              text: "Bill created successfully! Number: ",
+              billNo: number || "POSTED",
+              billId: id,
+            });
+            setBillRowIds([crypto.randomUUID()]);
+            setBillRowProducts({});
+            setQuantities({});
+            setBillNote("");
+            setHasConfectionery(false);
+            setConfectioneryRows([]);
+            setBillDiscount("");
+            setBillWithPayments(false);
+            setBillCashPay("");
+            setBillOnlinePay("");
+            setBillPaymentNote("");
+            setBillDraft(null);
+            setBillDraftNotice("");
+            summaryQuery.refetch();
+            setActiveView("new_bill");
+            window.scrollTo({ top: 0, behavior: "smooth" });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function OtherMoneyPage({
+  date,
+  masters,
+  owner,
+  onSelect,
+}: {
+  date: string;
+  masters: Row;
+  owner: boolean;
+  onSelect: (id: string) => void;
+}) {
+  const qc = useQueryClient(),
+    [activeTab, setActiveTab] = useState<"foods" | "expense" | "employee" | "transfer">("foods"),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState(""),
+    [success, setSuccess] = useState("");
+
+  const accounts = arr(masters.accounts);
+  const defaultCash = str(accounts.find((a) => a.type === "cash")?.id ?? "");
+  const defaultBank = str(accounts.find((a) => a.type === "bank")?.id ?? "");
+
+  // Load registered employees list from API
+  const employeesQuery = useQuery({
+    queryKey: ["employees"],
+    queryFn: async () => {
+      const r = await fetch("/api/v1/employees");
+      return (await r.json()) as Array<{ id: string; name: string; role: string; phone?: string; active: boolean }>;
+    },
+  });
+  const employeeOptions = (employeesQuery.data ?? []).filter((e) => e.active);
+
+  // Load registered foods salesmen list from API
+  const foodsSalesmenQuery = useQuery({
+    queryKey: ["foods-salesmen"],
+    queryFn: async () => {
+      const r = await fetch("/api/v1/foods-salesmen");
+      return (await r.json()) as Array<{ id: string; name: string; territory?: string; phone?: string; active: boolean }>;
+    },
+  });
+  const foodsSalesmenOptions = (foodsSalesmenQuery.data ?? []).filter((f) => f.active);
+
+  // 1. Operating expense state
+  const [expenseCategory, setExpenseCategory] = useState("Diesel / Vehicle Fuel"),
+    [expenseAmount, setExpenseAmount] = useState(""),
+    [expensePayee, setExpensePayee] = useState(""),
+    [expenseAccount, setExpenseAccount] = useState<string>(defaultCash),
+    [expenseDate, setExpenseDate] = useState(date),
+    [expenseRef, setExpenseRef] = useState("");
+
+  // 2. Employee state (salary, advance, receive)
+  const [empType, setEmpType] = useState<"salary" | "advance" | "receive">("salary"),
+    [empName, setEmpName] = useState(""),
+    [empAmount, setEmpAmount] = useState(""),
+    [empPeriod, setEmpPeriod] = useState(""),
+    [empAccount, setEmpAccount] = useState<string>(defaultCash),
+    [empDate, setEmpDate] = useState(date),
+    [empNotes, setEmpNotes] = useState(""),
+    [signatureBlob, setSignatureBlob] = useState<Blob | null>(null),
+    [createdDocId, setCreatedDocId] = useState<string | null>(null);
+
+  // 3. Cash to bank transfer state
+  const [transferFrom, setTransferFrom] = useState<string>(defaultCash),
+    [transferTo, setTransferTo] = useState<string>(defaultBank),
+    [transferAmount, setTransferAmount] = useState(""),
+    [transferDate, setTransferDate] = useState(date),
+    [transferNotes, setTransferNotes] = useState("");
+
+  // 4. Foods Collections state
+  const [foodsSalesman, setFoodsSalesman] = useState(""),
+    [foodsDate, setFoodsDate] = useState(date),
+    [foodsBillNo, setFoodsBillNo] = useState(""),
+    [foodsItems, setFoodsItems] = useState(""),
+    [foodsCashAmount, setFoodsCashAmount] = useState(""),
+    [foodsBankAmount, setFoodsBankAmount] = useState(""),
+    [foodsNotes, setFoodsNotes] = useState("");
+
+  useEffect(() => {
+    if (!expenseAccount && defaultCash) setExpenseAccount(defaultCash);
+    if (!empAccount && defaultCash) setEmpAccount(defaultCash);
+    if (!transferFrom && defaultCash) setTransferFrom(defaultCash);
+    if (!transferTo && defaultBank) setTransferTo(defaultBank);
+  }, [defaultCash, defaultBank]);
+
+  const handleExpenseSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setSuccess("");
+    const cleanAmt = cleanMoney(expenseAmount);
+    if (!cleanAmt || parseMoneyNumber(cleanAmt) <= 0) {
+      setError("Please enter a valid expense amount.");
+      return;
+    }
+    if (!expenseAccount) {
+      setError("Please select the paying account.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api(
+        "commands/expense",
+        commandResult,
+        {
+          date: expenseDate,
+          category: expenseCategory,
+          payee: expensePayee || expenseCategory,
+          amount: cleanAmt,
+          note: expenseRef,
+          legs: [{ accountId: expenseAccount, amount: cleanAmt }],
+        },
+        "POST",
+        crypto.randomUUID(),
+      );
+      setSuccess("Operating expense recorded successfully.");
+      setExpenseAmount("");
+      setExpensePayee("");
+      setExpenseRef("");
+      await qc.invalidateQueries();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleEmployeeSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setSuccess("");
+    setCreatedDocId(null);
+    if (!empName.trim()) {
+      setError("Please enter the employee name.");
+      return;
+    }
+    const cleanAmt = cleanMoney(empAmount);
+    if (!cleanAmt || parseMoneyNumber(cleanAmt) <= 0) {
+      setError("Please enter a valid amount.");
+      return;
+    }
+    if (!empAccount) {
+      setError(empType === "receive" ? "Please select the receiving account." : "Please select the paying account.");
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const empObj = employeeOptions.find((e) => e.name === empName.trim() || e.id === empName);
+      const employeeId = empObj?.id;
+      const empDisplayName = empObj?.name || empName.trim();
+
+      let docResult: { id?: string; number?: string; amount?: string } | null = null;
+      if (empType === "salary") {
+        docResult = await api(
+          "commands/salary",
+          commandResult,
+          {
+            date: empDate,
+            payee: empDisplayName,
+            employeeId,
+            period: empPeriod || "Regular Salary",
+            amount: cleanAmt,
+            setoff: "0",
+            accountId: empAccount,
+            note: empNotes,
+          },
+          "POST",
+          crypto.randomUUID(),
+        );
+      } else if (empType === "advance") {
+        if (!owner) {
+          await api("requests", rowSchema, {
+            command: "loan",
+            payload: {
+              date: empDate,
+              direction: "staff",
+              counterparty: empDisplayName,
+              employeeId,
+              accountId: empAccount,
+              amount: cleanAmt,
+              note: empNotes,
+            },
+            reason: `Staff advance requested for ${empDisplayName}`,
+          });
+        } else {
+          docResult = await api(
+            "commands/loan",
+            commandResult,
+            {
+              date: empDate,
+              direction: "staff",
+              counterparty: empDisplayName,
+              employeeId,
+              accountId: empAccount,
+              amount: cleanAmt,
+              note: empNotes,
+            },
+            "POST",
+            crypto.randomUUID(),
+          );
+        }
+      } else if (empType === "receive") {
+        docResult = await api(
+          "commands/employeeReceipt",
+          commandResult,
+          {
+            date: empDate,
+            employeeName: empDisplayName,
+            employeeId,
+            amount: cleanAmt,
+            accountId: empAccount,
+            note: empNotes,
+          },
+          "POST",
+          crypto.randomUUID(),
+        );
+      }
+
+      // If digital signature was captured and document was created, upload it as private evidence
+      if (docResult?.id && signatureBlob) {
+        try {
+          const sigFile = new File([signatureBlob], "employee-signature.png", {
+            type: "image/png",
+          });
+          const form = new FormData();
+          form.set("file", sigFile);
+          await fetch("/api/v1/attachments/" + docResult.id, {
+            method: "POST",
+            body: form,
+          });
+        } catch (uploadErr) {
+          console.error("Signature upload failed", uploadErr);
+        }
+      }
+
+      if (docResult?.id) {
+        setCreatedDocId(docResult.id);
+        setSuccess(
+          empType === "receive"
+            ? `Money received from employee recorded successfully as #${docResult.number ?? ""}. Added to account!`
+            : `Employee ${empType} payment recorded successfully as #${docResult.number ?? ""}. Digital signature attached!`,
+        );
+      } else {
+        setSuccess("Approval request submitted for owner approval.");
+      }
+
+      setEmpAmount("");
+      setEmpNotes("");
+      setEmpPeriod("");
+      setSignatureBlob(null);
+      await qc.invalidateQueries();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleTransferSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setSuccess("");
+    const cleanAmt = cleanMoney(transferAmount);
+    if (!cleanAmt || parseMoneyNumber(cleanAmt) <= 0) {
+      setError("Please enter a valid transfer amount.");
+      return;
+    }
+    if (transferFrom === transferTo) {
+      setError("Source and destination accounts must be different.");
+      return;
+    }
+
+    setBusy(true);
+    try {
+      await api(
+        "commands/transfer",
+        commandResult,
+        {
+          date: transferDate,
+          sourceId: transferFrom,
+          destinationId: transferTo,
+          amount: cleanAmt,
+          note: transferNotes,
+        },
+        "POST",
+        crypto.randomUUID(),
+      );
+      setSuccess("Cash to bank transfer recorded successfully.");
+      setTransferAmount("");
+      setTransferNotes("");
+      await qc.invalidateQueries();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleFoodsSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setSuccess("");
+    if (!foodsSalesman) {
+      setError("Please select the foods salesman.");
+      return;
+    }
+    const cleanCash = cleanMoney(foodsCashAmount);
+    const cleanBank = cleanMoney(foodsBankAmount);
+    const cashVal = cleanCash ? parseMoneyNumber(cleanCash) : 0;
+    const bankVal = cleanBank ? parseMoneyNumber(cleanBank) : 0;
+    if (cashVal <= 0 && bankVal <= 0) {
+      setError("Please enter at least one amount (cash or bank).");
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const foodsObj = foodsSalesmenOptions.find((f) => f.name === foodsSalesman || f.id === foodsSalesman);
+      const foodsSalesmanId = foodsObj?.id;
+      const foodsDisplayName = foodsObj?.name || foodsSalesman;
+
+      await api(
+        "commands/foodsReceipt",
+        commandResult,
+        {
+          date: foodsDate,
+          foodsSalesman: foodsDisplayName,
+          foodsSalesmanId,
+          billNo: foodsBillNo.trim(),
+          foodItems: foodsItems.trim(),
+          cashAmount: cashVal > 0 ? cleanCash : "0.00",
+          bankAmount: bankVal > 0 ? cleanBank : "0.00",
+          note: foodsNotes.trim(),
+        },
+        "POST",
+        crypto.randomUUID(),
+      );
+      setSuccess("Foods collection recorded successfully as FOODS-RECEIPT.");
+      setFoodsBillNo("");
+      setFoodsItems("");
+      setFoodsCashAmount("");
+      setFoodsBankAmount("");
+      setFoodsNotes("");
+      await qc.invalidateQueries();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <section className="panel" style={{ paddingBottom: 8 }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 24,
+            borderBottom: "1px solid #e7e5e4",
+            marginBottom: 20,
+          }}
+        >
+          {[
+            ["foods", "Foods Collections"],
+            ["expense", "Operating Expenses"],
+            ["employee", "Employee & Staff / Foods (Salary / Advance / Expense)"],
+            ["transfer", "Cash to Bank Transfer"],
+          ].map(([k, label]) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => {
+                setActiveTab(k as typeof activeTab);
+                setError("");
+                setSuccess("");
+              }}
+              style={{
+                background: "none",
+                border: "none",
+                padding: "10px 4px",
+                fontSize: "14px",
+                fontWeight: activeTab === k ? 700 : 500,
+                color: activeTab === k ? "#c2410c" : "#78716c",
+                borderBottom: activeTab === k ? "3px solid #ea580c" : "3px solid transparent",
+                cursor: "pointer",
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {activeTab === "expense" && (
+          <form onSubmit={handleExpenseSubmit}>
+            <h3 style={{ textTransform: "uppercase", fontSize: 13, letterSpacing: 0.5, color: "#44403c", marginBottom: 16 }}>
+              Record Operating Expense
+            </h3>
+            <div className="form-grid">
+              <Field label="Category *">
+                <select
+                  value={expenseCategory}
+                  onChange={(e) => setExpenseCategory(e.target.value)}
+                  required
+                >
+                  {[
+                    "Diesel / Vehicle Fuel",
+                    "Shop / Godown Rent",
+                    "Electricity / Utilities",
+                    "Transport / Freight",
+                    "Repairs & Maintenance",
+                    "Stationery & Printing",
+                    "Tea, Snacks & Refreshment",
+                    "Loading & Unloading",
+                    "Packaging Materials",
+                    "Miscellaneous Expense",
+                  ].map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              <Field label="Amount (₹) *">
+                <input
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  value={expenseAmount}
+                  onChange={(e) => setExpenseAmount(e.target.value)}
+                  required
+                />
+              </Field>
+
+              <Field label="Recipient / Description *">
+                <input
+                  placeholder="e.g. Bharat Petroleum - Diesel refill for delivery van"
+                  value={expensePayee}
+                  onChange={(e) => setExpensePayee(e.target.value)}
+                  required
+                />
+              </Field>
+
+              <Field label="Date *">
+                <input
+                  type="date"
+                  value={expenseDate}
+                  onChange={(e) => setExpenseDate(e.target.value)}
+                  required
+                />
+              </Field>
+
+              <Field label="Paid From Account *">
+                <select
+                  value={expenseAccount}
+                  onChange={(e) => setExpenseAccount(e.target.value)}
+                  required
+                >
+                  <option value="">Choose account…</option>
+                  {accounts.map((a) => (
+                    <option key={str(a.id)} value={str(a.id)}>
+                      {str(a.name)} ({str(a.type)})
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              <Field label="Bill / Voucher Reference">
+                <input
+                  placeholder="e.g. Bill #8821"
+                  value={expenseRef}
+                  onChange={(e) => setExpenseRef(e.target.value)}
+                />
+              </Field>
+            </div>
+
+            {error && <p role="alert" className="error">{error}</p>}
+            {success && <p role="status" className="notice">{success}</p>}
+
+            <div style={{ marginTop: 20, display: "flex", justifyContent: "flex-end" }}>
+              <Button className="primary" disabled={busy} type="submit" style={{ padding: "10px 24px" }}>
+                {busy ? "Recording…" : "Record Expense"}
+              </Button>
+            </div>
+          </form>
+        )}
+
+        {activeTab === "employee" && (
+          <form onSubmit={handleEmployeeSubmit}>
+            <h3 style={{ textTransform: "uppercase", fontSize: 13, letterSpacing: 0.5, color: "#44403c", marginBottom: 16 }}>
+              Employee & Staff / Foods Salesman (Salary, Advance & Money Received)
+            </h3>
+            <div className="form-grid">
+              <Field label="Entry Type *">
+                <select
+                  value={empType}
+                  onChange={(e) => setEmpType(e.target.value as typeof empType)}
+                  required
+                >
+                  <option value="salary">Salary Payment</option>
+                  <option value="advance">Salary Advance (Staff Loan)</option>
+                  <option value="receive">Receive money from emp</option>
+                </select>
+              </Field>
+
+              <Field label="Employee / Foods Salesman *">
+                <select
+                  value={empName}
+                  onChange={(e) => setEmpName(e.target.value)}
+                  required
+                >
+                  <option value="">Choose employee or foods salesman…</option>
+                  {employeeOptions.length > 0 && (
+                    <optgroup label="Employees & Staff">
+                      {employeeOptions.map((e) => (
+                        <option key={e.id} value={e.name}>
+                          {e.name} {e.role ? `(${e.role})` : ""}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {foodsSalesmenOptions.length > 0 && (
+                    <optgroup label="Foods Salesmen">
+                      {foodsSalesmenOptions.map((f) => (
+                        <option key={f.id} value={f.name}>
+                          {f.name} {f.territory ? `(${f.territory})` : "(Foods)"}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {/* Keep selected value visible if it was customized or not in standard list */}
+                  {empName &&
+                    !employeeOptions.some((e) => e.name === empName) &&
+                    !foodsSalesmenOptions.some((f) => f.name === empName) && (
+                      <option value={empName}>{empName}</option>
+                    )}
+                </select>
+              </Field>
+
+              <Field label="Amount (₹) *">
+                <input
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  value={empAmount}
+                  onChange={(e) => setEmpAmount(e.target.value)}
+                  required
+                />
+              </Field>
+
+              <Field label="Date *">
+                <input
+                  type="date"
+                  value={empDate}
+                  onChange={(e) => setEmpDate(e.target.value)}
+                  required
+                />
+              </Field>
+
+              {empType === "salary" && (
+                <Field label="Salary Month / Period">
+                  <input
+                    placeholder="e.g. October 2026"
+                    value={empPeriod}
+                    onChange={(e) => setEmpPeriod(e.target.value)}
+                  />
+                </Field>
+              )}
+
+              <Field label={empType === "receive" ? "Received Into Account *" : "Paid From Account *"}>
+                <select
+                  value={empAccount}
+                  onChange={(e) => setEmpAccount(e.target.value)}
+                  required
+                >
+                  <option value="">Choose account…</option>
+                  {accounts.map((a) => (
+                    <option key={str(a.id)} value={str(a.id)}>
+                      {str(a.name)} ({str(a.type)})
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              <Field label="Notes / Reference">
+                <input
+                  placeholder="Payment remarks or voucher number…"
+                  value={empNotes}
+                  onChange={(e) => setEmpNotes(e.target.value)}
+                />
+              </Field>
+            </div>
+
+            <SignaturePad
+              key={createdDocId ?? "sigpad"}
+              onChange={(blob) => setSignatureBlob(blob)}
+              onClear={() => setSignatureBlob(null)}
+            />
+
+            {error && <p role="alert" className="error">{error}</p>}
+            {success && (
+              <div
+                role="status"
+                className="notice"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  flexWrap: "wrap",
+                  gap: 10,
+                }}
+              >
+                <span>{success}</span>
+                {createdDocId && (
+                  <Button
+                    type="button"
+                    className="primary"
+                    style={{ fontSize: 13, padding: "6px 14px" }}
+                    onClick={() => onSelect(createdDocId)}
+                  >
+                    <Printer size={15} style={{ marginRight: 6 }} /> View & Print Payment Voucher
+                  </Button>
+                )}
+              </div>
+            )}
+
+            <div style={{ marginTop: 20, display: "flex", justifyContent: "flex-end" }}>
+              <Button className="primary" disabled={busy} type="submit" style={{ padding: "10px 24px" }}>
+                {busy
+                  ? "Recording…"
+                  : empType === "receive"
+                    ? "Receive Money"
+                    : "Save Employee Record"}
+              </Button>
+            </div>
+          </form>
+        )}
+
+        {activeTab === "transfer" && (
+          <form onSubmit={handleTransferSubmit}>
+            <h3 style={{ textTransform: "uppercase", fontSize: 13, letterSpacing: 0.5, color: "#44403c", marginBottom: 16 }}>
+              Cash & Bank Transfer
+            </h3>
+            <div className="form-grid">
+              <Field label="Transfer From *">
+                <select
+                  value={transferFrom}
+                  onChange={(e) => setTransferFrom(e.target.value)}
+                  required
+                >
+                  <option value="">Choose source account…</option>
+                  {accounts.map((a) => (
+                    <option key={str(a.id)} value={str(a.id)}>
+                      {str(a.name)} ({str(a.type)})
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              <Field label="Transfer To *">
+                <select
+                  value={transferTo}
+                  onChange={(e) => setTransferTo(e.target.value)}
+                  required
+                >
+                  <option value="">Choose destination account…</option>
+                  {accounts.map((a) => (
+                    <option key={str(a.id)} value={str(a.id)}>
+                      {str(a.name)} ({str(a.type)})
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              <Field label="Transfer Amount (₹) *">
+                <input
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  value={transferAmount}
+                  onChange={(e) => setTransferAmount(e.target.value)}
+                  required
+                />
+              </Field>
+
+              <Field label="Date *">
+                <input
+                  type="date"
+                  value={transferDate}
+                  onChange={(e) => setTransferDate(e.target.value)}
+                  required
+                />
+              </Field>
+
+              <Field label="Transfer Notes / Cheque / Ref">
+                <input
+                  placeholder="e.g. Cash deposit slip #1049"
+                  value={transferNotes}
+                  onChange={(e) => setTransferNotes(e.target.value)}
+                />
+              </Field>
+            </div>
+
+            {error && <p role="alert" className="error">{error}</p>}
+            {success && <p role="status" className="notice">{success}</p>}
+
+            <div style={{ marginTop: 20, display: "flex", justifyContent: "flex-end" }}>
+              <Button className="primary" disabled={busy} type="submit" style={{ padding: "10px 24px" }}>
+                {busy ? "Recording…" : "Complete Transfer"}
+              </Button>
+            </div>
+          </form>
+        )}
+
+        {/* 4. Foods Collections form */}
+        {activeTab === "foods" && (
+          <form onSubmit={handleFoodsSubmit}>
+            <div className="form-grid">
+              <Field label="Foods Salesman *">
+                <select
+                  value={foodsSalesman}
+                  onChange={(e) => setFoodsSalesman(e.target.value)}
+                  required
+                >
+                  <option value="">Choose foods salesman…</option>
+                  {foodsSalesmenOptions.map((f) => (
+                    <option key={f.id} value={f.name}>
+                      {f.name} {f.territory ? `· ${f.territory}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              <Field label="Date *">
+                <input
+                  type="date"
+                  value={foodsDate}
+                  onChange={(e) => setFoodsDate(e.target.value)}
+                  required
+                />
+              </Field>
+
+              <Field label="Bill No (optional)">
+                <input
+                  placeholder="e.g. FOOD-BILL-089"
+                  value={foodsBillNo}
+                  onChange={(e) => setFoodsBillNo(e.target.value)}
+                />
+              </Field>
+
+              <Field label="Food Items (optional)">
+                <input
+                  placeholder="e.g. Spices, Atta, Grains, Snacks"
+                  value={foodsItems}
+                  onChange={(e) => setFoodsItems(e.target.value)}
+                />
+              </Field>
+
+              <Field label="Cash Amount (₹)">
+                <input
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  value={foodsCashAmount}
+                  onChange={(e) => setFoodsCashAmount(e.target.value)}
+                />
+              </Field>
+
+              <Field label="Bank Amount (₹)">
+                <input
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  value={foodsBankAmount}
+                  onChange={(e) => setFoodsBankAmount(e.target.value)}
+                />
+              </Field>
+
+              <Field label="Notes (optional)">
+                <input
+                  placeholder="Additional remarks or slip reference…"
+                  value={foodsNotes}
+                  onChange={(e) => setFoodsNotes(e.target.value)}
+                />
+              </Field>
+            </div>
+
+            {error && <p role="alert" className="error">{error}</p>}
+            {success && <p role="status" className="notice">{success}</p>}
+
+            <div style={{ marginTop: 20, display: "flex", justifyContent: "flex-end" }}>
+              <Button className="primary" disabled={busy} type="submit" style={{ padding: "10px 24px" }}>
+                {busy ? "Recording…" : "Save Foods Collection"}
+              </Button>
+            </div>
+          </form>
+        )}
+      </section>
+
+      {/* Relevant register table for the active category */}
+      <Documents
+        onSelect={onSelect}
+        kind={
+          activeTab === "expense"
+            ? "expense"
+            : activeTab === "employee"
+              ? "salary,loan,employee_receipt"
+              : activeTab === "foods"
+                ? "foods_receipt"
+                : "transfer,deposit"
+        }
+      />
+
+      <Requests owner={owner} date={date} masters={masters} />
+    </>
+  );
+}
+
+function Salesmen({
+  data,
+  masters,
+  date,
+  onStatement,
+  owner: _owner,
+  add,
+  setAdd,
+  initialSelectedId,
+  onSelectRecord,
+  hideStats,
+}: {
+  owner: boolean;
+  data: Row | undefined;
+  masters: Row;
+  date: string;
+  onStatement: (id: string) => void;
+  add: boolean;
+  setAdd: (add: boolean) => void;
+  initialSelectedId?: string | null;
+  onSelectRecord?: (id: string) => void;
+  hideStats?: boolean;
+}) {
+  const [search, setSearch] = useState(""),
+    [filter, setFilter] = useState("all"),
+    [selected, setSelected] = useState(initialSelectedId || "");
+
+  useEffect(() => {
+    if (initialSelectedId) {
+      setSelected(initialSelectedId);
+    }
+  }, [initialSelectedId]);
+  const people = data ? arr(data.people) : arr(masters.salesmen),
+    visible = people
+      .filter((p) =>
+        (str(p.name) + " " + str(p.code))
+          .toLowerCase()
+          .includes(search.toLowerCase()),
+      )
+      .filter(
+        (p) =>
+          filter === "all" ||
+          (filter === "advance" && str(p.balance).startsWith("-")) ||
+          (filter === "due" &&
+            !str(p.balance).startsWith("-") &&
+            str(p.balance) !== "0.00"),
+      );
+  const current = selected || str(visible[0]?.id),
+    [passbookOffset, setPassbookOffset] = useState(0),
+    statement = useQuery({
+      queryKey: ["statement", current],
+      queryFn: () => api("statements/" + current),
+      enabled: !!current,
+    });
+
+  useEffect(() => {
+    setPassbookOffset(0);
+  }, [current]);
+  return (
+    <>
+      {!hideStats && (
+        <div className="stats">
+          <Metric
+            label="Still to receive"
+            value={data?.due}
+            caption="Gross dues across salesmen"
+            accent
+          />
+          <Metric
+            label="Paid in advance"
+            value={data?.credit}
+            caption="Credits remain separate from other dues"
+          />
+        </div>
+      )}
+      {add && (
+        <section className="panel">
+          <MasterForm
+            kind="salesmen"
+            date={date}
+            onDone={() => setAdd(false)}
+          />
+        </section>
+      )}
+      <div className="khata-layout">
+        <div>
+          <input
+            className="khata-search"
+            aria-label="Search salesman"
+            placeholder="Search name or code…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <div className="khata-toolbar">
+            {[
+              ["all", "All"],
+              ["due", "Still to receive"],
+              ["advance", "Advances"],
+            ].map(([id, label]) => (
+              <Button
+                key={id}
+                className={filter === id ? "primary" : "secondary"}
+                onClick={() => setFilter(id)}
+              >
+                {label}
+              </Button>
+            ))}
+          </div>
+          <div className="khata-list">
+            {visible.map((p) => (
+              <button
+                key={str(p.id)}
+                className={"khata-card " + (p.id === current ? "selected" : "")}
+                onClick={() => setSelected(str(p.id))}
+              >
+                <div>
+                  <strong>{str(p.name)}</strong>
+                  <small>
+                    {str(p.code)} · {p.active ? "Active" : "Inactive"}
+                  </small>
+                </div>
+                <div>
+                  <small>
+                    {str(p.balance).startsWith("-")
+                      ? "Advance"
+                      : "Signed balance"}
+                  </small>
+                  <b>{rupees(p.balance)}</b>
+                </div>
+              </button>
+            ))}
+            {!visible.length && <Empty text="No matching salesmen." />}
+          </div>
+        </div>
+        <section className="panel">
+          <div className="section-title">
+            <div>
+              <h2>
+                {str(people.find((p) => p.id === current)?.name) ||
+                  "Khata passbook"}
+              </h2>
+              <p className="muted small">
+                Trade ledger · loans and staff advances are separate.
+              </p>
+            </div>
+            {current && (
+              <Button
+                className="secondary"
+                onClick={() => onStatement(current)}
+              >
+                Date range / print
+              </Button>
+            )}
+          </div>
+          {statement.isPending ? (
+            <p>Choose a salesman to view history.</p>
+          ) : statement.isError ? (
+            <p className="error">{statement.error.message}</p>
+          ) : (
+            <>
+              <div className="review-balances">
+                <p>
+                  Ending signed balance <b>{rupees(statement.data.ending)}</b>
+                </p>
+              </div>
+              {(() => {
+                const allEntries = arr(statement.data.entries)
+                  .map((e) => {
+                    const method = (e.data as Row | undefined)?.method;
+                    let displayType = str(e.kind);
+                    if (e.kind === "receipt") {
+                      displayType =
+                        method === "cash"
+                          ? "receipt-cash"
+                          : method === "online"
+                            ? "receipt-online"
+                            : "receipt";
+                    }
+                    return {
+                      ...e,
+                      displayType,
+                    };
+                  })
+                  .slice()
+                  .reverse(); // Latest required first
+
+                const pageSize = 15;
+                const pageEntries = allEntries.slice(
+                  passbookOffset,
+                  passbookOffset + pageSize,
+                );
+
+                return (
+                  <>
+                    <Table
+                      rows={pageEntries}
+                      columns={[
+                        ["number", "Record"],
+                        ["date", "Date"],
+                        ["displayType", "Type"],
+                        ["debit", "Increases due", true],
+                        ["credit", "Reduces due", true],
+                        ["balance", "Balance", true],
+                      ]}
+                      onRow={onSelectRecord ? (r) => onSelectRecord(str(r.id)) : undefined}
+                    />
+                    <div className="pagination" style={{ marginTop: 14 }}>
+                      <Button
+                        disabled={!passbookOffset}
+                        onClick={() =>
+                          setPassbookOffset(Math.max(0, passbookOffset - pageSize))
+                        }
+                      >
+                        Previous
+                      </Button>
+                      <span>
+                        Showing {allEntries.length ? passbookOffset + 1 : 0}–
+                        {Math.min(passbookOffset + pageSize, allEntries.length)} of{" "}
+                        {allEntries.length} entries (latest first)
+                      </span>
+                      <Button
+                        disabled={passbookOffset + pageSize >= allEntries.length}
+                        onClick={() => setPassbookOffset(passbookOffset + pageSize)}
+                      >
+                        Next
+                      </Button>
+                    </div>
+                  </>
+                );
+              })()}
+            </>
+          )}
+        </section>
+      </div>
+    </>
+  );
+}
+const labels: Record<CommandName, string> = {
+  bill: "New bill",
+  receiptBatch: "Receive split payment",
+  adjustment: "Approved correcting adjustment",
+  receipt: "Receive payment",
+  verify: "Verify online payment",
+  reject: "Reject claim",
+  return: "Record linked return",
+  refund: "Issue credit refund",
+  opening: "Approve opening balance",
+  openingBatch: "Finalize opening import",
+  expense: "Record expense",
+  transfer: "Transfer business money",
+  deposit: "Hand over bank deposit",
+  resolveDeposit: "Resolve deposit",
+  loan: "Loan, borrowing or staff advance",
+  repay: "Record principal repayment",
+  salary: "Record salary payment",
+  owner: "Owner money movement",
+  unidentified: "Unidentified bank credit",
+  identify: "Identify an existing bank credit",
+  reverse: "Reverse a posted record",
+  close: "Close today",
+  resolveCloseException: "Resolve a cash difference",
+  reopen: "Reopen a business date",
+  reconcile: "Bank reconciliation",
+  reallocate: "Review allocations",
+  foodsReceipt: "Foods payment receipt",
+  employeeReceipt: "Employee advance / recovery receipt",
+  receiveSalesmanCash: "Receive salesman cash into till",
+  initiateCashHandover: "Initiate cash handover to manager",
+  confirmCashHandover: "Confirm cash handover into till",
+  rejectCashHandover: "Reject cash handover",
+};
+type Spec = {
+  key: string;
+  label: string;
+  type?: "date" | "money" | "quantity" | "text";
+  source?:
+  | "salesmen"
+  | "accounts"
+  | "documents"
+  | "cash"
+  | "bank"
+  | "billLines"
+  | "closes";
+  options?: string[];
+  optional?: boolean;
+  default?: string;
+};
+const common: Spec[] = [
+  { key: "date", label: "Business posting date", type: "date" },
+  { key: "note", label: "Note", optional: true },
+];
+const amount: Spec = { key: "amount", label: "Amount (₹)", type: "money" },
+  acc: Spec = {
+    key: "accountId",
+    label: "Actual money account",
+    source: "accounts",
+  },
+  sales: Spec = { key: "salesmanId", label: "Salesman", source: "salesmen" };
+const specs: Partial<Record<CommandName, Spec[]>> = {
+  resolveCloseException: [
+    { key: "closeId", label: "Unresolved cash difference", source: "closes" },
+    {
+      key: "resolution",
+      label: "Owner resolution",
+      options: ["recount_confirmed", "linked_correction"],
+    },
+    {
+      key: "documentId",
+      label: "Actual correction document (if linked)",
+      source: "documents",
+      optional: true,
+    },
+    { key: "reason", label: "Explanation and evidence checked" },
+  ],
+  receiptBatch: [sales],
+  adjustment: [
+    { key: "target", label: "Correction target", options: ["trade", "money"] },
+    { key: "targetId", label: "Salesman / money account", source: "accounts" },
+    {
+      key: "direction",
+      label: "Effect on signed balance",
+      options: ["increase", "decrease"],
+    },
+    amount,
+    {
+      key: "category",
+      label: "Approved category",
+      options: [
+        "opening_correction",
+        "write_off",
+        "cash_over_short",
+        "approved_trade_correction",
+      ],
+    },
+    { key: "reason", label: "Reason and supporting record" },
+  ],
+  receipt: [
+    sales,
+    amount,
+    acc,
+    { key: "method", label: "Payment method", options: ["cash", "online"] },
+    { key: "actualDate", label: "Actual payment date", type: "date" },
+    { key: "reference", label: "Bank reference / cash note", optional: true },
+  ],
+  refund: [sales, amount, acc, { key: "reason", label: "Reason" }],
+  expense: [
+    amount,
+    {
+      key: "category",
+      label: "Expense category",
+      options: [
+        "diesel",
+        "rent",
+        "electricity",
+        "transport",
+        "repairs",
+        "stationery",
+        "miscellaneous",
+      ],
+    },
+    { key: "payee", label: "Paid to / description" },
+  ],
+  transfer: [
+    { key: "sourceId", label: "From business account", source: "accounts" },
+    { key: "destinationId", label: "To business account", source: "accounts" },
+    amount,
+  ],
+  deposit: [
+    { key: "sourceId", label: "Cash handed over from", source: "cash" },
+    { key: "destinationId", label: "Destination bank", source: "bank" },
+    amount,
+  ],
+  resolveDeposit: [
+    { key: "depositId", label: "Original deposit", source: "documents" },
+    {
+      key: "resolution",
+      label: "What happened?",
+      options: ["credit", "return"],
+    },
+    acc,
+    amount,
+    {
+      key: "bankIdentity",
+      label: "Bank credit identity (required for credit)",
+      optional: true,
+    },
+  ],
+  loan: [
+    {
+      key: "direction",
+      label: "Type",
+      options: ["given", "borrowed", "staff"],
+    },
+    { key: "counterparty", label: "Counterparty / staff name" },
+    acc,
+    amount,
+  ],
+  repay: [
+    { key: "loanId", label: "Original loan / advance", source: "documents" },
+    acc,
+    amount,
+  ],
+  salary: [
+    { key: "payee", label: "Staff name" },
+    { key: "period", label: "Salary period" },
+    amount,
+    {
+      key: "staffLoanId",
+      label: "Staff advance (if set off)",
+      source: "documents",
+      optional: true,
+    },
+    { key: "setoff", label: "Advance setoff (₹)", type: "money", default: "0" },
+    acc,
+  ],
+  owner: [
+    {
+      key: "classification",
+      label: "Owner classification",
+      options: [
+        "contribution",
+        "owner_advance",
+        "withdrawal",
+        "owner_advance_repayment",
+      ],
+    },
+    acc,
+    amount,
+  ],
+  unidentified: [
+    acc,
+    amount,
+    {
+      key: "bankIdentity",
+      label: "Unique receiving-account bank transaction identity",
+    },
+  ],
+  identify: [
+    {
+      key: "receiptId",
+      label: "Original unidentified bank credit",
+      source: "documents",
+    },
+  ],
+  opening: [
+    { key: "target", label: "Opening type", options: ["trade", "money"] },
+    { key: "targetId", label: "Salesman or money account", source: "accounts" },
+    {
+      key: "amount",
+      label: "Signed opening (negative = advance)",
+      type: "text",
+    },
+    { key: "batchId", label: "Import / approval batch ID" },
+    { key: "rowId", label: "Unique approved row ID" },
+  ],
+  reverse: [
+    { key: "documentId", label: "Original record", source: "documents" },
+    { key: "reason", label: "Correction reason" },
+  ],
+  return: [
+    { key: "lineId", label: "Original bill line", source: "billLines" },
+    { key: "quantity", label: "Returned quantity", type: "quantity" },
+    { key: "reason", label: "Return reason" },
+  ],
+  reopen: [{ key: "reason", label: "Reason for reopening" }],
+  reconcile: [
+    acc,
+    { key: "statement", label: "Bank statement balance (₹)", type: "text" },
+  ],
+  reallocate: [sales],
+};
+function WorkflowPage({
+  title,
+  onClose,
+  children,
+  busy = false,
+  actions,
+}: {
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+  busy?: boolean;
+  actions?: React.ReactNode;
+}) {
+  const heading = useRef<HTMLHeadingElement>(null),
+    titleId = useId(),
+    setBusy = useContext(WorkflowBusyContext);
+  useEffect(() => {
+    window.scrollTo(0, 0);
+    heading.current?.focus();
+    return () => window.scrollTo(0, 0);
+  }, []);
+  useEffect(() => {
+    setBusy(busy);
+    return () => setBusy(false);
+  }, [busy, setBusy]);
+  return (
+    <section
+      className="workflow-page"
+      role="region"
+      aria-labelledby={titleId}
+      aria-busy={busy}
+    >
+      <div className="workflow-heading">
+        <div>
+          <p className="eyebrow">SALES & MONEY BOOK</p>
+          <h1 id={titleId} ref={heading} tabIndex={-1}>
+            {title}
+          </h1>
+        </div>
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          {actions}
+          <Button className="secondary" disabled={busy} onClick={onClose}>
+            ← Back
+          </Button>
+        </div>
+      </div>
+      <div className="workflow-body">{children}</div>
+    </section>
+  );
+}
+
+function ProductIdSearchableSelect({
+  products,
+  selectedId,
+  onSelect,
+  disabledIds,
+}: {
+  products: Row[];
+  selectedId: string;
+  onSelect: (productId: string) => void;
+  disabledIds?: string[] | Set<string>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const selectedProduct = products.find((p) => str(p.id) === selectedId);
+
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    if (open) {
+      document.addEventListener("mousedown", handleOutsideClick);
+    }
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [open]);
+
+  const filtered = products.filter((p) => {
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    const barcodes = getProductBarcodes(p);
+    return (
+      str(p.code).toLowerCase().includes(q) ||
+      str(p.name).toLowerCase().includes(q) ||
+      barcodes.some((bc) => bc.includes(q))
+    );
+  });
+
+  return (
+    <div ref={containerRef} style={{ position: "relative", width: "100%", minWidth: 0 }}>
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        style={{
+          width: "100%",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          padding: "9px 12px",
+          minHeight: 42,
+          borderRadius: 8,
+          border: "1.5px solid #cbd5e1",
+          background: selectedProduct ? "#f8fafc" : "#ffffff",
+          color: selectedProduct ? "#0f172a" : "#64748b",
+          fontFamily: selectedProduct ? "monospace" : "inherit",
+          fontWeight: 700,
+          fontSize: 14,
+          cursor: "pointer",
+          textAlign: "left",
+          boxSizing: "border-box",
+        }}
+      >
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+          {selectedProduct ? str(selectedProduct.code) : "Search ID…"}
+        </span>
+        <span style={{ fontSize: 11, color: "#64748b", marginLeft: 6 }}>▼</span>
+      </button>
+
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            left: 0,
+            width: "min(320px, calc(100vw - 32px))",
+            maxWidth: "calc(100vw - 32px)",
+            background: "#ffffff",
+            border: "1px solid #cbd5e1",
+            borderRadius: 10,
+            boxShadow: "0 12px 24px -4px rgba(0,0,0,0.15), 0 4px 6px -2px rgba(0,0,0,0.05)",
+            zIndex: 100,
+            padding: 8,
+          }}
+        >
+          <input
+            autoFocus
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.keyCode === 13) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (filtered.length > 0) {
+                  const first = filtered[0];
+                  const isAlreadyAdded = Boolean(
+                    disabledIds && (disabledIds instanceof Set ? disabledIds.has(str(first.id)) : disabledIds.includes(str(first.id)))
+                  );
+                  if (!isAlreadyAdded) {
+                    onSelect(str(first.id));
+                    setOpen(false);
+                    setSearch("");
+                  }
+                }
+              }
+            }}
+            placeholder="Search product code / name…"
+            style={{
+              width: "100%",
+              padding: "8px 12px",
+              border: "1.5px solid #94a3b8",
+              borderRadius: 6,
+              fontSize: 13,
+              marginBottom: 8,
+              boxSizing: "border-box",
+              fontFamily: "monospace",
+              outline: "none",
+            }}
+          />
+          <div style={{ maxHeight: 260, overflowY: "auto" }}>
+            {filtered.length === 0 ? (
+              <div style={{ padding: "12px 10px", fontSize: 13, color: "#94a3b8", textAlign: "center" }}>
+                No matching product
+              </div>
+            ) : (
+              filtered.map((p) => {
+                const isSelected = str(p.id) === selectedId;
+                const isAlreadyAdded = Boolean(
+                  disabledIds && (disabledIds instanceof Set ? disabledIds.has(str(p.id)) : disabledIds.includes(str(p.id)))
+                );
+                return (
+                  <div
+                    key={str(p.id)}
+                    onClick={() => {
+                      if (isAlreadyAdded) return;
+                      onSelect(str(p.id));
+                      setOpen(false);
+                      setSearch("");
+                    }}
+                    style={{
+                      padding: "8px 12px",
+                      borderRadius: 6,
+                      fontSize: 13,
+                      cursor: isAlreadyAdded ? "not-allowed" : "pointer",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      background: isSelected ? "#fed7aa" : isAlreadyAdded ? "#f8fafc" : "transparent",
+                      opacity: isAlreadyAdded ? 0.5 : 1,
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!isSelected && !isAlreadyAdded) e.currentTarget.style.background = "#f1f5f9";
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!isSelected && !isAlreadyAdded) e.currentTarget.style.background = isAlreadyAdded ? "#f8fafc" : "transparent";
+                    }}
+                  >
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <strong style={{ fontFamily: "monospace", color: isAlreadyAdded ? "#94a3b8" : "#0f172a", fontSize: 14 }}>
+                          {str(p.code)}
+                        </strong>
+                        {isAlreadyAdded && (
+                          <span style={{ fontSize: 10, background: "#e2e8f0", color: "#64748b", padding: "1px 5px", borderRadius: 4, fontWeight: 600 }}>
+                            Already in bill
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ color: isAlreadyAdded ? "#94a3b8" : "#475569", fontSize: 12, marginTop: 1 }}>{str(p.name)}</div>
+                    </div>
+                    {isSelected && <span style={{ color: "#c2410c", fontSize: 14, fontWeight: 800 }}>✓</span>}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProductSearchableSelect({
+  products,
+  selectedId,
+  onSelect,
+  disabledIds,
+}: {
+  products: Row[];
+  selectedId: string;
+  onSelect: (productId: string) => void;
+  disabledIds?: string[] | Set<string>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const selectedProduct = products.find((p) => str(p.id) === selectedId);
+
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    if (open) {
+      document.addEventListener("mousedown", handleOutsideClick);
+    }
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [open]);
+
+  const filtered = products.filter((p) => {
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    const barcodes = getProductBarcodes(p);
+    return (
+      str(p.name).toLowerCase().includes(q) ||
+      str(p.code).toLowerCase().includes(q) ||
+      barcodes.some((bc) => bc.includes(q))
+    );
+  });
+
+  return (
+    <div ref={containerRef} style={{ position: "relative", width: "100%", minWidth: 0 }}>
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        style={{
+          width: "100%",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          padding: "9px 12px",
+          minHeight: 42,
+          borderRadius: 8,
+          border: "1.5px solid #cbd5e1",
+          background: selectedProduct ? "#f8fafc" : "#ffffff",
+          color: selectedProduct ? "#0f172a" : "#64748b",
+          fontWeight: 600,
+          fontSize: 13,
+          cursor: "pointer",
+          textAlign: "left",
+          boxSizing: "border-box",
+        }}
+      >
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+          {selectedProduct ? str(selectedProduct.name) : "Select product…"}
+        </span>
+        <span style={{ fontSize: 11, color: "#64748b", marginLeft: 6 }}>▼</span>
+      </button>
+
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            left: 0,
+            width: "min(340px, calc(100vw - 32px))",
+            maxWidth: "calc(100vw - 32px)",
+            background: "#ffffff",
+            border: "1px solid #cbd5e1",
+            borderRadius: 10,
+            boxShadow: "0 12px 24px -4px rgba(0,0,0,0.15), 0 4px 6px -2px rgba(0,0,0,0.05)",
+            zIndex: 100,
+            padding: 8,
+          }}
+        >
+          <input
+            autoFocus
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.keyCode === 13) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (filtered.length > 0) {
+                  const first = filtered[0];
+                  const isAlreadyAdded = Boolean(
+                    disabledIds && (disabledIds instanceof Set ? disabledIds.has(str(first.id)) : disabledIds.includes(str(first.id)))
+                  );
+                  if (!isAlreadyAdded) {
+                    onSelect(str(first.id));
+                    setOpen(false);
+                    setSearch("");
+                  }
+                }
+              }
+            }}
+            placeholder="Search product name / code…"
+            style={{
+              width: "100%",
+              padding: "8px 12px",
+              border: "1.5px solid #94a3b8",
+              borderRadius: 6,
+              fontSize: 13,
+              marginBottom: 8,
+              boxSizing: "border-box",
+              outline: "none",
+            }}
+          />
+          <div style={{ maxHeight: 260, overflowY: "auto" }}>
+            {filtered.length === 0 ? (
+              <div style={{ padding: "12px 10px", fontSize: 13, color: "#94a3b8", textAlign: "center" }}>
+                No matching product
+              </div>
+            ) : (
+              filtered.map((p) => {
+                const isSelected = str(p.id) === selectedId;
+                const isAlreadyAdded = Boolean(
+                  disabledIds && (disabledIds instanceof Set ? disabledIds.has(str(p.id)) : disabledIds.includes(str(p.id)))
+                );
+                return (
+                  <div
+                    key={str(p.id)}
+                    onClick={() => {
+                      if (isAlreadyAdded) return;
+                      onSelect(str(p.id));
+                      setOpen(false);
+                      setSearch("");
+                    }}
+                    style={{
+                      padding: "8px 12px",
+                      borderRadius: 6,
+                      fontSize: 13,
+                      cursor: isAlreadyAdded ? "not-allowed" : "pointer",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      background: isSelected ? "#fed7aa" : isAlreadyAdded ? "#f8fafc" : "transparent",
+                      opacity: isAlreadyAdded ? 0.5 : 1,
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!isSelected && !isAlreadyAdded) e.currentTarget.style.background = "#f1f5f9";
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!isSelected && !isAlreadyAdded) e.currentTarget.style.background = isAlreadyAdded ? "#f8fafc" : "transparent";
+                    }}
+                  >
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <div style={{ fontWeight: 700, color: isAlreadyAdded ? "#94a3b8" : "#0f172a", fontSize: 14 }}>
+                          {str(p.name)}
+                        </div>
+                        {isAlreadyAdded && (
+                          <span style={{ fontSize: 10, background: "#e2e8f0", color: "#64748b", padding: "1px 5px", borderRadius: 4, fontWeight: 600 }}>
+                            Already in bill
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ color: isAlreadyAdded ? "#94a3b8" : "#475569", fontSize: 12, marginTop: 2 }}>
+                        Code: <b style={{ fontFamily: "monospace" }}>{str(p.code)}</b> · Rate: <b>₹{str(p.rate || "0")}</b> / {String(p.basis || 1)}m
+                      </div>
+                    </div>
+                    {isSelected && <span style={{ color: "#c2410c", fontSize: 14, fontWeight: 800 }}>✓</span>}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface ConfectioneryRowItem {
+  rowId: string;
+  productId: string;
+  code: string;
+  name: string;
+  quantity: string;
+  rate: string;
+  isManual: boolean;
+}
+
+function ConfectionerySearchableSelect({
+  products,
+  selectedId,
+  selectedName,
+  onSelectMaster,
+  onSelectManual,
+  disabledIds,
+}: {
+  products: Row[];
+  selectedId?: string;
+  selectedName?: string;
+  onSelectMaster: (product: Row) => void;
+  onSelectManual: (customName: string) => void;
+  disabledIds?: string[] | Set<string>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const selectedProduct = products.find((p) => str(p.id) === selectedId);
+  const displayName = selectedProduct ? str(selectedProduct.name) : selectedName || "";
+
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    if (open) {
+      document.addEventListener("mousedown", handleOutsideClick);
+    }
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [open]);
+
+  const filtered = products.filter((p) => {
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    return str(p.name).toLowerCase().includes(q) || str(p.code).toLowerCase().includes(q);
+  });
+
+  return (
+    <div ref={containerRef} style={{ position: "relative", minWidth: 0, width: "100%" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        style={{
+          width: "100%",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          padding: "7px 10px",
+          background: displayName ? "#ffffff" : "#fdfefe",
+          border: "1px solid #cbd5e1",
+          borderRadius: 8,
+          fontSize: 13,
+          fontWeight: 600,
+          color: displayName ? "#0f172a" : "#64748b",
+          cursor: "pointer",
+          textAlign: "left",
+          minHeight: 38,
+          boxSizing: "border-box",
+        }}
+      >
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+          {displayName || "Select from master or type…"}
+        </span>
+        <span style={{ fontSize: 11, color: "#64748b", marginLeft: 6 }}>▼</span>
+      </button>
+
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            left: 0,
+            width: "min(340px, calc(100vw - 32px))",
+            maxWidth: "calc(100vw - 32px)",
+            background: "#ffffff",
+            border: "1px solid #cbd5e1",
+            borderRadius: 10,
+            boxShadow: "0 12px 24px -4px rgba(0,0,0,0.15), 0 4px 6px -2px rgba(0,0,0,0.05)",
+            zIndex: 100,
+            padding: 8,
+          }}
+        >
+          <input
+            autoFocus
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.keyCode === 13) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (search.trim()) {
+                  onSelectManual(search.trim());
+                  setOpen(false);
+                  setSearch("");
+                }
+              }
+            }}
+            placeholder="Search master or type custom item…"
+            style={{
+              width: "100%",
+              padding: "7px 10px",
+              border: "1.5px solid #94a3b8",
+              borderRadius: 6,
+              fontSize: 13,
+              marginBottom: 8,
+              boxSizing: "border-box",
+              outline: "none",
+            }}
+          />
+
+          <div style={{ maxHeight: 220, overflowY: "auto" }}>
+            {search.trim() && (
+              <div
+                onClick={() => {
+                  onSelectManual(search.trim());
+                  setOpen(false);
+                  setSearch("");
+                }}
+                style={{
+                  padding: "7px 10px",
+                  borderRadius: 6,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  color: "#d97706",
+                  background: "#fffbeb",
+                  border: "1px dashed #f59e0b",
+                  marginBottom: 6,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <span>➕ Use custom: <b>"{search.trim()}"</b></span>
+              </div>
+            )}
+
+            {filtered.length === 0 && !search.trim() ? (
+              <div style={{ padding: "12px 10px", fontSize: 13, color: "#94a3b8", textAlign: "center" }}>
+                No confectionery items in master
+              </div>
+            ) : (
+              filtered.map((p) => {
+                const isSelected = str(p.id) === selectedId;
+                const isAlreadyAdded = Boolean(
+                  disabledIds && (disabledIds instanceof Set ? disabledIds.has(str(p.id)) : disabledIds.includes(str(p.id)))
+                );
+                return (
+                  <div
+                    key={str(p.id)}
+                    onClick={() => {
+                      if (isAlreadyAdded) return;
+                      onSelectMaster(p);
+                      setOpen(false);
+                      setSearch("");
+                    }}
+                    style={{
+                      padding: "7px 10px",
+                      borderRadius: 6,
+                      fontSize: 13,
+                      cursor: isAlreadyAdded ? "not-allowed" : "pointer",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      background: isSelected ? "#fed7aa" : isAlreadyAdded ? "#f8fafc" : "transparent",
+                      opacity: isAlreadyAdded ? 0.5 : 1,
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!isSelected && !isAlreadyAdded) e.currentTarget.style.background = "#f1f5f9";
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!isSelected && !isAlreadyAdded) e.currentTarget.style.background = isAlreadyAdded ? "#f8fafc" : "transparent";
+                    }}
+                  >
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <div style={{ fontWeight: 700, color: isAlreadyAdded ? "#94a3b8" : "#0f172a", fontSize: 13 }}>
+                          {str(p.name)}
+                        </div>
+                        {isAlreadyAdded && (
+                          <span style={{ fontSize: 10, background: "#e2e8f0", color: "#64748b", padding: "1px 5px", borderRadius: 4, fontWeight: 600 }}>
+                            Already in bill
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ color: isAlreadyAdded ? "#94a3b8" : "#64748b", fontSize: 11, marginTop: 2 }}>
+                        Code: <b style={{ fontFamily: "monospace" }}>{str(p.code)}</b> · Rate: <b>₹{str(p.rate || "0")}</b> / pc
+                      </div>
+                    </div>
+                    {isSelected && <span style={{ color: "#c2410c", fontSize: 14, fontWeight: 800 }}>✓</span>}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BarcodeScannerInput({
+  products,
+  onProductScanned,
+  externalNotFoundCode,
+  onClearNotFound,
+  autoFocus = false,
+}: {
+  products: Row[];
+  onProductScanned: (product: Row) => void;
+  externalNotFoundCode?: string | null;
+  onClearNotFound?: () => void;
+  autoFocus?: boolean;
+}) {
+  const [scanValue, setScanValue] = useState("");
+  const [scanStatus, setScanStatus] = useState<"idle" | "found" | "not_found">("idle");
+  const [lastScannedName, setLastScannedName] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (externalNotFoundCode) {
+      setScanStatus("not_found");
+      const timer = setTimeout(() => {
+        setScanStatus("idle");
+        onClearNotFound?.();
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [externalNotFoundCode]);
+
+  const handleScanSubmit = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    const query = scanValue.trim();
+    if (!query) return;
+
+    const matched = matchProductByScanOrCode(products, query);
+    if (matched) {
+      setScanStatus("found");
+      setLastScannedName(str(matched.name));
+      setScanValue("");
+      onProductScanned(matched);
+      setTimeout(() => setScanStatus("idle"), 2500);
+    } else {
+      setScanStatus("not_found");
+      setTimeout(() => setScanStatus("idle"), 3000);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexWrap: "wrap",
+        alignItems: "center",
+        gap: 12,
+        padding: "10px 14px",
+        background: scanStatus === "found" ? "#ecfdf5" : scanStatus === "not_found" ? "#fef2f2" : "#f8fafc",
+        border: `1.5px solid ${scanStatus === "found" ? "#10b981" : scanStatus === "not_found" ? "#f87171" : "#cbd5e1"}`,
+        borderRadius: 10,
+        marginBottom: 16,
+        transition: "all 0.2s ease",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, color: scanStatus === "found" ? "#059669" : "#475569" }}>
+        <Barcode size={22} />
+        <span style={{ fontSize: 13, fontWeight: 700, whiteSpace: "nowrap" }}>
+          Scan Barcode / Code:
+        </span>
+        <span
+          style={{
+            fontSize: 10,
+            background: "#ecfdf5",
+            color: "#059669",
+            border: "1px solid #a7f3d0",
+            borderRadius: 6,
+            padding: "2px 6px",
+            fontWeight: 700,
+          }}
+          title="Auto-detect is active. You can scan barcodes directly from anywhere on this page without clicking the input."
+        >
+          ⚡ Auto-Detect ON
+        </span>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 240 }}>
+        <input
+          ref={inputRef}
+          autoFocus={autoFocus}
+          type="text"
+          value={scanValue}
+          onChange={(e) => setScanValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.keyCode === 13) {
+              e.preventDefault();
+              e.stopPropagation();
+              handleScanSubmit();
+            }
+          }}
+          placeholder="Scan barcode or type product code & press Enter…"
+          style={{
+            flex: 1,
+            padding: "8px 12px",
+            borderRadius: 8,
+            border: "1.5px solid #94a3b8",
+            fontSize: 14,
+            fontWeight: 500,
+            background: "#ffffff",
+            outline: "none",
+          }}
+        />
+        <Button
+          type="button"
+          onClick={() => handleScanSubmit()}
+          className="secondary"
+          style={{
+            fontSize: 13,
+            padding: "8px 14px",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            background: "#ffffff",
+            fontWeight: 600,
+          }}
+        >
+          <ScanBarcode size={15} /> Add Item
+        </Button>
+      </div>
+
+      {scanStatus === "found" && (
+        <span style={{ fontSize: 12, fontWeight: 700, color: "#059669", display: "flex", alignItems: "center", gap: 4 }}>
+          <CheckCircle2 size={16} /> Selected: {lastScannedName} → Enter Qty
+        </span>
+      )}
+      {scanStatus === "not_found" && (
+        <span style={{ fontSize: 12, fontWeight: 700, color: "#dc2626", display: "flex", alignItems: "center", gap: 4 }}>
+          <X size={16} /> No product matched "{externalNotFoundCode || scanValue}"
+        </span>
+      )}
+    </div>
+  );
+}
+
+function CommandPage({
+  name,
+  date,
+  masters,
+  dashboard,
+  owner,
+  onClose,
+  onGoToSalesman,
+  onSelect,
+  restore,
+}: {
+  restore?: Row | null;
+  name: CommandName;
+  date: string;
+  masters: Row;
+  dashboard: Row;
+  owner: boolean;
+  onClose: () => void;
+  onGoToSalesman?: (salesmanId: string) => void;
+  onSelect?: (id: string) => void;
+}) {
+  const mubashirSalesman = arr(masters.salesmen).find(
+    (s) =>
+      str((s.details as Row)?.is_direct_route) === "true" ||
+      str((s.details as Row)?.direct_route) === "true" ||
+      str((s.details as Row)?.isDirectRoute) === "true" ||
+      str(s.name).toLowerCase().includes("mubashir") ||
+      str(s.name).toLowerCase().includes("muddasir") ||
+      str((s.details as Row)?.itc_id) === "1HG2",
+  );
+  const mubashirSalesmanId = mubashirSalesman ? str(mubashirSalesman.id) : undefined;
+  const qc = useQueryClient(),
+    [values, setValues] = useState<Record<string, string>>({
+      date,
+      actualDate: date,
+      note: "",
+      method: "cash",
+      setoff: "0",
+      direction: "given",
+      classification: "contribution",
+      resolution: "credit",
+      target: "trade",
+      category: "diesel",
+    }),
+    [quantities, setQuantities] = useState<Record<string, string>>({}),
+    [billRowIds, setBillRowIds] = useState<string[]>(() => [crypto.randomUUID()]),
+    [billRowProducts, setBillRowProducts] = useState<Record<string, string>>({}),
+    [lineEdits, setLineEdits] = useState<
+      Record<string, Record<string, string>>
+    >({}),
+    [legs, setLegs] = useState([{ accountId: "", amount: "" }]),
+    [assignments, setAssignments] = useState([{ salesmanId: "", amount: "" }]),
+    [counts, setCounts] = useState<Record<string, string>>({}),
+    [reasons, setReasons] = useState<Record<string, string>>({}),
+    [withPayments, setWithPayments] = useState(false),
+    [cashPay, setCashPay] = useState(""),
+    [onlinePay, setOnlinePay] = useState(""),
+    [cashId, setCashId] = useState(""),
+    [bankId, setBankId] = useState(""),
+    [bankRef, setBankRef] = useState(""),
+    [step, setStep] = useState<"entry" | "review" | "saved">("entry"),
+    [payload, setPayload] = useState<unknown>(),
+    [preview, setPreview] = useState<Row | null>(null),
+    [result, setResult] = useState<Row>(),
+    [notice, setNotice] = useState(""),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false),
+    [key, setKey] = useState(crypto.randomUUID()),
+    [draft, setDraft] = useState<{ id: string; version: number } | null>(null);
+  useEffect(() => {
+    if (!restore) return;
+    try {
+      const data = rowSchema.parse(restore.data);
+      setValues(z.record(z.string(), z.string()).parse(data.values));
+      setQuantities(
+        z.record(z.string(), z.string()).parse(data.quantities ?? {}),
+      );
+      setLineEdits(
+        z
+          .record(z.string(), z.record(z.string(), z.string()))
+          .parse(data.lineEdits ?? {}),
+      );
+      setCounts(z.record(z.string(), z.string()).parse(data.counts ?? {}));
+      setReasons(z.record(z.string(), z.string()).parse(data.reasons ?? {}));
+      setLegs(
+        z
+          .array(z.object({ accountId: z.string(), amount: z.string() }))
+          .parse(data.legs ?? []),
+      );
+      setAssignments(
+        z
+          .array(z.object({ salesmanId: z.string(), amount: z.string() }))
+          .parse(data.assignments ?? []),
+      );
+      const payment = rowSchema.parse(data.payment ?? {});
+      setWithPayments(payment.withPayments === true);
+      setCashPay(str(payment.cashPay));
+      setOnlinePay(str(payment.onlinePay));
+      setCashId(str(payment.cashId));
+      setBankId(str(payment.bankId));
+      setBankRef(str(payment.bankRef));
+      setDraft({ id: str(restore.id), version: Number(restore.version) });
+    } catch {
+      setError("This draft cannot be restored. Its data format is invalid.");
+    }
+  }, [restore]);
+  const [sourceSearch, setSourceSearch] = useState("");
+  const [matchOffset, setMatchOffset] = useState(0);
+  const bankMatches = useQuery({
+    queryKey: [
+      "matching-bank",
+      values.accountId,
+      values.matchFrom,
+      values.date,
+      matchOffset,
+    ],
+    enabled: name === "reconcile" && !!values.accountId,
+    queryFn: () =>
+      api(
+        `books/${values.accountId}?from=${values.matchFrom ?? date.slice(0, 7) + "-01"}&to=${values.date}&offset=${matchOffset}`,
+      ),
+  });
+  const docs = useQuery({
+    queryKey: ["documents", "selector", sourceSearch],
+    queryFn: () =>
+      api("documents?search=" + encodeURIComponent(sourceSearch), rowsSchema),
+  }),
+    allLines = useQuery({
+      queryKey: ["bill-lines", "selector", sourceSearch],
+      queryFn: () =>
+        api(
+          "bill-lines?search=" + encodeURIComponent(sourceSearch),
+          rowsSchema,
+        ),
+      enabled: name === "return",
+    });
+  const set = (k: string, v: string) => setValues((s) => ({ ...s, [k]: v }));
+  const options = (s: Spec): Row[] =>
+    s.source === "closes"
+      ? arr(dashboard.exceptions).map((r) => ({
+        ...r,
+        name:
+          str(r.date) +
+          " · " +
+          str(r.account) +
+          " · difference " +
+          rupees(r.difference),
+      }))
+      : s.source === "billLines"
+        ? (allLines.data ?? [])
+        : s.source === "documents"
+          ? (docs.data ?? []).filter(
+            (r) =>
+              !r.reversed &&
+              (s.key === "depositId"
+                ? r.kind === "deposit"
+                : s.key === "loanId" || s.key === "staffLoanId"
+                  ? r.kind === "loan"
+                  : s.key === "receiptId"
+                    ? r.kind === "unidentified"
+                    : true),
+          )
+          : s.key === "targetId" && values.target === "trade"
+            ? arr(masters.salesmen)
+            : s.source === "salesmen"
+              ? arr(masters.salesmen)
+              : arr(masters.accounts).filter((r) =>
+                s.source === "cash" || s.source === "bank"
+                  ? r.type === s.source
+                  : true,
+              );
+  const onlyRequest =
+    (!owner &&
+      [
+        "refund",
+        "loan",
+        "repay",
+        "owner",
+        "opening",
+        "reverse",
+        "reopen",
+        "adjustment",
+      ].includes(name)) ||
+    (!owner && name === "bill" && preview?.needsOwnerApproval === true);
+  const build = () => {
+    const p: Row = {};
+    if (name !== "close")
+      for (const f of [...common, ...(specs[name] ?? [])]) {
+        if (f.optional && !values[f.key]) {
+          if (
+            f.key === "note" ||
+            f.key === "reference" ||
+            f.key === "bankIdentity"
+          )
+            p[f.key] = "";
+          continue;
+        }
+        p[f.key] = values[f.key] ?? f.default ?? "";
+      }
+    if (name === "receipt") p.verified = false;
+    if (name === "receiptBatch") {
+      const cleanCash = cleanMoney(cashPay);
+      const cleanOnline = cleanMoney(onlinePay);
+      p.receipts = [
+        ...(cleanCash
+          ? [
+            {
+              amount: cleanCash,
+              accountId: cashId,
+              method: "cash",
+              actualDate: date,
+              reference: "",
+              verified: false,
+            },
+          ]
+          : []),
+        ...(cleanOnline
+          ? [
+            {
+              amount: cleanOnline,
+              accountId: bankId,
+              method: "online",
+              actualDate: date,
+              reference: bankRef,
+              verified: false,
+            },
+          ]
+          : []),
+      ];
+    }
+    if (name === "bill") {
+      p.salesmanId = values.salesmanId;
+      p.lines = billRowIds
+        .map((rowId) => {
+          const productId = billRowProducts[rowId];
+          let quantity = (quantities[rowId] ?? "").trim();
+          if (quantity.startsWith(".")) quantity = "0" + quantity;
+          if (!productId || !quantity || isNaN(Number(quantity)) || Number(quantity) <= 0) {
+            return null;
+          }
+          const edit = lineEdits[rowId] ?? lineEdits[productId] ?? {};
+          return {
+            productId,
+            quantity,
+            ...(edit.rate !== undefined ? { rate: edit.rate } : {}),
+            ...(edit.basis !== undefined ? { basis: edit.basis } : {}),
+          };
+        })
+        .filter((l): l is NonNullable<typeof l> => l !== null);
+      p.receipts = [];
+      p.paperReference = values.paperReference ?? "";
+      p.overrideReason = values.overrideReason ?? "";
+      const cleanDisc = cleanMoney(values.discount);
+      if (cleanDisc && parseMoneyNumber(cleanDisc) > 0) {
+        p.discount = cleanDisc;
+      }
+      if (withPayments) {
+        const defaultCashId =
+          cashId ||
+          (arr(masters.accounts).find((a) => a.type === "cash")?.id ?? "");
+        const defaultBankId =
+          bankId ||
+          (arr(masters.accounts).find((a) => a.type === "bank")?.id ?? "");
+        const cleanCash = cleanMoney(cashPay);
+        const cleanOnline = cleanMoney(onlinePay);
+        const receipts: Row[] = [];
+        if (cleanCash)
+          receipts.push({
+            amount: cleanCash,
+            accountId: defaultCashId,
+            method: "cash",
+            actualDate: date,
+            reference: "",
+            verified: false,
+          });
+        if (cleanOnline)
+          receipts.push({
+            amount: cleanOnline,
+            accountId: defaultBankId,
+            method: "online",
+            actualDate: date,
+            reference: bankRef || "Online payment",
+            verified: false,
+          });
+        p.receipts = receipts;
+      }
+    }
+    if (name === "expense") p.legs = legs;
+    if (name === "identify") p.assignments = assignments;
+    if (name === "close") {
+      p.date = date;
+      p.counts = arr(masters.accounts)
+        .filter((a) => a.type === "cash" && a.active)
+        .map((a) => ({
+          accountId: a.id,
+          counted: cleanMoney(counts[str(a.id)] ?? ""),
+          reason: reasons[str(a.id)] ?? "",
+        }));
+    }
+    if (name === "reopen") delete p.note;
+    if (name === "reconcile") {
+      p.matches = (values.matches ?? "")
+        .split(",")
+        .map((v) => v.trim())
+        .filter(Boolean);
+    }
+    if (name === "reallocate")
+      p.preferredChargeIds = (values.preferred ?? "")
+        .split(",")
+        .map((v) => v.trim())
+        .filter(Boolean);
+    return commands[name].parse(p);
+  };
+  let quoteInput: string | null = null;
+  if (name === "bill" && step === "entry") {
+    try {
+      quoteInput = JSON.stringify(build());
+    } catch {
+      /* Incomplete entry has no amount yet. */
+    }
+  }
+  const [debouncedQuote, setDebouncedQuote] = useState<string | null>(null);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedQuote(quoteInput), 250);
+    return () => window.clearTimeout(timer);
+  }, [quoteInput]);
+  const entryQuote = useQuery({
+    queryKey: ["bill-entry-preview", debouncedQuote],
+    enabled:
+      name === "bill" &&
+      step === "entry" &&
+      debouncedQuote !== null &&
+      debouncedQuote === quoteInput,
+    queryFn: () =>
+      api("preview/bill", previewResponse, JSON.parse(debouncedQuote!)),
+    staleTime: 0,
+  });
+  const currentQuote =
+    quoteInput !== null &&
+      debouncedQuote === quoteInput &&
+      !entryQuote.isFetching &&
+      !entryQuote.isError
+      ? entryQuote.data
+      : undefined;
+  const clientEstimatedTotal = (() => {
+    let sum = 0;
+    for (const rId of billRowIds) {
+      const prodId = billRowProducts[rId];
+      const rawQ = (quantities[rId] ?? "").trim();
+      const qStr = rawQ.startsWith(".") ? "0" + rawQ : rawQ;
+      const prod = arr(masters.products).find((x) => str(x.id) === prodId);
+      if (!prod || !prod.rate) continue;
+      const q = Number(qStr);
+      const r = Number(prod.rate);
+      const b = Number(prod.basis || 1) || 1;
+      if (isNaN(q) || isNaN(r) || q <= 0 || r <= 0) continue;
+      sum += (q * r) / b;
+    }
+    return sum > 0 ? (Math.round(sum * 100) / 100).toFixed(2) : null;
+  })();
+  const totalQuantity = (() => {
+    let sum = D(0);
+    let count = 0;
+    for (const rId of billRowIds) {
+      const prodId = billRowProducts[rId];
+      const rawQ = (quantities[rId] ?? "").trim();
+      const qStr = rawQ.startsWith(".") ? "0" + rawQ : rawQ;
+      if (!prodId || !qStr || isNaN(Number(qStr)) || Number(qStr) <= 0) continue;
+      try {
+        sum = sum.plus(D(qStr));
+        count++;
+      } catch {
+        // ignore invalid decimals
+      }
+    }
+    return count > 0 ? sum.toFixed() : null;
+  })();
+  const save = async () => {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const p = build();
+      setPayload(p);
+      if (name === "bill") {
+        const quote = await api("preview/bill", rowSchema, p);
+        setPreview(quote);
+        const billPayload = p as Row;
+        setPayload({
+          ...billPayload,
+          expectedQuoteHash: quote.quoteHash,
+          ...(!owner && quote.needsOwnerApproval
+            ? {
+              overrideReason:
+                values.note ||
+                "Manager requests owner approval for bill pricing or credit-limit exception",
+            }
+            : {}),
+        });
+      }
+      setStep("review");
+    } catch (e) {
+      setError(
+        e instanceof z.ZodError
+          ? e.issues.map((i) => i.path.join(".") + ": " + i.message).join("; ")
+          : (e as Error).message,
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+  const targetSalesmanName = values.salesmanId
+    ? str(arr(masters.salesmen).find((s) => s.id === values.salesmanId)?.name)
+    : "";
+
+  return (
+    <WorkflowPage title={labels[name]} onClose={onClose} busy={busy}>
+      {step === "saved" ? (
+        <div className="saved">
+          <span className="saved-icon">
+            <Check />
+          </span>
+          <h3>
+            {onlyRequest
+              ? "Request saved for owner review"
+              : "Saved to business records"}
+          </h3>
+          <p>{str(result?.number ?? result?.id)}</p>
+          <p className="muted">
+            {onlyRequest
+              ? "This request has no financial effect."
+              : "Printing and evidence uploads are separate actions. The saved entry is already recorded."}
+          </p>
+
+          {values.salesmanId && onGoToSalesman && (
+            <p style={{ margin: "16px 0", fontSize: 14 }}>
+              📄 View{" "}
+              <button
+                type="button"
+                onClick={() => onGoToSalesman(values.salesmanId)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  padding: 0,
+                  color: "#d97706",
+                  fontWeight: 700,
+                  textDecoration: "underline",
+                  cursor: "pointer",
+                  fontSize: "inherit",
+                }}
+              >
+                {targetSalesmanName ? `${targetSalesmanName}'s` : "salesman"} passbook & statement
+              </button>{" "}
+              to see the updated balance and entries.
+            </p>
+          )}
+
+          <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 12 }}>
+            <Button className="primary" onClick={onClose}>
+              Done
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <>
+          {name !== "bill" && (
+            <p className="notice">
+              {onlyRequest
+                ? "Owner approval required. This saves a request with no financial effect."
+                : "Review before posting. Online claims remain pending until verified."}
+            </p>
+          )}
+          {name === "bill" && step === "review" && onlyRequest && (
+            <p className="notice">
+              Owner review required for this bill's pricing, discount or
+              credit-limit exception. No financial effect until approved.
+            </p>
+          )}
+          {step === "entry" ? (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && e.target instanceof HTMLInputElement)
+                  e.preventDefault();
+              }}
+            >
+              {(specs[name] ?? []).some(
+                (s) => s.source === "documents" || s.source === "billLines",
+              ) && (
+                  <Field label="Find original record by number, name or paper reference">
+                    <input
+                      value={sourceSearch}
+                      onChange={(e) => setSourceSearch(e.target.value)}
+                      placeholder="Search all recorded history…"
+                    />
+                  </Field>
+                )}
+              <div className="form-grid">
+                {name !== "close" &&
+                  name !== "bill" &&
+                  common.map((f) => (
+                    <Field label={f.label} key={f.key}>
+                      <input
+                        type={f.type === "date" ? "date" : "text"}
+                        value={values[f.key] ?? ""}
+                        onChange={(e) => set(f.key, e.target.value)}
+                      />
+                    </Field>
+                  ))}
+                {name === "bill" && (
+                  <>
+                    <Field label="Salesman">
+                      <select
+                        value={values.salesmanId ?? ""}
+                        onChange={(e) => set("salesmanId", e.target.value)}
+                      >
+                        <option value="">Choose salesman</option>
+                        {arr(masters.salesmen)
+                          .filter((s) => s.active && (!mubashirSalesmanId || s.id !== mubashirSalesmanId))
+                          .map((s) => (
+                            <option key={str(s.id)} value={str(s.id)}>
+                              {str(s.code)} · {str(s.name)}
+                            </option>
+                          ))}
+                      </select>
+                    </Field>
+                    <Field label="Date">
+                      <input
+                        type="date"
+                        value={values.date}
+                        onChange={(e) => set("date", e.target.value)}
+                      />
+                    </Field>
+                  </>
+                )}
+                {(specs[name] ?? []).map((f) => {
+                  const dynamicLabel =
+                    f.key === "targetId"
+                      ? values.target === "trade"
+                        ? "Select Salesman"
+                        : values.target === "money"
+                          ? "Select Money / Bank Account"
+                          : f.label
+                      : f.label;
+                  return (
+                    <Field
+                      key={f.key}
+                      label={dynamicLabel + (f.optional ? " (optional)" : "")}
+                    >
+                      {f.source || f.options ? (
+                        <select
+                          value={values[f.key] ?? f.default ?? ""}
+                          onChange={(e) => set(f.key, e.target.value)}
+                        >
+                          <option value="">Choose…</option>
+                          {f.options
+                            ? (name === "adjustment" && f.key === "category"
+                              ? f.options.filter((o) =>
+                                values.target === "money"
+                                  ? o === "cash_over_short" || o === "opening_correction"
+                                  : o !== "cash_over_short",
+                              )
+                              : f.options
+                            ).map((o) => (
+                              <option key={o} value={o}>
+                                {o.replaceAll("_", " ")}
+                              </option>
+                            ))
+                            : options(f).map((r) => (
+                              <option key={str(r.id)} value={str(r.id)}>
+                                {str(r.name ?? r.number ?? r.label)}
+                                {r.amount ? " · " + rupees(r.amount) : ""}
+                              </option>
+                            ))}
+                        </select>
+                      ) : (
+                        <input
+                          type={f.type === "date" ? "date" : "text"}
+                          inputMode={
+                            f.type === "money" || f.type === "quantity"
+                              ? "decimal"
+                              : undefined
+                          }
+                          value={values[f.key] ?? f.default ?? ""}
+                          onChange={(e) => set(f.key, e.target.value)}
+                        />
+                      )}
+                    </Field>
+                  );
+                })}
+              </div>
+              {name === "bill" && (
+                <>
+                  <div className="table-scroll bill-grid bill-entry-grid">
+                    <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: "0 6px" }}>
+                      <thead>
+                        <tr>
+                          <th style={{ width: 40, textAlign: "center" }}>#</th>
+                          <th style={{ width: 110 }}>Product ID</th>
+                          <th style={{ minWidth: 220 }}>Product Name</th>
+                          <th style={{ width: 120 }}>Quantity (m)</th>
+                          <th style={{ width: 130 }}>Rate / m</th>
+                          <th className="money-cell" style={{ width: 120 }}>Amount</th>
+                          <th style={{ width: 45, textAlign: "center" }}></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {billRowIds.map((rowId, index) => {
+                          const productId = billRowProducts[rowId] ?? "";
+                          const p = arr(masters.products).find((x) => str(x.id) === productId);
+                          const quoted = currentQuote?.lines.find((l) => l.productId === productId);
+                          const quantity = quantities[rowId] ?? "";
+                          const normQty = quantity.trim().startsWith(".")
+                            ? "0" + quantity.trim()
+                            : quantity.trim();
+                          const clientEstimatedAmount = (() => {
+                            if (!p || !p.rate) return null;
+                            const qNum = Number(normQty);
+                            const rNum = Number(p.rate);
+                            if (isNaN(qNum) || isNaN(rNum) || qNum <= 0 || rNum <= 0) return null;
+                            const basisNum = Number(p.basis || 1) || 1;
+                            return (Math.round((qNum * rNum / basisNum) * 100) / 100).toFixed(2);
+                          })();
+                          const disabledProductIds = billRowIds
+                            .filter((id) => id !== rowId && billRowProducts[id])
+                            .map((id) => billRowProducts[id]);
+
+                          return (
+                            <tr key={rowId} style={{ background: "#ffffff" }}>
+                              <td style={{ textAlign: "center", color: "#a8a29e", fontSize: 13, fontWeight: 500 }}>
+                                {index + 1}
+                              </td>
+                              <td>
+                                <ProductIdSearchableSelect
+                                  products={arr(masters.products).filter((x) => x.active)}
+                                  selectedId={productId}
+                                  disabledIds={disabledProductIds}
+                                  onSelect={(selectedProdId) => {
+                                    setBillRowProducts((prev) => ({ ...prev, [rowId]: selectedProdId }));
+                                  }}
+                                />
+                              </td>
+                              <td>
+                                <ProductSearchableSelect
+                                  products={arr(masters.products).filter((x) => x.active)}
+                                  selectedId={productId}
+                                  disabledIds={disabledProductIds}
+                                  onSelect={(selectedProdId) => {
+                                    setBillRowProducts((prev) => ({ ...prev, [rowId]: selectedProdId }));
+                                  }}
+                                />
+                              </td>
+                              <td>
+                                <input
+                                  aria-label="Quantity in m"
+                                  inputMode="decimal"
+                                  value={quantity}
+                                  onChange={(e) =>
+                                    setQuantities((q) => ({
+                                      ...q,
+                                      [rowId]: e.target.value,
+                                    }))
+                                  }
+                                  placeholder="0"
+                                  style={{
+                                    width: "100%",
+                                    padding: "7px 10px",
+                                    borderRadius: 8,
+                                    border: "1px solid #d6d3d1",
+                                    textAlign: "center",
+                                    fontWeight: 600,
+                                    fontSize: 13,
+                                  }}
+                                />
+                              </td>
+                              <td>
+                                {p ? (
+                                  <span className="uneditable-rate">
+                                    {rupees(p.rate)}
+                                    <small style={{ color: "#78716c", fontSize: 11 }}> / m</small>
+                                  </span>
+                                ) : (
+                                  <span style={{ color: "#a8a29e", fontSize: 14 }}>—</span>
+                                )}
+                              </td>
+                              <td className="money-cell" style={{ fontWeight: 600, fontSize: 13 }}>
+                                <output aria-label="Amount">
+                                  {quoted
+                                    ? rupees(quoted.amount)
+                                    : clientEstimatedAmount
+                                      ? rupees(clientEstimatedAmount)
+                                      : quantity && productId && quoteInput
+                                        ? "…"
+                                        : "₹0.00"}
+                                </output>
+                              </td>
+                              <td style={{ textAlign: "center" }}>
+                                <button
+                                  type="button"
+                                  aria-label="Remove item"
+                                  disabled={billRowIds.length <= 1}
+                                  onClick={() => {
+                                    setBillRowIds((prev) => prev.filter((id) => id !== rowId));
+                                    setBillRowProducts((prev) => {
+                                      const next = { ...prev };
+                                      delete next[rowId];
+                                      return next;
+                                    });
+                                    setQuantities((prev) => {
+                                      const next = { ...prev };
+                                      delete next[rowId];
+                                      return next;
+                                    });
+                                  }}
+                                  style={{
+                                    background: "none",
+                                    border: "none",
+                                    cursor: billRowIds.length <= 1 ? "not-allowed" : "pointer",
+                                    color: billRowIds.length <= 1 ? "#d6d3d1" : "#a8a29e",
+                                    padding: 4,
+                                    borderRadius: 4,
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    if (billRowIds.length > 1) e.currentTarget.style.color = "#ef4444";
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    if (billRowIds.length > 1) e.currentTarget.style.color = "#a8a29e";
+                                  }}
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                      <tfoot>
+                        <tr>
+                          <td colSpan={7} style={{ padding: "8px 0" }}>
+                            <Button
+                              type="button"
+                              className="secondary"
+                              onClick={() => {
+                                const newId = crypto.randomUUID();
+                                setBillRowIds((prev) => [...prev, newId]);
+                              }}
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 6,
+                                fontSize: 13,
+                                fontWeight: 600,
+                                padding: "6px 14px",
+                              }}
+                            >
+                              <Plus size={15} /> Add product line
+                            </Button>
+                          </td>
+                        </tr>
+                        <tr>
+                          <td colSpan={3} style={{ fontWeight: 600 }}>Total</td>
+                          <td style={{ fontWeight: 700, fontSize: 13 }}>
+                            <output aria-label="Total quantity">
+                              {totalQuantity != null ? totalQuantity : "—"}
+                            </output>
+                          </td>
+                          <td></td>
+                          <td className="money-cell" style={{ fontWeight: 700, fontSize: 14 }}>
+                            <output aria-label="Bill total">
+                              {currentQuote
+                                ? rupees(currentQuote.total)
+                                : clientEstimatedTotal
+                                  ? rupees(clientEstimatedTotal)
+                                  : "—"}
+                            </output>
+                          </td>
+                          <td></td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                  {entryQuote.isError &&
+                    quoteInput &&
+                    debouncedQuote === quoteInput && (
+                      <p className="bill-pricing-error" role="status">
+                        {entryQuote.error.message}
+                      </p>
+                    )}
+                  <div className="form-grid">
+                    <Field label="Overall Bill Discount (₹) (Optional)">
+                      <input
+                        inputMode="decimal"
+                        placeholder="0.00"
+                        value={values.discount ?? ""}
+                        onChange={(e) => set("discount", e.target.value)}
+                      />
+                    </Field>
+                  </div>
+                  <details className="bill-notes">
+                    <summary>Note / paper reference (optional)</summary>
+                    <div className="form-grid">
+                      <Field label="Note">
+                        <input
+                          value={values.note ?? ""}
+                          onChange={(e) => set("note", e.target.value)}
+                        />
+                      </Field>
+                      <Field label="Paper reference (optional)">
+                        <input
+                          value={values.paperReference ?? ""}
+                          onChange={(e) =>
+                            set("paperReference", e.target.value)
+                          }
+                        />
+                      </Field>
+                    </div>
+                  </details>
+                  <label className="checkbox">
+                    <input
+                      type="checkbox"
+                      checked={withPayments}
+                      onChange={(e) => setWithPayments(e.target.checked)}
+                    />{" "}
+                    Also record money received with this entry
+                  </label>
+                  {withPayments && (
+                    <div className="form-grid">
+                      <Field label="Cash amount received (₹)">
+                        <input
+                          inputMode="decimal"
+                          placeholder="0.00"
+                          value={cashPay}
+                          onChange={(e) => setCashPay(e.target.value)}
+                        />
+                      </Field>
+                      <Field label="Online amount received (₹)">
+                        <input
+                          inputMode="decimal"
+                          placeholder="0.00"
+                          value={onlinePay}
+                          onChange={(e) => setOnlinePay(e.target.value)}
+                        />
+                      </Field>
+                      <Field label="Notes">
+                        <input
+                          placeholder="Payment remarks / reference (optional)"
+                          value={bankRef}
+                          onChange={(e) => setBankRef(e.target.value)}
+                        />
+                      </Field>
+                    </div>
+                  )}
+                </>
+              )}
+              {name === "receiptBatch" && (
+                <div className="form-grid">
+                  <Field label="Cash amount actually received (₹)">
+                    <input
+                      inputMode="decimal"
+                      value={cashPay}
+                      onChange={(e) => setCashPay(e.target.value)}
+                    />
+                  </Field>
+                  <Field label="Receiving cash account">
+                    <select
+                      value={cashId}
+                      onChange={(e) => setCashId(e.target.value)}
+                    >
+                      <option value="">Choose…</option>
+                      {arr(masters.accounts)
+                        .filter((a) => a.type === "cash")
+                        .map((a) => (
+                          <option key={str(a.id)} value={str(a.id)}>
+                            {str(a.name)}
+                          </option>
+                        ))}
+                    </select>
+                  </Field>
+                  <Field label="Online claim amount (₹)">
+                    <input
+                      inputMode="decimal"
+                      value={onlinePay}
+                      onChange={(e) => setOnlinePay(e.target.value)}
+                    />
+                  </Field>
+                  <Field label="Receiving bank">
+                    <select
+                      value={bankId}
+                      onChange={(e) => setBankId(e.target.value)}
+                    >
+                      <option value="">Choose…</option>
+                      {arr(masters.accounts)
+                        .filter((a) => a.type === "bank")
+                        .map((a) => (
+                          <option key={str(a.id)} value={str(a.id)}>
+                            {str(a.name)}
+                          </option>
+                        ))}
+                    </select>
+                  </Field>
+                  <Field label="Online bank reference">
+                    <input
+                      value={bankRef}
+                      onChange={(e) => setBankRef(e.target.value)}
+                    />
+                  </Field>
+                </div>
+              )}
+              {name === "expense" && (
+                <>
+                  <h3>Actual payments · must add up to total</h3>
+                  {legs.map((l, i) => (
+                    <div className="split-row" key={i}>
+                      <select
+                        aria-label={"Expense account " + (i + 1)}
+                        value={l.accountId}
+                        onChange={(e) =>
+                          setLegs(
+                            legs.map((v, j) =>
+                              j === i ? { ...v, accountId: e.target.value } : v,
+                            ),
+                          )
+                        }
+                      >
+                        <option value="">Choose account</option>
+                        {arr(masters.accounts).map((a) => (
+                          <option key={str(a.id)} value={str(a.id)}>
+                            {str(a.name)}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        aria-label={"Expense leg amount " + (i + 1)}
+                        inputMode="decimal"
+                        value={l.amount}
+                        onChange={(e) =>
+                          setLegs(
+                            legs.map((v, j) =>
+                              j === i ? { ...v, amount: e.target.value } : v,
+                            ),
+                          )
+                        }
+                      />
+                      <Button
+                        onClick={() => setLegs(legs.filter((_, j) => i !== j))}
+                      >
+                        Remove
+                      </Button>
+                    </div>
+                  ))}
+                  <Button
+                    className="secondary"
+                    onClick={() =>
+                      setLegs([...legs, { accountId: "", amount: "" }])
+                    }
+                  >
+                    Add payment leg
+                  </Button>
+                </>
+              )}
+              {name === "identify" && (
+                <>
+                  <h3>Assign the existing credit</h3>
+                  {assignments.map((l, i) => (
+                    <div className="split-row" key={i}>
+                      <select
+                        aria-label="Salesman assignment"
+                        value={l.salesmanId}
+                        onChange={(e) =>
+                          setAssignments(
+                            assignments.map((v, j) =>
+                              j === i
+                                ? { ...v, salesmanId: e.target.value }
+                                : v,
+                            ),
+                          )
+                        }
+                      >
+                        <option value="">Choose salesman</option>
+                        {arr(masters.salesmen).map((a) => (
+                          <option key={str(a.id)} value={str(a.id)}>
+                            {str(a.name)}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        aria-label="Assignment amount"
+                        value={l.amount}
+                        onChange={(e) =>
+                          setAssignments(
+                            assignments.map((v, j) =>
+                              j === i ? { ...v, amount: e.target.value } : v,
+                            ),
+                          )
+                        }
+                      />
+                    </div>
+                  ))}
+                  <Button
+                    onClick={() =>
+                      setAssignments([
+                        ...assignments,
+                        { salesmanId: "", amount: "" },
+                      ])
+                    }
+                  >
+                    Add assignment
+                  </Button>
+                </>
+              )}
+              {name === "close" && arr(dashboard.exceptions).length > 0 && (
+                <div className="notice">
+                  There are {arr(dashboard.exceptions).length} unresolved prior
+                  cash differences. Book balances carry forward unchanged.
+                </div>
+              )}
+              {name === "close" &&
+                arr(masters.accounts)
+                  .filter((a) => a.type === "cash" && a.active)
+                  .map((a) => (
+                    <div className="close-count" key={str(a.id)}>
+                      <h3>
+                        {str(a.name)} · {str(a.holder)}
+                      </h3>
+                      <p>
+                        Expected book cash:{" "}
+                        {rupees(
+                          arr(dashboard.accounts).find((x) => x.id === a.id)
+                            ?.balance,
+                        )}
+                      </p>
+                      <div className="form-grid">
+                        <Field label="Cash physically counted (₹)">
+                          <input
+                            inputMode="decimal"
+                            value={counts[str(a.id)] ?? ""}
+                            onChange={(e) =>
+                              setCounts({
+                                ...counts,
+                                [str(a.id)]: e.target.value,
+                              })
+                            }
+                          />
+                        </Field>
+                        <Field label="Explanation for any difference">
+                          <input
+                            value={reasons[str(a.id)] ?? ""}
+                            onChange={(e) =>
+                              setReasons({
+                                ...reasons,
+                                [str(a.id)]: e.target.value,
+                              })
+                            }
+                          />
+                        </Field>
+                      </div>
+                    </div>
+                  ))}
+              {name === "reconcile" && (
+                <section className="cash-help">
+                  <h3>Match real bank statement entries</h3>
+                  <Field label="Show app bank entries from">
+                    <input
+                      type="date"
+                      value={values.matchFrom ?? date.slice(0, 7) + "-01"}
+                      onChange={(e) => {
+                        set("matchFrom", e.target.value);
+                        setMatchOffset(0);
+                      }}
+                    />
+                  </Field>
+                  {bankMatches.isError ? (
+                    <p className="error">{bankMatches.error.message}</p>
+                  ) : (
+                    arr(bankMatches.data?.entries).map((r) => (
+                      <label className="checkbox" key={str(r.id)}>
+                        <input
+                          type="checkbox"
+                          checked={(values.matches ?? "")
+                            .split(",")
+                            .includes(str(r.id))}
+                          onChange={(e) => {
+                            const ids = (values.matches ?? "")
+                              .split(",")
+                              .filter(Boolean);
+                            set(
+                              "matches",
+                              (e.target.checked
+                                ? [...ids, str(r.id)]
+                                : ids.filter((id) => id !== r.id)
+                              ).join(","),
+                            );
+                          }}
+                        />
+                        {str(r.date)} · {str(r.number)} · in {rupees(r.inflow)}{" "}
+                        / out {rupees(r.outflow)}
+                      </label>
+                    ))
+                  )}
+                  <div className="pagination">
+                    <Button
+                      disabled={!matchOffset}
+                      onClick={() =>
+                        setMatchOffset(Math.max(0, matchOffset - 100))
+                      }
+                    >
+                      Previous entries
+                    </Button>
+                    <Button
+                      disabled={arr(bankMatches.data?.entries).length < 100}
+                      onClick={() => setMatchOffset(matchOffset + 100)}
+                    >
+                      Next entries
+                    </Button>
+                  </div>
+                  <p className="small muted">
+                    Matching records a check against your statement. A
+                    difference never creates a balancing expense.
+                  </p>
+                </section>
+              )}
+              {name === "reallocate" && (
+                <section className="cash-help">
+                  <h3>Preferred bills to settle first (optional)</h3>
+                  <Field label="Find a bill by number or paper reference">
+                    <input
+                      value={sourceSearch}
+                      onChange={(e) => setSourceSearch(e.target.value)}
+                    />
+                  </Field>
+                  {(docs.data ?? [])
+                    .filter(
+                      (r) =>
+                        r.kind === "bill" &&
+                        r.salesman_id === values.salesmanId &&
+                        !r.reversed,
+                    )
+                    .map((r) => (
+                      <label className="checkbox" key={str(r.id)}>
+                        <input
+                          type="checkbox"
+                          checked={(values.preferred ?? "")
+                            .split(",")
+                            .includes(str(r.id))}
+                          onChange={(e) => {
+                            const ids = (values.preferred ?? "")
+                              .split(",")
+                              .filter(Boolean);
+                            set(
+                              "preferred",
+                              (e.target.checked
+                                ? [...ids, str(r.id)]
+                                : ids.filter((id) => id !== r.id)
+                              ).join(","),
+                            );
+                          }}
+                        />
+                        {str(r.number)} · {rupees(r.amount)}
+                      </label>
+                    ))}
+                  <p className="small muted">
+                    Selection order sets the preference. Remaining credit still
+                    settles other eligible dues oldest first; this does not move
+                    money.
+                  </p>
+                </section>
+              )}
+            </form>
+          ) : (
+            <div className="review">
+              <h3 className="section-marker">
+                Review this {onlyRequest ? "request" : "transaction"}
+              </h3>
+              <Review
+                value={
+                  name === "bill"
+                    ? Object.fromEntries(
+                      Object.entries(payload as Row).filter(
+                        ([key]) => key !== "lines",
+                      ),
+                    )
+                    : payload
+                }
+                masters={masters}
+                documents={[
+                  ...(docs.data ?? []),
+                  ...arr(bankMatches.data?.entries),
+                ]}
+              />
+              {preview && (
+                <Table
+                  rows={arr(preview.lines).map((l) => ({
+                    ...l,
+                    name:
+                      arr(masters.products).find((p) => p.id === l.productId)
+                        ?.name ?? l.productId,
+                    rateDisplay: rupees(l.effectiveRate),
+                    discountDisplay: l.discountAmount && Number(l.discountAmount) > 0 ? rupees(l.discountAmount) : "—",
+                  }))}
+                  columns={[
+                    ["name", "Product"],
+                    ["quantity", "Quantity"],
+                    ["rateDisplay", "Rate"],
+                    ["discountDisplay", "Discount"],
+                    ["amount", "Amount", true],
+                  ]}
+                />
+              )}
+              {preview && (
+                <div className="review-balances">
+                  {name === "bill" ? (
+                    <>
+                      {arr(preview.lines).length > 0 && (
+                        <p>
+                          Total quantity{" "}
+                          <b>
+                            {arr(preview.lines)
+                              .reduce((acc, l) => acc.plus(D(str(l.quantity) || 0)), D(0))
+                              .toFixed()}
+                          </b>
+                        </p>
+                      )}
+                      {preview.discount && Number(preview.discount) > 0 && (
+                        <>
+                          <p>
+                            Items subtotal <b>{rupees(preview.subtotal ?? preview.total)}</b>
+                          </p>
+                          <p style={{ color: "#dc2626" }}>
+                            Overall bill discount <b>-{rupees(preview.discount)}</b>
+                          </p>
+                        </>
+                      )}
+                      <p>
+                        This bill total <b>{rupees(preview.total)}</b>
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p>
+                        Previous signed balance <b>{rupees(preview.previous)}</b>
+                      </p>
+                      <p>
+                        This bill <b>{rupees(preview.total)}</b>
+                      </p>
+                      <p>
+                        Confirmed payments now <b>{rupees(preview.confirmed)}</b>
+                      </p>
+                      <p>
+                        Pending online claims <b>{rupees(preview.pending)}</b>
+                      </p>
+                      <p>
+                        New signed balance <b>{rupees(preview.projected)}</b>
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
+              <p className="small muted">
+                Posting date: {dateLabel(values.date)}. This app records
+                transactions; it does not move bank money.
+              </p>
+            </div>
+          )}
+          {notice && (
+            <p role="status" className="notice">
+              {notice}
+            </p>
+          )}
+          {error && (
+            <p role="alert" className="error">
+              {error}
+            </p>
+          )}
+          <div className="workflow-actions">
+            {step === "entry" ? (
+              <>
+                <Button
+                  className="secondary"
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true);
+                    setError("");
+                    setNotice("");
+                    try {
+                      const r = await api("drafts", rowSchema, {
+                        ...(draft ?? {}),
+                        data: {
+                          name,
+                          values,
+                          quantities,
+                          lineEdits,
+                          legs,
+                          assignments,
+                          counts,
+                          reasons,
+                          payment: {
+                            withPayments,
+                            cashPay,
+                            onlinePay,
+                            cashId,
+                            bankId,
+                            bankRef,
+                          },
+                        },
+                      });
+                      setDraft({ id: str(r.id), version: Number(r.version) });
+                      setNotice("Draft saved. No financial posting.");
+                    } catch (e) {
+                      setError((e as Error).message);
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  Save draft
+                </Button>
+                <Button className="primary" disabled={busy} onClick={save}>
+                  {busy
+                    ? "Checking…"
+                    : "Review " + (onlyRequest ? "request" : "entry")}
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  className="secondary"
+                  disabled={busy}
+                  onClick={() => {
+                    setStep("entry");
+                    setKey(crypto.randomUUID());
+                  }}
+                >
+                  Back to entry
+                </Button>
+                <Button
+                  className="primary"
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true);
+                    setError("");
+                    try {
+                      const r = onlyRequest
+                        ? await api("requests", rowSchema, {
+                          command: name,
+                          payload,
+                          reason:
+                            values.reason ||
+                            values.note ||
+                            "Please review and approve this transaction",
+                        })
+                        : await api(
+                          "commands/" + name,
+                          commandResult,
+                          payload,
+                          "POST",
+                          key,
+                          draft
+                            ? {
+                              "x-draft-id": draft.id,
+                              "x-draft-version": str(draft.version),
+                            }
+                            : {},
+                        );
+                      setResult(r);
+                      setStep("saved");
+                      await qc.invalidateQueries();
+                    } catch (e) {
+                      setError(
+                        "Not confirmed as saved: " +
+                        (e as Error).message +
+                        ". Keep this page open and retry the same action.",
+                      );
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  {busy
+                    ? "Waiting for server…"
+                    : onlyRequest
+                      ? "Send for owner review"
+                      : "Confirm & save"}
+                </Button>
+              </>
+            )}
+          </div>
+        </>
+      )}
+      {name === "bill" && (
+        <div style={{ marginTop: 28 }}>
+          <Documents onSelect={onSelect ?? (() => { })} kind="bill" />
+        </div>
+      )}
+    </WorkflowPage>
+  );
+}
+function Review({
+  value,
+  masters,
+  documents,
+}: {
+  value: unknown;
+  masters: Row;
+  documents: Row[];
+}) {
+  const resolveValue = (k: string, v: unknown) => {
+    if (
+      (k === "date" || k.endsWith("Date")) &&
+      /^\d{4}-\d{2}-\d{2}$/.test(str(v))
+    )
+      return dateLabel(v);
+    if (["amount", "setoff", "counted", "statement", "creditLimit"].includes(k))
+      return rupees(v);
+    if (k.endsWith("Id") || /^[0-9a-f]{8}-[0-9a-f-]{27}$/.test(str(v))) {
+      const r = [
+        ...arr(masters.salesmen),
+        ...arr(masters.accounts),
+        ...arr(masters.products),
+        ...documents,
+      ].find((r) => r.id === v);
+      return str(r?.name ?? r?.number ?? v);
+    }
+    return str(v);
+  };
+  return (
+    <dl>
+      {Object.entries(value as Row)
+        .filter(
+          ([k, v]) => k !== "expectedQuoteHash" && v !== "" && v !== false,
+        )
+        .map(([k, v]) => (
+          <div key={k}>
+            <dt>{k.replace(/([A-Z])/g, " $1")}</dt>
+            <dd>
+              {Array.isArray(v)
+                ? v.map((x, i) => (
+                  <div key={i}>
+                    {typeof x === "object"
+                      ? Object.entries(x)
+                        .map(
+                          ([key, val]) =>
+                            `${key}: ${resolveValue(key, val)}`,
+                        )
+                        .join(" · ")
+                      : resolveValue(k, x)}
+                  </div>
+                ))
+                : resolveValue(k, v)}
+            </dd>
+          </div>
+        ))}
+    </dl>
+  );
+}
+function VerificationPage({
+  id,
+  date,
+  dashboard,
+  onClose,
+}: {
+  id: string;
+  date: string;
+  dashboard?: Row;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient(),
+    [notes, setNotes] = useState(""),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false),
+    [key] = useState(crypto.randomUUID());
+
+  const claim = arr(dashboard?.claims).find((c) => str(c.id) === id);
+
+  return (
+    <WorkflowPage title="Review online payment" onClose={onClose} busy={busy}>
+      <div
+        className="form-grid"
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+          gap: "12px",
+          marginBottom: 16,
+        }}
+      >
+        <Field label="Salesman">
+          <input
+            readOnly
+            value={str(claim?.salesman_name ?? "—")}
+            style={{ background: "#f5f5f4" }}
+          />
+        </Field>
+        <Field label="Date">
+          <input
+            readOnly
+            value={claim?.actual_date ? dateLabel(claim.actual_date) : dateLabel(date)}
+            style={{ background: "#f5f5f4" }}
+          />
+        </Field>
+        <Field label="Amount">
+          <input
+            readOnly
+            value={claim?.amount ? rupees(claim.amount) : "—"}
+            style={{ background: "#f5f5f4", fontWeight: "bold" }}
+          />
+        </Field>
+      </div>
+
+      <Field label="Notes (Transaction ID, or rejection reason if rejecting)">
+        <input
+          placeholder="Enter transaction ID (optional) or rejection reason…"
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+        />
+      </Field>
+
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+
+      <div className="workflow-actions">
+        <Button
+          disabled={busy}
+          onClick={async () => {
+            if (!notes.trim()) {
+              setError("Please provide a rejection reason in Notes.");
+              return;
+            }
+            setBusy(true);
+            setError("");
+            try {
+              await api(
+                "commands/reject",
+                commandResult,
+                { claimId: id, reason: notes.trim() },
+                "POST",
+                key,
+              );
+              await qc.invalidateQueries();
+              onClose();
+            } catch (e) {
+              setError((e as Error).message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Reject payment
+        </Button>
+        <Button
+          className="primary"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            setError("");
+            try {
+              const trimmed = notes.trim();
+              await api(
+                "commands/verify",
+                commandResult,
+                {
+                  claimId: id,
+                  date,
+                  note: trimmed,
+                  bankIdentity: trimmed || `VERIFIED-${id.slice(0, 8)}`,
+                  evidence: trimmed
+                    ? `Verified transaction ID: ${trimmed}`
+                    : "Verified online payment",
+                },
+                "POST",
+                key,
+              );
+              await qc.invalidateQueries();
+              onClose();
+            } catch (e) {
+              setError((e as Error).message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Approve payment
+        </Button>
+      </div>
+    </WorkflowPage>
+  );
+}
+function CustomerStatementPage({
+  customerId,
+  onClose,
+  date,
+  onSelectRecord,
+  onNewBill,
+  onReceiveMoney,
+}: {
+  customerId: string;
+  onClose: () => void;
+  date?: string;
+  onSelectRecord?: (recordId: string) => void;
+  onNewBill?: (customerId: string, salesmanId?: string) => void;
+  onReceiveMoney?: (customerId: string, salesmanId?: string) => void;
+}) {
+  const [selectedDate, setSelectedDate] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [currentCustomerId] = useState(customerId);
+  const [offset, setOffset] = useState(0);
+  const pageSize = 15;
+
+  // Query customer details & statement (full history, date filter applied on table level)
+  const q = useQuery({
+    queryKey: ["direct-customer-statement", currentCustomerId, "2000-01-01", date || ""],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      params.set("from", "2000-01-01");
+      if (date) params.set("to", date);
+      return api(`direct-cig/statement/${currentCustomerId}?${params.toString()}`);
+    },
+  });
+
+  return (
+    <WorkflowPage
+      title="Customer Statement"
+      onClose={onClose}
+      actions={
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+          <Button
+            className="primary"
+            onClick={() =>
+              onNewBill?.(
+                currentCustomerId,
+                str((q.data?.customer as Row)?.salesman_id),
+              )
+            }
+            style={{
+              padding: "6px 14px",
+              minHeight: 36,
+              fontSize: 13,
+              fontWeight: 600,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+            }}
+            title="Create new bill for this customer"
+          >
+            <Plus size={15} strokeWidth={2.5} /> Bill
+          </Button>
+          <Button
+            className="secondary"
+            onClick={() =>
+              onReceiveMoney?.(
+                currentCustomerId,
+                str((q.data?.customer as Row)?.salesman_id),
+              )
+            }
+            style={{
+              padding: "6px 14px",
+              minHeight: 36,
+              fontSize: 13,
+              fontWeight: 600,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+            }}
+            title="Receive money from this customer"
+          >
+            <IndianRupee size={14} strokeWidth={2.5} /> Receive
+          </Button>
+        </div>
+      }
+    >
+      {q.isLoading ? (
+        <p style={{ padding: 16 }}>Loading customer statement…</p>
+      ) : q.isError ? (
+        <p className="error">{q.error.message}</p>
+      ) : q.data ? (
+        <div>
+          {/* Customer Metadata Card */}
+          <div
+            style={{
+              background: "#ffffff",
+              border: "1px solid #e2e8f0",
+              borderRadius: 12,
+              padding: "18px 20px",
+              marginBottom: 20,
+              boxShadow: "0 1px 3px rgba(0, 0, 0, 0.03)",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
+              <div>
+                <h2 style={{ margin: "0 0 6px", fontSize: 20, color: "#0f172a" }}>
+                  {str((q.data.customer as Row)?.customer_name)}
+                </h2>
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 16,
+                    flexWrap: "wrap",
+                    fontSize: 13,
+                    color: "#64748b",
+                  }}
+                >
+                  <span>
+                    Customer Code: <b style={{ fontFamily: "monospace" }}>{str((q.data.customer as Row)?.customer_id)}</b>
+                  </span>
+                  <span>
+                    Beat / Area:{" "}
+                    <b>
+                      {str((q.data.customer as Row)?.beat_name)} (
+                      {str((q.data.customer as Row)?.beat_code)})
+                    </b>
+                  </span>
+                  <span>
+                    Salesman Route:{" "}
+                    <b>{str((q.data.customer as Row)?.salesman_name)}</b>
+                  </span>
+                </div>
+              </div>
+
+              {/* Net Real Dues pill */}
+              <div style={{ textAlign: "right", background: "#f8fafc", padding: "8px 16px", borderRadius: 10, border: "1px solid #e2e8f0" }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>
+                  Net Current Due
+                </div>
+                <div
+                  style={{
+                    fontSize: 22,
+                    fontWeight: 700,
+                    marginTop: 2,
+                    color:
+                      parseFloat(str(q.data.currentBalance || "0")) > 0
+                        ? "#dc2626"
+                        : "#16a34a",
+                  }}
+                >
+                  {rupees(q.data.currentBalance)}
+                </div>
+              </div>
+            </div>
+
+            {/* Brought Forward Balance if any */}
+            {Boolean(q.data.opening && q.data.opening !== "0.00") && (
+              <div
+                style={{
+                  marginTop: 14,
+                  paddingTop: 12,
+                  borderTop: "1px solid #f1f5f9",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: 10,
+                  fontSize: 13,
+                  color: "#475569",
+                }}
+              >
+                <span>
+                  Brought Forward (Opening): <b>{rupees(q.data.opening ?? "0.00")}</b>
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* Table Level Filters: Single Date & Word Search */}
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: 14,
+              flexWrap: "wrap",
+              gap: 10,
+              padding: "10px 14px",
+              background: "#ffffff",
+              border: "1px solid #e2e8f0",
+              borderRadius: 10,
+            }}
+          >
+            <div>
+              <h3 style={{ margin: 0, fontSize: 16, color: "#0f172a" }}>Transaction History</h3>
+              <p className="muted" style={{ margin: "2px 0 0", fontSize: 12 }}>
+                {selectedDate ? `Filtered for ${dateLabel(selectedDate)}` : `All records up to ${dateLabel(date || new Date().toISOString().slice(0, 10))}`}
+              </p>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              {/* Single Date Picker with Calendar icon & Clear X */}
+              <div
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  background: selectedDate ? "#f0fdf4" : "#ffffff",
+                  border: `1.5px solid ${selectedDate ? "#86efac" : "#cbd5e1"}`,
+                  borderRadius: 10,
+                  padding: "4px 10px 4px 12px",
+                  minHeight: 38,
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.03)",
+                  transition: "all 0.15s ease",
+                }}
+              >
+                <Calendar size={16} color={selectedDate ? "#16a34a" : "#64748b"} />
+                <input
+                  type="date"
+                  aria-label="Filter customer statement by date"
+                  value={selectedDate}
+                  onChange={(e) => {
+                    setSelectedDate(e.target.value);
+                    setOffset(0);
+                  }}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    fontSize: 13,
+                    fontWeight: selectedDate ? 600 : 400,
+                    color: selectedDate ? "#15803d" : "#334155",
+                    outline: "none",
+                    cursor: "pointer",
+                    padding: 0,
+                  }}
+                />
+                {selectedDate && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedDate("");
+                      setOffset(0);
+                    }}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      background: "#fee2e2",
+                      border: "none",
+                      borderRadius: "50%",
+                      width: 20,
+                      height: 20,
+                      color: "#dc2626",
+                      cursor: "pointer",
+                      padding: 0,
+                      marginLeft: 4,
+                    }}
+                    title="Remove date filter"
+                  >
+                    <X size={13} strokeWidth={2.5} />
+                  </button>
+                )}
+              </div>
+
+              {/* Word Search Input */}
+              <input
+                type="search"
+                aria-label="Search customer statement records"
+                placeholder="Search record #, type, note…"
+                value={searchTerm}
+                onChange={(e) => {
+                  setSearchTerm(e.target.value);
+                  setOffset(0);
+                }}
+                className="direct-cig-search-input"
+                style={{ width: 220, minHeight: 38 }}
+              />
+            </div>
+          </div>
+
+          {(() => {
+            const rawEntries = arr(q.data.ledger)
+              .map((row: Row) => ({
+                ...row,
+                displayType: str(row.kind).toUpperCase(),
+              }))
+              .slice()
+              .reverse(); // latest first
+
+            const allEntries = rawEntries.filter((row: Row) => {
+              if (selectedDate && str(row.date) !== selectedDate) {
+                return false;
+              }
+              if (searchTerm.trim()) {
+                const term = searchTerm.trim().toLowerCase();
+                const num = str(row.number).toLowerCase();
+                const type = str(row.displayType).toLowerCase();
+                const note = str(
+                  row.note ||
+                  (row.data as Row)?.note ||
+                  (row.data as Row)?.notes ||
+                  (row.data as Row)?.remarks ||
+                  (row.data as Row)?.reference ||
+                  ""
+                ).toLowerCase();
+                if (!num.includes(term) && !type.includes(term) && !note.includes(term)) {
+                  return false;
+                }
+              }
+              return true;
+            });
+
+            const pageEntries = allEntries.slice(offset, offset + pageSize);
+
+            if (allEntries.length === 0) {
+              return (
+                <div style={{ padding: "30px 20px", textAlign: "center", background: "#f8fafc", borderRadius: 10, border: "1px dashed #cbd5e1" }}>
+                  <p className="muted" style={{ margin: 0 }}>
+                    {selectedDate || searchTerm
+                      ? "No transactions match the selected filter."
+                      : "No transactions recorded for this customer."}
+                  </p>
+                </div>
+              );
+            }
+
+            return (
+              <>
+                <div className="table-scroll">
+                  <Table
+                    rows={pageEntries}
+                    columns={[
+                      ["number", "Record"],
+                      ["date", "Date"],
+                      ["displayType", "Type"],
+                      ["note_icon", "Note"],
+                      ["debit", "Bill (Due Increases)", true],
+                      ["credit", "Paid / Return (Due Reduces)", true],
+                      ["balance", "Balance", true],
+                    ]}
+                    cellRenderers={{
+                      note_icon: (r) => {
+                        const noteText = str(
+                          r.note ||
+                          (r.data as Row)?.note ||
+                          (r.data as Row)?.notes ||
+                          (r.data as Row)?.remarks ||
+                          (r.data as Row)?.reference ||
+                          (r.data as Row)?.reason ||
+                          ""
+                        );
+                        if (!noteText) return <span style={{ color: "#cbd5e1" }}>—</span>;
+                        return (
+                          <span
+                            title={noteText}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              width: 24,
+                              height: 24,
+                              borderRadius: 4,
+                              background: "#f1f5f9",
+                              color: "#475569",
+                              cursor: "pointer",
+                              border: "1px solid #e2e8f0",
+                              fontSize: 13,
+                            }}
+                          >
+                            📝
+                          </span>
+                        );
+                      },
+                    }}
+                    onRow={onSelectRecord ? (r) => onSelectRecord(str(r.id)) : undefined}
+                  />
+                </div>
+                <div className="pagination" style={{ margin: "14px 0" }}>
+                  <Button
+                    disabled={!offset}
+                    onClick={() => setOffset(Math.max(0, offset - pageSize))}
+                  >
+                    Previous
+                  </Button>
+                  <span>
+                    Showing {allEntries.length ? offset + 1 : 0}–
+                    {Math.min(offset + pageSize, allEntries.length)} of{" "}
+                    {allEntries.length} entries (latest first)
+                  </span>
+                  <Button
+                    disabled={offset + pageSize >= allEntries.length}
+                    onClick={() => setOffset(offset + pageSize)}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </>
+            );
+          })()}
+
+          <div style={{ marginTop: 16, display: "flex", gap: 10 }}>
+            <Button className="secondary" onClick={() => window.print()}>
+              <Printer size={16} /> Print Statement
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </WorkflowPage>
+  );
+}
+
+function StatementPage({
+  id,
+  onClose,
+  date,
+  onSelectRecord,
+  onNewBill,
+  onReceiveMoney,
+}: {
+  id: string;
+  onClose: () => void;
+  date: string;
+  onSelectRecord?: (recordId: string) => void;
+  onNewBill?: (salesmanId: string) => void;
+  onReceiveMoney?: (salesmanId: string) => void;
+}) {
+  const [selectedDate, setSelectedDate] = useState(""),
+    [searchTerm, setSearchTerm] = useState(""),
+    [offset, setOffset] = useState(0);
+
+  // Fetch full history as-of date (or filtered by selectedDate)
+  const fromParam = selectedDate || "2000-01-01";
+  const toParam = selectedDate || date;
+
+  const q = useQuery({
+    queryKey: ["statement", id, fromParam, toParam],
+    queryFn: () => api(`statements/${id}?from=${fromParam}&to=${toParam}`),
+  });
+
+  return (
+    <WorkflowPage
+      title="Salesman statement"
+      onClose={onClose}
+      actions={
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+          <Button
+            className="primary"
+            onClick={() => onNewBill?.(id)}
+            style={{
+              padding: "6px 14px",
+              minHeight: 36,
+              fontSize: 13,
+              fontWeight: 600,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+            }}
+            title="Create new bill for this salesman"
+          >
+            <Plus size={15} strokeWidth={2.5} /> Bill
+          </Button>
+          <Button
+            className="secondary"
+            onClick={() => onReceiveMoney?.(id)}
+            style={{
+              padding: "6px 14px",
+              minHeight: 36,
+              fontSize: 13,
+              fontWeight: 600,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+            }}
+            title="Receive money from this salesman"
+          >
+            <IndianRupee size={14} strokeWidth={2.5} /> Receive
+          </Button>
+        </div>
+      }
+    >
+      {/* Modern Filter Header with Single Date Pill & Word Search */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: 12,
+          padding: "14px 16px",
+          background: "#ffffff",
+          border: "1px solid #e2e8f0",
+          borderRadius: 12,
+          marginBottom: 16,
+          boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
+        }}
+      >
+        <div>
+          <h3 style={{ margin: 0, fontSize: 17, color: "#0f172a" }}>
+            {str((q.data?.salesman as Row)?.name || "Salesman History")}
+          </h3>
+          <p className="muted" style={{ margin: "2px 0 0", fontSize: 12 }}>
+            Passbook entries · {selectedDate ? `Filtered for ${dateLabel(selectedDate)}` : `All transactions up to ${dateLabel(date)}`}
+          </p>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          {/* Enhanced Single Date Picker */}
+          <div
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              background: selectedDate ? "#f0fdf4" : "#ffffff",
+              border: `1.5px solid ${selectedDate ? "#86efac" : "#cbd5e1"}`,
+              borderRadius: 10,
+              padding: "4px 10px 4px 12px",
+              minHeight: 40,
+              boxShadow: "0 1px 2px rgba(0,0,0,0.03)",
+              transition: "all 0.15s ease",
+            }}
+          >
+            <Calendar size={16} color={selectedDate ? "#16a34a" : "#64748b"} />
+            <input
+              type="date"
+              aria-label="Filter statement by date"
+              value={selectedDate}
+              onChange={(e) => {
+                setSelectedDate(e.target.value);
+                setOffset(0);
+              }}
+              style={{
+                border: "none",
+                background: "transparent",
+                fontSize: 13,
+                fontWeight: selectedDate ? 600 : 400,
+                color: selectedDate ? "#15803d" : "#334155",
+                outline: "none",
+                cursor: "pointer",
+                padding: 0,
+              }}
+            />
+            {selectedDate && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedDate("");
+                  setOffset(0);
+                }}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: "#fee2e2",
+                  border: "none",
+                  borderRadius: "50%",
+                  width: 20,
+                  height: 20,
+                  color: "#dc2626",
+                  cursor: "pointer",
+                  padding: 0,
+                  marginLeft: 4,
+                  transition: "background 0.12s ease",
+                }}
+                title="Remove date filter"
+                onMouseEnter={(e) => (e.currentTarget.style.background = "#fecaca")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "#fee2e2")}
+              >
+                <X size={13} strokeWidth={2.5} />
+              </button>
+            )}
+          </div>
+
+          {/* Word / Text search input */}
+          <input
+            type="search"
+            aria-label="Search statement records"
+            placeholder="Search record #, type, note…"
+            value={searchTerm}
+            onChange={(e) => {
+              setSearchTerm(e.target.value);
+              setOffset(0);
+            }}
+            className="direct-cig-search-input"
+            style={{ width: 240, minHeight: 40 }}
+          />
+        </div>
+      </div>
+
+      {q.isError ? (
+        <p className="error">{q.error.message}</p>
+      ) : q.data ? (
+        <>
+          <div className="review-balances">
+            <p>
+              Brought forward <b>{rupees(q.data.opening)}</b>
+            </p>
+            <p>
+              Ending signed balance <b>{rupees(q.data.ending)}</b>
+            </p>
+          </div>
+          {(() => {
+            const rawEntries = arr(q.data.entries)
+              .map((e) => {
+                const method = (e.data as Row | undefined)?.method;
+                let displayType = str(e.kind);
+                if (e.kind === "receipt") {
+                  displayType =
+                    method === "cash"
+                      ? "receipt-cash"
+                      : method === "online"
+                        ? "receipt-online"
+                        : "receipt";
+                }
+                return {
+                  ...e,
+                  displayType,
+                  searchIndex: (
+                    str(e.number) +
+                    " " +
+                    str(e.kind) +
+                    " " +
+                    displayType +
+                    " " +
+                    str(e.date) +
+                    " " +
+                    str((e.data as Row)?.note || "") +
+                    " " +
+                    str((e.data as Row)?.notes || "") +
+                    " " +
+                    str((e.data as Row)?.remarks || "") +
+                    " " +
+                    str((e.data as Row)?.reason || "") +
+                    " " +
+                    str((e.data as Row)?.reference || "")
+                  ).toLowerCase(),
+                };
+              })
+              .slice()
+              .reverse(); // Latest required first
+
+            const sTerm = searchTerm.trim().toLowerCase();
+            const allEntries = sTerm
+              ? rawEntries.filter((e) => e.searchIndex.includes(sTerm))
+              : rawEntries;
+
+            const pageSize = 15;
+            const pageEntries = allEntries.slice(offset, offset + pageSize);
+
+            if (allEntries.length === 0) {
+              return (
+                <div style={{ padding: 24, textAlign: "center", color: "#64748b" }}>
+                  <p>No transactions match your search filter.</p>
+                </div>
+              );
+            }
+
+            return (
+              <>
+                <Table
+                  rows={pageEntries}
+                  columns={[
+                    ["number", "Record"],
+                    ["date", "Date"],
+                    ["displayType", "Type"],
+                    ["note_icon", "Note"],
+                    ["debit", "Increases due", true],
+                    ["credit", "Reduces due", true],
+                    ["balance", "Balance", true],
+                  ]}
+                  cellRenderers={{
+                    note_icon: (r) => {
+                      const noteText = str(
+                        (r.data as Row)?.note ||
+                        (r.data as Row)?.notes ||
+                        (r.data as Row)?.remarks ||
+                        (r.data as Row)?.reference ||
+                        (r.data as Row)?.reason ||
+                        r.note ||
+                        ""
+                      );
+                      if (!noteText) return <span style={{ color: "#cbd5e1" }}>—</span>;
+                      return (
+                        <span
+                          title={noteText}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            width: 24,
+                            height: 24,
+                            borderRadius: 4,
+                            background: "#f1f5f9",
+                            color: "#475569",
+                            cursor: "pointer",
+                            border: "1px solid #e2e8f0",
+                            fontSize: 13,
+                          }}
+                        >
+                          📝
+                        </span>
+                      );
+                    },
+                  }}
+                  onRow={onSelectRecord ? (r) => onSelectRecord(str(r.id)) : undefined}
+                />
+                <div className="pagination" style={{ margin: "14px 0" }}>
+                  <Button
+                    disabled={!offset}
+                    onClick={() => setOffset(Math.max(0, offset - pageSize))}
+                  >
+                    Previous
+                  </Button>
+                  <span>
+                    Showing {allEntries.length ? offset + 1 : 0}–
+                    {Math.min(offset + pageSize, allEntries.length)} of{" "}
+                    {allEntries.length} entries (latest first)
+                  </span>
+                  <Button
+                    disabled={offset + pageSize >= allEntries.length}
+                    onClick={() => setOffset(offset + pageSize)}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </>
+            );
+          })()}
+          <h3>Unconfirmed claims (no balance effect)</h3>
+          <Table
+            rows={arr(q.data.pending)}
+            columns={[
+              ["actual_date", "Reported date"],
+              ["state", "Status"],
+              ["amount", "Amount", true],
+            ]}
+          />
+          <Button className="secondary" onClick={() => window.print()}>
+            Print statement
+          </Button>
+        </>
+      ) : (
+        <p>Loading…</p>
+      )}
+    </WorkflowPage>
+  );
+}
+function AuditView({ onBack, onSelect }: { onBack: () => void; onSelect?: (id: string) => void }) {
+  const [offset, setOffset] = useState(0);
+  const audit = useQuery({
+    queryKey: ["audit", offset],
+    queryFn: () => api(`audit?offset=${offset}`, rowsSchema),
+  });
+
+  return (
+    <section className="panel">
+      <Button onClick={onBack}>← Back</Button>
+      <h2>Audit history</h2>
+      {audit.isError ? (
+        <p className="error">{audit.error.message}</p>
+      ) : (
+        <>
+          <Table
+            rows={audit.data ?? []}
+            columns={[
+              ["created_at", "Time"],
+              ["actor_name", "Actor"],
+              ["action", "Action"],
+              ["record_label", "Record"],
+              ["reason", "Reason"],
+            ]}
+            cellRenderers={{
+              record_label: (r) => (
+                <DocLink
+                  id={r.document_id ? str(r.document_id) : null}
+                  number={str(r.record_label)}
+                  onSelect={onSelect}
+                />
+              ),
+            }}
+          />
+          <div className="pagination" style={{ marginTop: 14 }}>
+            <Button
+              disabled={!offset}
+              onClick={() => setOffset(Math.max(0, offset - 100))}
+            >
+              Previous
+            </Button>
+            <span>
+              Showing {audit.data?.length ? offset + 1 : 0}–
+              {offset + (audit.data?.length ?? 0)} (latest first)
+            </span>
+            <Button
+              disabled={(audit.data?.length ?? 0) < 100}
+              onClick={() => setOffset(offset + 100)}
+            >
+              Next
+            </Button>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function DocumentDetail({
+  id,
+  currentDate,
+  onBack,
+  setAction,
+  owner,
+  onSelect,
+}: {
+  id: string;
+  currentDate?: string;
+  onBack: () => void;
+  setAction: (n: CommandName) => void;
+  owner: boolean;
+  onSelect?: (id: string) => void;
+}) {
+  const special = id.includes(":") || id === "audit";
+  const qc = useQueryClient();
+  const q = useQuery({
+    queryKey: ["document", id],
+    queryFn: () => api("documents/" + id),
+    enabled: !special,
+  });
+
+  // Local state for bill-specific Reverse and Linked Return dialogs
+  const [showReverseModal, setShowReverseModal] = useState(false);
+  const [reverseReason, setReverseReason] = useState("");
+  const [reverseBusy, setReverseBusy] = useState(false);
+  const [reverseError, setReverseError] = useState("");
+
+  const [showReturnModal, setShowReturnModal] = useState(false);
+  const [selectedReturnLineId, setSelectedReturnLineId] = useState<string>("");
+  const [returnQty, setReturnQty] = useState("");
+  const [returnReason, setReturnReason] = useState("Unsold stock return");
+  const [returnNote, setReturnNote] = useState("");
+  const [returnBusy, setReturnBusy] = useState(false);
+  const [returnError, setReturnError] = useState("");
+
+  if (special) return id === "audit" ? <AuditView onBack={onBack} onSelect={onSelect} /> : null;
+  const d = q.data,
+    data = d?.data as Row | undefined;
+
+  const isEmployeeVoucher =
+    d?.kind === "salary" ||
+    d?.kind === "employee_receipt" ||
+    (d?.kind === "loan" && data?.direction === "staff") ||
+    (d?.kind === "expense" &&
+      typeof data?.category === "string" &&
+      data.category.startsWith("Employee"));
+
+  const signatureAttachment = arr(d?.attachments).find(
+    (a) => a.mime === "image/png",
+  );
+
+  const isBill = d?.kind === "bill";
+  const isReversed = Boolean(d?.reversed);
+  const billLines = arr(d?.lines);
+  const selectedLine = billLines.find((l) => str(l.id) === selectedReturnLineId);
+  const selectedLineSnap = selectedLine ? (selectedLine.snapshot as Row) : null;
+  const selectedLineBilledQty = selectedLine ? parseFloat(str(selectedLine.quantity || "0")) : 0;
+  const selectedLineReturnedQty = selectedLine ? parseFloat(str(selectedLine.returned_quantity || "0")) : 0;
+  const selectedLineMaxReturn = Math.max(0, selectedLineBilledQty - selectedLineReturnedQty);
+
+  const handleReverseSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!reverseReason.trim() || reverseReason.trim().length < 3) {
+      setReverseError("Please provide a valid reason (at least 3 characters).");
+      return;
+    }
+    setReverseBusy(true);
+    setReverseError("");
+    try {
+      await api(
+        "commands/reverse",
+        commandResult,
+        {
+          date: currentDate || str(d?.business_date),
+          documentId: id,
+          reason: reverseReason.trim(),
+        },
+        "POST",
+        crypto.randomUUID(),
+      );
+      await qc.invalidateQueries();
+      await q.refetch();
+      setShowReverseModal(false);
+      setReverseReason("");
+    } catch (err: unknown) {
+      setReverseError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReverseBusy(false);
+    }
+  };
+
+  const handleReturnSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedReturnLineId) {
+      setReturnError("Please select a product line to return.");
+      return;
+    }
+    const qtyNum = parseFloat(returnQty);
+    if (isNaN(qtyNum) || qtyNum <= 0) {
+      setReturnError("Please enter a valid return quantity greater than 0.");
+      return;
+    }
+    if (qtyNum > selectedLineMaxReturn + 0.0001) {
+      setReturnError(`Quantity exceeds available return limit (${selectedLineMaxReturn.toFixed(2)} remaining).`);
+      return;
+    }
+    if (!selectedLineSnap?.fractional && !Number.isInteger(qtyNum)) {
+      setReturnError("This item requires whole unit quantities.");
+      return;
+    }
+    if (!returnReason.trim() || returnReason.trim().length < 3) {
+      setReturnError("Please enter a valid reason for return (at least 3 characters).");
+      return;
+    }
+    setReturnBusy(true);
+    setReturnError("");
+    try {
+      await api(
+        "commands/return",
+        commandResult,
+        {
+          date: currentDate || str(d?.business_date),
+          lineId: selectedReturnLineId,
+          quantity: returnQty.trim(),
+          reason: returnReason.trim() + (returnNote.trim() ? ` - ${returnNote.trim()}` : ""),
+        },
+        "POST",
+        crypto.randomUUID(),
+      );
+      await qc.invalidateQueries();
+      await q.refetch();
+      setShowReturnModal(false);
+      setReturnQty("");
+      setReturnNote("");
+    } catch (err: unknown) {
+      setReturnError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReturnBusy(false);
+    }
+  };
+
+  return (
+    <section className="panel print-document">
+      <div className="section-title no-print">
+        <Button onClick={onBack}>← Back</Button>
+        <div className="actions">
+          <Button className="secondary" onClick={() => window.print()}>
+            <Printer size={16} /> Print {isEmployeeVoucher ? "Voucher" : "Record"}
+          </Button>
+          {!isEmployeeVoucher && !isReversed && (
+            <Button
+              className="secondary"
+              onClick={() => {
+                if (isBill && billLines.length > 0) {
+                  // Pre-select first line with returnable qty
+                  const firstEligible = billLines.find((l) => {
+                    const b = parseFloat(str(l.quantity || "0"));
+                    const r = parseFloat(str(l.returned_quantity || "0"));
+                    return b - r > 0.0001;
+                  });
+                  setSelectedReturnLineId(str(firstEligible?.id || billLines[0]?.id));
+                  setReturnQty("");
+                  setReturnError("");
+                  setShowReturnModal(true);
+                } else {
+                  setAction("return");
+                }
+              }}
+            >
+              Linked return
+            </Button>
+          )}
+          {owner && !isReversed && (
+            <Button
+              className="secondary"
+              style={{ color: "#b91c1c", borderColor: "#fca5a5" }}
+              onClick={() => {
+                setReverseError("");
+                setReverseReason("");
+                setShowReverseModal(true);
+              }}
+            >
+              Reverse record
+            </Button>
+          )}
+        </div>
+      </div>
+      {q.isError ? (
+        <p className="error">{q.error.message}</p>
+      ) : d ? (
+        isEmployeeVoucher ? (
+          <div className="voucher-container" style={{ maxWidth: 780, margin: "0 auto", padding: "16px 0" }}>
+            <div
+              style={{
+                border: "2px solid #0f172a",
+                borderRadius: 8,
+                padding: "24px 28px",
+                background: "#ffffff",
+                boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+              }}
+            >
+              {/* Voucher Header */}
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "flex-start",
+                  borderBottom: "2px solid #0f172a",
+                  paddingBottom: 16,
+                  marginBottom: 20,
+                }}
+              >
+                <div>
+                  <h1 style={{ margin: "0 0 4px", fontSize: 22, fontWeight: 800, color: "#0f172a", letterSpacing: 0.5 }}>
+                    {str(data?.businessName ?? "Sales & Money Book")}
+                  </h1>
+                  <p style={{ margin: 0, fontSize: 12, color: "#475569" }}>
+                    {str((data?.businessProfile as Row | undefined)?.address ?? "Official Payment Voucher")}
+                  </p>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div
+                    style={{
+                      background: "#0f172a",
+                      color: "#ffffff",
+                      padding: "4px 12px",
+                      borderRadius: 4,
+                      fontSize: 13,
+                      fontWeight: 800,
+                      letterSpacing: 1,
+                      textTransform: "uppercase",
+                      display: "inline-block",
+                      marginBottom: 6,
+                    }}
+                  >
+                    {d.kind === "salary"
+                      ? "Salary Payment Voucher"
+                      : d.kind === "employee_receipt"
+                        ? "Employee Receipt Voucher"
+                        : d.kind === "loan"
+                          ? "Staff Advance Voucher"
+                          : "Employee Expense Voucher"}
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#1e293b" }}>
+                    Voucher #: {str(d.number)}
+                  </div>
+                  <div style={{ fontSize: 12, color: "#64748b" }}>
+                    Date: <b>{dateLabel(d.business_date)}</b>
+                  </div>
+                </div>
+              </div>
+
+              {Boolean(d.reversed) && (
+                <div
+                  style={{
+                    background: "#fee2e2",
+                    border: "1px solid #ef4444",
+                    color: "#b91c1c",
+                    padding: "8px 12px",
+                    borderRadius: 6,
+                    fontWeight: 700,
+                    marginBottom: 16,
+                    textAlign: "center",
+                  }}
+                >
+                  ⚠️ THIS VOUCHER HAS BEEN OFFICIALLY REVERSED
+                </div>
+              )}
+
+              {/* Voucher Particulars Table */}
+              <div
+                style={{
+                  background: "#f8fafc",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: 6,
+                  padding: "16px 20px",
+                  marginBottom: 24,
+                }}
+              >
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px 24px" }}>
+                  <div>
+                    <span style={{ fontSize: 11, textTransform: "uppercase", color: "#64748b", fontWeight: 700, display: "block" }}>
+                      Employee Name / Person
+                    </span>
+                    <strong style={{ fontSize: 16, color: "#0f172a" }}>
+                      {str(data?.employeeName ?? data?.payee ?? data?.counterparty ?? "-")}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span style={{ fontSize: 11, textTransform: "uppercase", color: "#64748b", fontWeight: 700, display: "block" }}>
+                      Payment Category / Type
+                    </span>
+                    <span style={{ fontSize: 14, color: "#1e293b", fontWeight: 600 }}>
+                      {str(
+                        d.kind === "employee_receipt"
+                          ? "Received money from employee"
+                          : (data?.period ?? data?.category ?? (d.kind === "loan" ? "Staff Salary Advance" : "Salary"))
+                      )}
+                    </span>
+                  </div>
+
+                  <div>
+                    <span style={{ fontSize: 11, textTransform: "uppercase", color: "#64748b", fontWeight: 700, display: "block" }}>
+                      {d.kind === "employee_receipt" ? "Received Amount" : "Paid Amount (Net)"}
+                    </span>
+                    <strong style={{ fontSize: 22, color: "#047857" }}>
+                      {rupees(d.amount)}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span style={{ fontSize: 11, textTransform: "uppercase", color: "#64748b", fontWeight: 700, display: "block" }}>
+                      {d.kind === "employee_receipt" ? "Received Into Account" : "Payment Mode / Account"}
+                    </span>
+                    <span style={{ fontSize: 14, color: "#1e293b", fontWeight: 600 }}>
+                      {d.kind === "employee_receipt" ? "Business Cash / Bank Account" : "Paid from Business Account"}
+                    </span>
+                  </div>
+
+                  {data?.note ? (
+                    <div style={{ gridColumn: "span 2" }}>
+                      <span style={{ fontSize: 11, textTransform: "uppercase", color: "#64748b", fontWeight: 700, display: "block" }}>
+                        Remarks / Notes
+                      </span>
+                      <span style={{ fontSize: 13, color: "#334155" }}>
+                        {str(data.note)}
+                      </span>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
+              {/* Acknowledgement & Signatures */}
+              <div
+                style={{
+                  border: "1px solid #cbd5e1",
+                  borderRadius: 6,
+                  padding: "16px 20px",
+                  background: "#ffffff",
+                  marginBottom: 16,
+                }}
+              >
+                <p style={{ margin: "0 0 16px", fontSize: 12, color: "#475569", fontStyle: "italic", textAlign: "center" }}>
+                  {d.kind === "employee_receipt"
+                    ? '"I hereby acknowledge handing over the money amount stated above to the business manager."'
+                    : '"I hereby acknowledge receipt of the payment amount stated above towards salary/advance/reimbursement."'}
+                </p>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 32, marginTop: 12 }}>
+                  {/* Employee Signature Block */}
+                  <div style={{ textAlign: "center" }}>
+                    <div
+                      style={{
+                        height: 90,
+                        borderBottom: "1.5px solid #0f172a",
+                        display: "flex",
+                        alignItems: "flex-end",
+                        justifyContent: "center",
+                        paddingBottom: 6,
+                        marginBottom: 8,
+                      }}
+                    >
+                      {signatureAttachment ? (
+                        <img
+                          src={"/api/v1/attachments/" + signatureAttachment.id}
+                          alt="Employee Digital Signature"
+                          style={{ maxHeight: 80, maxWidth: "100%", objectFit: "contain" }}
+                        />
+                      ) : (
+                        <span style={{ fontSize: 11, color: "#94a3b8" }}>
+                          (Sign above upon receipt)
+                        </span>
+                      )}
+                    </div>
+                    <strong style={{ display: "block", fontSize: 13, color: "#0f172a" }}>
+                      Employee Signature / Received By
+                    </strong>
+                    <small style={{ color: "#64748b", fontSize: 11 }}>
+                      {str(data?.payee ?? data?.counterparty ?? "Employee")}
+                    </small>
+                  </div>
+
+                  {/* Authorized Signatory Block */}
+                  <div style={{ textAlign: "center" }}>
+                    <div
+                      style={{
+                        height: 90,
+                        borderBottom: "1.5px solid #0f172a",
+                        display: "flex",
+                        alignItems: "flex-end",
+                        justifyContent: "center",
+                        paddingBottom: 6,
+                        marginBottom: 8,
+                      }}
+                    >
+                      <span style={{ fontSize: 11, color: "#94a3b8" }}>
+                        (Authorized Signatory)
+                      </span>
+                    </div>
+                    <strong style={{ display: "block", fontSize: 13, color: "#0f172a" }}>
+                      Authorized Signatory
+                    </strong>
+                    <small style={{ color: "#64748b", fontSize: 11 }}>
+                      For {str(data?.businessName ?? "Business")}
+                    </small>
+                  </div>
+                </div>
+              </div>
+
+              {/* Voucher Footer */}
+              <div style={{ textAlign: "center", fontSize: 11, color: "#94a3b8", marginTop: 12 }}>
+                Payment Voucher Record #{str(d.number)} · Immutable Audit Log · Generated on {dateLabel(d.business_date)}
+              </div>
+            </div>
+
+            {/* Evidence attachment controls in non-print mode */}
+            <div className="no-print" style={{ marginTop: 24, padding: "16px 20px", border: "1px solid #e2e8f0", borderRadius: 8, background: "#f8fafc" }}>
+              <h3 style={{ fontSize: 14, margin: "0 0 10px" }}>Attached Documents & Evidence</h3>
+              {arr(d.attachments).map((a) => (
+                <p key={str(a.id)} style={{ margin: "4px 0", fontSize: 13 }}>
+                  📎 <a href={"/api/v1/attachments/" + a.id} target="_blank" rel="noreferrer">
+                    Download {str(a.mime)} (ID: {str(a.id).slice(0, 8)})
+                  </a>
+                </p>
+              ))}
+              <div style={{ marginTop: 12 }}>
+                <label style={{ fontSize: 12, fontWeight: 600, display: "block", marginBottom: 6 }}>
+                  Attach additional receipt slip / proof:
+                </label>
+                <input
+                  type="file"
+                  aria-label="Attach private evidence"
+                  accept="image/png,image/jpeg,application/pdf"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    const form = new FormData();
+                    form.set("file", file);
+                    const r = await fetch("/api/v1/attachments/" + id, {
+                      method: "POST",
+                      body: form,
+                    });
+                    if (!r.ok) {
+                      alert("Record is saved, but upload failed. Retry only the attachment.");
+                    } else {
+                      alert("Evidence saved.");
+                      q.refetch();
+                    }
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="eyebrow">
+              OPERATIONAL RECORD · TAX INVOICE FORMAT NOT CONFIGURED
+            </div>
+            <h2>{str(data?.businessName ?? "Sales & Money Book")}</h2>
+            <p className="small muted">
+              {str((data?.businessProfile as Row | undefined)?.address)}
+            </p>
+            <h2>
+              {d.kind === "return" ? `Sales Return ${str(d.number)}` : str(d.number)}{" "}
+              {Boolean(d.reversed) && (
+                <span className="badge">
+                  Reversed
+                  {d.reversal_id && onSelect ? (
+                    <>
+                      {" (see "}
+                      <DocLink
+                        id={str(d.reversal_id)}
+                        number={str(d.reversal_number || "reversal")}
+                        onSelect={onSelect}
+                        style={{ color: "#dc2626", fontWeight: 700 }}
+                      />
+                      {")"}
+                    </>
+                  ) : null}
+                </span>
+              )}
+            </h2>
+            {Boolean(d.reverses) && (
+              <p style={{ marginTop: 2, marginBottom: 8, fontSize: 13, color: "#64748b" }}>
+                Reverses record:{" "}
+                <DocLink
+                  id={str(d.reverses)}
+                  number={str(d.original_number || d.reverses)}
+                  onSelect={onSelect}
+                  style={{ fontWeight: 700 }}
+                />
+              </p>
+            )}
+            <p>
+              {d.kind === "return" ? (
+                <span className="badge" style={{ background: "#fef3c7", color: "#b45309", marginRight: 8, fontWeight: 700 }}>
+                  Product Return
+                </span>
+              ) : (
+                <>{str(d.kind)} · </>
+              )}
+              {dateLabel(d.business_date)} ·{" "}
+              {str(data?.salesmanName || "Salesman")}
+              {Boolean(data?.customerName) && (
+                <span style={{ marginLeft: 8, background: "#fef3c7", color: "#92400e", padding: "2px 8px", borderRadius: 4, fontWeight: 600 }}>
+                  Customer: {str(data?.customerName)}
+                </span>
+              )}
+            </p>
+
+            {d.kind === "return" && (
+              <div style={{ background: "#fffbeb", border: "1.5px solid #fde68a", borderRadius: 8, padding: "14px 18px", marginBottom: 18 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14 }}>
+                  <div>
+                    <span style={{ fontSize: 11, textTransform: "uppercase", color: "#92400e", fontWeight: 700, display: "block" }}>
+                      Original Bill #
+                    </span>
+                    <strong style={{ fontSize: 15, color: "#78350f" }}>
+                      {data?.billId ? (
+                        <DocLink
+                          id={str(data.billId)}
+                          number={str(data?.originalBillNumber || data?.billNumber || "View Bill")}
+                          onSelect={onSelect}
+                          style={{ fontSize: 15, fontWeight: 700, color: "#1d4ed8" }}
+                        />
+                      ) : (
+                        str(data?.originalBillNumber || data?.billNumber || "-")
+                      )}
+                    </strong>
+                  </div>
+                  {Boolean(data?.originalBillDate) && (
+                    <div>
+                      <span style={{ fontSize: 11, textTransform: "uppercase", color: "#92400e", fontWeight: 700, display: "block" }}>
+                        Original Bill Date
+                      </span>
+                      <span style={{ fontSize: 13, color: "#78350f" }}>
+                        {dateLabel(str(data?.originalBillDate))}
+                      </span>
+                    </div>
+                  )}
+                  <div>
+                    <span style={{ fontSize: 11, textTransform: "uppercase", color: "#92400e", fontWeight: 700, display: "block" }}>
+                      Reason for Return
+                    </span>
+                    <span style={{ fontSize: 13, color: "#78350f", fontWeight: 600 }}>
+                      {str(data?.reason || "Unsold stock return")}
+                    </span>
+                  </div>
+                  <div>
+                    <span style={{ fontSize: 11, textTransform: "uppercase", color: "#92400e", fontWeight: 700, display: "block" }}>
+                      Salesman Khata Credit
+                    </span>
+                    <strong style={{ fontSize: 15, color: "#047857" }}>
+                      +{rupees(d.amount)}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {(() => {
+              const displayLines = (d.lines && arr(d.lines).length > 0)
+                ? arr(d.lines)
+                : d.kind === "return" && data?.snapshot
+                  ? [{
+                    id: data.lineId || d.id,
+                    quantity: str(data.quantity || "1"),
+                    snapshot: data.snapshot,
+                    amount: d.amount,
+                  }]
+                  : [];
+
+              if (displayLines.length === 0) return <h2>{rupees(d.amount)}</h2>;
+
+              return (
+                <Table
+                  rows={displayLines.map((l) => {
+                    const snap = (l.snapshot as Row) || {};
+                    const hasLineDisc = Boolean(snap.discountAmount && Number(snap.discountAmount) > 0);
+                    return {
+                      ...l,
+                      quantity: str(l.quantity)
+                        .replace(/(\.\d*?)0+$/, "$1")
+                        .replace(/\.$/, ""),
+                      name: hasLineDisc
+                        ? `${snap.name || "Item"} (Disc: -${rupees(snap.discountAmount)})`
+                        : (snap.name || "Item"),
+                      unit: snap.unit || "unit",
+                      rate: snap.rate || snap.masterRate || "0.00",
+                    };
+                  })}
+                  columns={[
+                    ["name", d.kind === "return" ? "Returned Product" : "Product"],
+                    ["quantity", d.kind === "return" ? "Returned Qty" : "Qty"],
+                    ["unit", "Unit"],
+                    ["rate", "Rate", true],
+                    ["amount", d.kind === "return" ? "Refund Amount" : "Amount", true],
+                  ]}
+                  footer={
+                    <>
+                      {Boolean(data?.billDiscount && Number(data.billDiscount) > 0) && (
+                        <>
+                          <tr style={{ borderTop: "2px solid #cbd5e1", background: "#f8fafc" }}>
+                            <td style={{ fontWeight: 600, fontSize: 13, color: "#475569" }}>Subtotal</td>
+                            <td colSpan={3}></td>
+                            <td className="money-cell" style={{ fontWeight: 600, fontSize: 14, color: "#475569" }}>
+                              {rupees(data?.subtotal ?? d.amount)}
+                            </td>
+                          </tr>
+                          <tr style={{ background: "#f8fafc" }}>
+                            <td style={{ fontWeight: 600, fontSize: 13, color: "#dc2626" }}>Bill Discount</td>
+                            <td colSpan={3}></td>
+                            <td className="money-cell" style={{ fontWeight: 600, fontSize: 14, color: "#dc2626" }}>
+                              -{rupees(data?.billDiscount)}
+                            </td>
+                          </tr>
+                        </>
+                      )}
+                      <tr style={{ borderTop: "2px solid #cbd5e1", background: "#f8fafc" }}>
+                        <td style={{ fontWeight: 700, fontSize: 13, color: "#0f172a" }}>
+                          {d.kind === "return" ? "Total Return Credit" : "Net Total"}
+                        </td>
+                        <td style={{ fontWeight: 700, fontSize: 13, color: "#0f172a" }}>
+                          {displayLines
+                            .reduce((sum, l) => sum + (parseFloat(str(l.quantity || "0")) || 0), 0)
+                            .toFixed(2)
+                            .replace(/(\.\d*?)0+$/, "$1")
+                            .replace(/\.$/, "")}{" "}
+                          units
+                        </td>
+                        <td colSpan={2}></td>
+                        <td className="money-cell" style={{ fontWeight: 800, fontSize: 16, color: d.kind === "return" ? "#047857" : "#0f172a" }}>
+                          {rupees(d.amount)}
+                        </td>
+                      </tr>
+                    </>
+                  }
+                />
+              );
+            })()}
+            {isBill && data?.previousBalance !== undefined && (
+              <div className="review-balances">
+                <h3>Account summary at issue</h3>
+                <p>
+                  Previous balance <b>{rupees(data.previousBalance)}</b>
+                </p>
+                <p>
+                  Current bill value <b>{rupees(d.amount)}</b>
+                </p>
+                <p>
+                  On-spot payment <b>{rupees(str(data.confirmed || "0.00"))}</b>
+                </p>
+                <p style={{ marginTop: 6, paddingTop: 6, borderTop: "1px dashed #e2e8f0", background: "#f8fafc", padding: "6px 8px", borderRadius: 6 }}>
+                  Balance at issue <b style={{ color: "#0f172a", fontSize: "1.05em", fontWeight: 750 }}>{rupees(data.issueBalance)}</b>
+                </p>
+              </div>
+            )}
+            {d.kind === "receipt" && (
+              <div className="review-balances">
+                <h3>Confirmed receipt</h3>
+                {Boolean(data?.reference) && (
+                  <p>
+                    Reference <b>{str(data?.reference)}</b>
+                  </p>
+                )}
+                <p>
+                  Previous balance <b>{rupees(data?.previousBalance ?? "0.00")}</b>
+                </p>
+                <p>
+                  Current amount received <b>{rupees(data?.currentAmountReceived ?? d.amount)}</b>
+                </p>
+                <p style={{ marginTop: 6, paddingTop: 6, borderTop: "1px dashed #e2e8f0", background: "#f8fafc", padding: "6px 8px", borderRadius: 6 }}>
+                  Overall outstanding{" "}
+                  <b style={{ color: "#0f172a", fontSize: "1.05em", fontWeight: 750 }}>
+                    {rupees(data?.overallOutstanding ?? D(str(data?.previousBalance || "0")).minus(str(d.amount || "0")).toString())}
+                  </b>
+                </p>
+              </div>
+            )}
+            {isBill && data?.pendingAtIssue !== undefined && (
+              <p>
+                Pending online claims at issue (not confirmed):{" "}
+                {rupees(data.pendingAtIssue)}
+              </p>
+            )}
+            <p>Note: {str(data?.note)}</p>
+            <p className="small muted">
+              {str((data?.businessProfile as Row | undefined)?.footer)}
+            </p>
+            {(() => {
+              const relevantAllocations = arr(d.allocations).filter((al) => {
+                // If viewing a bill, exclude receipts (only show returns)
+                if (isBill) {
+                  return al.credit_kind === "return" || String(al.credit_number || "").startsWith("RETURN-");
+                }
+                return true;
+              });
+
+              if (relevantAllocations.length === 0) return null;
+
+              return (
+                <>
+                  <h3>Settlement applications</h3>
+                  <Table
+                    rows={relevantAllocations.map((al) => ({
+                      ...al,
+                      credit_label: al.credit_customer ? `${str(al.credit_number)} · ${str(al.credit_customer)}` : str(al.credit_number),
+                      charge_label: al.charge_customer ? `${str(al.charge_number)} · ${str(al.charge_customer)}` : str(al.charge_number),
+                    }))}
+                    columns={[
+                      ["credit_label", "Credit source"],
+                      ["charge_label", "Charge"],
+                      ["created_at", "Settled at"],
+                      ["amount", "Applied", true],
+                    ]}
+                    cellRenderers={{
+                      credit_label: (r) => (
+                        <DocLink
+                          id={str(r.credit_id)}
+                          number={str(r.credit_label)}
+                          onSelect={onSelect}
+                        />
+                      ),
+                      charge_label: (r) => (
+                        <DocLink
+                          id={str(r.charge_id)}
+                          number={str(r.charge_label)}
+                          onSelect={onSelect}
+                        />
+                      ),
+                    }}
+                  />
+                </>
+              );
+            })()}
+            <div className="no-print">
+              <h3>Private evidence</h3>
+              {arr(d.attachments).map((a) => (
+                <p key={str(a.id)}>
+                  <a href={"/api/v1/attachments/" + a.id}>
+                    Download {str(a.mime)} evidence
+                  </a>
+                </p>
+              ))}
+              <input
+                type="file"
+                aria-label="Attach private evidence"
+                accept="image/png,image/jpeg,application/pdf"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  const form = new FormData();
+                  form.set("file", file);
+                  const r = await fetch("/api/v1/attachments/" + id, {
+                    method: "POST",
+                    body: form,
+                  });
+                  if (!r.ok)
+                    alert(
+                      "Record is saved, but upload failed. Retry only the attachment.",
+                    );
+                  else {
+                    alert("Evidence saved. Malware scanning is not configured.");
+                    q.refetch();
+                  }
+                }}
+              />
+            </div>
+          </>
+        )
+      ) : (
+        <p>Loading saved record…</p>
+      )}
+
+      {/* Bill-Specific Reverse Record Modal */}
+      {showReverseModal && d && (
+        <div
+          className="no-print"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.6)",
+            backdropFilter: "blur(2px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            padding: 16,
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !reverseBusy) {
+              setShowReverseModal(false);
+            }
+          }}
+        >
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: 12,
+              padding: "24px 28px",
+              maxWidth: 520,
+              width: "100%",
+              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.2)",
+              border: "1px solid #e2e8f0",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <h3 style={{ margin: 0, fontSize: "1.2rem", color: "#b91c1c" }}>
+                Reverse Record #{str(d.number)}
+              </h3>
+              <Button
+                type="button"
+                className="text-link"
+                disabled={reverseBusy}
+                onClick={() => setShowReverseModal(false)}
+                style={{ fontSize: 18, padding: 0 }}
+              >
+                ✕
+              </Button>
+            </div>
+
+            <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: 12, marginBottom: 16, fontSize: 13, color: "#991b1b" }}>
+              <p style={{ margin: "0 0 6px", fontWeight: 700 }}>⚠️ Important Accounting Notice:</p>
+              <p style={{ margin: 0 }}>
+                This will post an official offsetting reversal for <b>{rupees(d.amount)}</b> on this {str(d.kind)} ({str(data?.salesmanName || "")}). The original record remains permanently in audit history.
+              </p>
+            </div>
+
+            {reverseError && (
+              <div style={{ background: "#fee2e2", color: "#b91c1c", padding: "8px 12px", borderRadius: 6, marginBottom: 14, fontSize: 13 }}>
+                {reverseError}
+              </div>
+            )}
+
+            <form onSubmit={handleReverseSubmit}>
+              <div style={{ marginBottom: 18 }}>
+                <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#334155", marginBottom: 6 }}>
+                  Reason for Reversal <span style={{ color: "#e11d48" }}>*</span>
+                </label>
+                <textarea
+                  rows={3}
+                  required
+                  placeholder="e.g. Duplicate bill entered by mistake / Wrong customer billed"
+                  value={reverseReason}
+                  onChange={(e) => setReverseReason(e.target.value)}
+                  disabled={reverseBusy}
+                  style={{
+                    width: "100%",
+                    borderRadius: 6,
+                    border: "1px solid #cbd5e1",
+                    padding: "8px 10px",
+                    fontSize: 14,
+                    fontFamily: "inherit",
+                    resize: "vertical",
+                  }}
+                />
+                <span style={{ fontSize: 11, color: "#64748b" }}>Minimum 3 characters required.</span>
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                <Button
+                  type="button"
+                  className="secondary"
+                  disabled={reverseBusy}
+                  onClick={() => setShowReverseModal(false)}
+                >
+                  Cancel
+                </Button>
+                <button
+                  type="submit"
+                  disabled={reverseBusy}
+                  style={{
+                    background: "#dc2626",
+                    color: "#ffffff",
+                    border: "none",
+                    borderRadius: 6,
+                    padding: "8px 16px",
+                    fontWeight: 600,
+                    cursor: reverseBusy ? "not-allowed" : "pointer",
+                    opacity: reverseBusy ? 0.7 : 1,
+                  }}
+                >
+                  {reverseBusy ? "Posting Reversal…" : "Confirm Reversal"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Bill-Specific Linked Return Modal */}
+      {showReturnModal && d && (
+        <div
+          className="no-print"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.6)",
+            backdropFilter: "blur(2px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            padding: 16,
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !returnBusy) {
+              setShowReturnModal(false);
+            }
+          }}
+        >
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: 12,
+              padding: "24px 28px",
+              maxWidth: 560,
+              width: "100%",
+              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.2)",
+              border: "1px solid #e2e8f0",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: "1.2rem", color: "#0f172a" }}>
+                  Linked Return for Bill #{str(d.number)}
+                </h3>
+                <span style={{ fontSize: 12, color: "#64748b" }}>
+                  Salesman: <b>{str(data?.salesmanName || "")}</b> · {dateLabel(d.business_date)}
+                </span>
+              </div>
+              <Button
+                type="button"
+                className="text-link"
+                disabled={returnBusy}
+                onClick={() => setShowReturnModal(false)}
+                style={{ fontSize: 18, padding: 0 }}
+              >
+                ✕
+              </Button>
+            </div>
+
+            {returnError && (
+              <div style={{ background: "#fee2e2", color: "#b91c1c", padding: "8px 12px", borderRadius: 6, marginBottom: 14, fontSize: 13 }}>
+                {returnError}
+              </div>
+            )}
+
+            <form onSubmit={handleReturnSubmit}>
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#334155", marginBottom: 6 }}>
+                  Select Item from this Bill <span style={{ color: "#e11d48" }}>*</span>
+                </label>
+                <select
+                  value={selectedReturnLineId}
+                  onChange={(e) => {
+                    setSelectedReturnLineId(e.target.value);
+                    setReturnQty("");
+                    setReturnError("");
+                  }}
+                  disabled={returnBusy}
+                  style={{
+                    width: "100%",
+                    borderRadius: 6,
+                    border: "1px solid #cbd5e1",
+                    padding: "8px 10px",
+                    fontSize: 14,
+                    background: "#ffffff",
+                  }}
+                >
+                  {billLines.map((l) => {
+                    const snap = l.snapshot as Row;
+                    const b = parseFloat(str(l.quantity || "0"));
+                    const r = parseFloat(str(l.returned_quantity || "0"));
+                    const rem = Math.max(0, b - r);
+                    return (
+                      <option key={str(l.id)} value={str(l.id)}>
+                        {str(snap.name)} — Billed: {b.toFixed(2)} | Returned: {r.toFixed(2)} | Avail: {rem.toFixed(2)} {str(snap.unit || "")}
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+
+              {selectedLine && (
+                <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 13 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span className="muted">Original Billed Qty:</span>
+                    <b>{selectedLineBilledQty.toFixed(2)} {str(selectedLineSnap?.unit || "")}</b>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span className="muted">Previously Returned:</span>
+                    <span style={{ color: selectedLineReturnedQty > 0 ? "#b45309" : "inherit" }}>
+                      {selectedLineReturnedQty.toFixed(2)} {str(selectedLineSnap?.unit || "")}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid #e2e8f0", paddingTop: 4 }}>
+                    <span style={{ fontWeight: 600 }}>Max Returnable Now:</span>
+                    <b style={{ color: selectedLineMaxReturn > 0 ? "#15803d" : "#b91c1c" }}>
+                      {selectedLineMaxReturn.toFixed(2)} {str(selectedLineSnap?.unit || "")}
+                    </b>
+                  </div>
+                </div>
+              )}
+
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#334155", marginBottom: 6 }}>
+                  Quantity to Return <span style={{ color: "#e11d48" }}>*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder={`Max ${selectedLineMaxReturn.toFixed(2)}`}
+                  value={returnQty}
+                  onChange={(e) => setReturnQty(e.target.value)}
+                  disabled={returnBusy || selectedLineMaxReturn <= 0}
+                  style={{
+                    width: "100%",
+                    borderRadius: 6,
+                    border: "1px solid #cbd5e1",
+                    padding: "8px 10px",
+                    fontSize: 14,
+                  }}
+                />
+                {selectedLineMaxReturn <= 0 && (
+                  <span style={{ fontSize: 12, color: "#b91c1c", marginTop: 4, display: "block" }}>
+                    This item line has already been fully returned.
+                  </span>
+                )}
+              </div>
+
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#334155", marginBottom: 6 }}>
+                  Reason Category <span style={{ color: "#e11d48" }}>*</span>
+                </label>
+                <select
+                  value={returnReason}
+                  onChange={(e) => setReturnReason(e.target.value)}
+                  disabled={returnBusy}
+                  style={{
+                    width: "100%",
+                    borderRadius: 6,
+                    border: "1px solid #cbd5e1",
+                    padding: "8px 10px",
+                    fontSize: 14,
+                    background: "#ffffff",
+                  }}
+                >
+                  <option value="Unsold stock return">Unsold stock return</option>
+                  <option value="Damaged / defective stock">Damaged / defective stock</option>
+                  <option value="Expired goods return">Expired goods return</option>
+                  <option value="Incorrect item billed">Incorrect item billed</option>
+                  <option value="Customer refused delivery">Customer refused delivery</option>
+                </select>
+              </div>
+
+              <div style={{ marginBottom: 18 }}>
+                <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#334155", marginBottom: 6 }}>
+                  Notes / Explanation (optional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="Additional remarks or batch details"
+                  value={returnNote}
+                  onChange={(e) => setReturnNote(e.target.value)}
+                  disabled={returnBusy}
+                  style={{
+                    width: "100%",
+                    borderRadius: 6,
+                    border: "1px solid #cbd5e1",
+                    padding: "8px 10px",
+                    fontSize: 14,
+                  }}
+                />
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                <Button
+                  type="button"
+                  className="secondary"
+                  disabled={returnBusy}
+                  onClick={() => setShowReturnModal(false)}
+                >
+                  Cancel
+                </Button>
+                <button
+                  type="submit"
+                  disabled={returnBusy || selectedLineMaxReturn <= 0}
+                  className="primary"
+                  style={{
+                    padding: "8px 16px",
+                    borderRadius: 6,
+                    fontWeight: 600,
+                    cursor: returnBusy || selectedLineMaxReturn <= 0 ? "not-allowed" : "pointer",
+                    opacity: returnBusy || selectedLineMaxReturn <= 0 ? 0.6 : 1,
+                  }}
+                >
+                  {returnBusy ? "Recording Return…" : "Record Return"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+function Requests({
+  owner,
+  date,
+  masters,
+}: {
+  owner: boolean;
+  date: string;
+  masters: Row;
+}) {
+  const [offset, setOffset] = useState(0);
+  const q = useQuery({
+    queryKey: ["requests"],
+    queryFn: () => api("requests", rowsSchema),
+  });
+
+  const allRequests = q.data ?? [];
+  const pageSize = 15;
+  const pageRequests = allRequests.slice(offset, offset + pageSize);
+
+  return (
+    <section className="panel">
+      <h2>Approval requests</h2>
+      <p className="muted">
+        Requests are separate from completed money movements.
+      </p>
+      {pageRequests.length ? (
+        <>
+          {pageRequests.map((r) => (
+            <RequestRow
+              key={str(r.id)}
+              row={r}
+              owner={owner}
+              date={date}
+              masters={masters}
+            />
+          ))}
+          {allRequests.length > pageSize && (
+            <div className="pagination" style={{ marginTop: 14 }}>
+              <Button
+                disabled={!offset}
+                onClick={() => setOffset(Math.max(0, offset - pageSize))}
+              >
+                Previous
+              </Button>
+              <span>
+                Showing {offset + 1}–
+                {Math.min(offset + pageSize, allRequests.length)} of{" "}
+                {allRequests.length} requests (latest first)
+              </span>
+              <Button
+                disabled={offset + pageSize >= allRequests.length}
+                onClick={() => setOffset(offset + pageSize)}
+              >
+                Next
+              </Button>
+            </div>
+          )}
+        </>
+      ) : (
+        <Empty text="No requests yet." />
+      )}
+    </section>
+  );
+}
+function RequestRow({
+  row,
+  owner,
+  date,
+  masters,
+}: {
+  row: Row;
+  owner: boolean;
+  date: string;
+  masters: Row;
+}) {
+  const [error, setError] = useState(""),
+    [busy, setBusy] = useState(false),
+    qc = useQueryClient();
+  return (
+    <div className="claim">
+      <div>
+        <strong>{str((row.payload as Row).command)}</strong>
+        <small>
+          {str(row.reason)} · {str(row.state)}
+        </small>
+        <details>
+          <summary>Review frozen transaction details</summary>
+          <Review
+            value={(row.payload as Row).payload}
+            masters={masters}
+            documents={[]}
+          />
+        </details>
+      </div>
+      {owner && row.state === "pending" && (
+        <Button
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await api(
+                "requests/" + row.id + "/approve",
+                rowSchema,
+                { date },
+                "POST",
+                "request-" + row.id,
+              );
+              await qc.invalidateQueries();
+            } catch (e) {
+              setError((e as Error).message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Approve reviewed transaction
+        </Button>
+      )}
+      {error && <p className="error">{error}</p>}
+    </div>
+  );
+}
+
+
+function SettingsPage({
+  masters,
+  date,
+  owner,
+  setAction,
+}: {
+  masters: Row;
+  date: string;
+  owner: boolean;
+  setAction: (n: CommandName) => void;
+}) {
+  return (
+    <>
+      {owner && (
+        <MasterRecordsManager
+          masters={masters}
+          date={date}
+          setAction={setAction}
+        />
+      )}
+      <section className="panel">
+        <h2>Live setup checklist</h2>
+        <p className="notice">
+          Demo is separate. Real business posting remains blocked until
+          owner-approved configuration and a reviewed release.
+        </p>
+        <ul className="setup-list">
+          {[
+            "Confirm business details, timezone and currency",
+            "Approve each product unit, conversion and effective rate",
+            "Confirm salesmen, cutover and signed opening balances",
+            "Confirm cash custody and receiving bank accounts",
+            "Review role permissions and operational printouts",
+            "Review statutory requirements with your accountant",
+            "Complete parallel trial and isolated backup restore",
+            "Approve hosting, off-server backups and recovery targets",
+          ].map((s) => (
+            <li key={s}>
+              <Clock size={16} />
+              {s}
+            </li>
+          ))}
+        </ul>
+        <p className="muted small">
+          No live bank connection. No automatic interest. Backup monitoring not
+          connected.
+        </p>
+      </section>
+    </>
+  );
+}
+
+// Module-level cache (replaces localStorage)
+const packPcsCache: Record<string, number> = {};
+
+export function getPackPcsMap(): Record<string, number> {
+  return { ...packPcsCache };
+}
+
+export function savePackPcsMap(map: Record<string, number>) {
+  for (const [k, v] of Object.entries(map)) {
+    packPcsCache[k] = v;
+    api("product-pack-pcs", z.any(), { productId: k, pcsPerPack: v }, "POST").catch(() => { });
+  }
+}
+
+export async function saveProductPackPcs(productId: string, pcsPerPack: number) {
+  packPcsCache[productId] = pcsPerPack;
+  await api("product-pack-pcs", z.any(), { productId, pcsPerPack }, "POST");
+}
+
+export function getProductPackPcs(productId: string): number {
+  const val = packPcsCache[productId];
+  if (typeof val === "number" && val > 0) return val;
+  return 100; // default 100 pcs per m/pack
+}
+
+export function usePackPcsSynced(enabled = true) {
+  return useQuery({
+    queryKey: ["product-pack-pcs"],
+    queryFn: async () => {
+      const r = await fetch("/api/v1/product-pack-pcs");
+      if (!r.ok) return [];
+      const list = (await r.json()) as Array<{ product_id: string; pcs_per_pack: number }>;
+      // Update module-level cache
+      for (const item of list) {
+        packPcsCache[item.product_id] = item.pcs_per_pack;
+      }
+      return list;
+    },
+    enabled,
+    staleTime: 60000,
+  });
+}
+
+
+function MasterRecordsManager({
+  masters,
+  date,
+  setAction,
+}: {
+  masters: Row;
+  date: string;
+  setAction: (n: CommandName) => void;
+}) {
+  const [activeTab, setActiveTab] = useState<"products" | "confectionery" | "salesmen" | "accounts" | "employees" | "foods_salesmen">("products");
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [editingItem, setEditingItem] = useState<{ type: string; id: string } | null>(null);
+  const [status, setStatus] = useState("");
+  const qc = useQueryClient();
+
+  const [newConfCode, setNewConfCode] = useState("");
+  const [newConfName, setNewConfName] = useState("");
+  const [newConfRate, setNewConfRate] = useState("");
+  const [confBusy, setConfBusy] = useState(false);
+
+  // Load and manage employees from API
+  const employeesQuery = useQuery({
+    queryKey: ["employees"],
+    queryFn: async () => {
+      const r = await fetch("/api/v1/employees");
+      return (await r.json()) as Array<{ id: string; name: string; role: string; phone?: string; active: boolean }>;
+    },
+  });
+  const employees = employeesQuery.data ?? [];
+
+  // Load and manage foods salesmen from API
+  const foodsSalesmenQuery = useQuery({
+    queryKey: ["foods-salesmen"],
+    queryFn: async () => {
+      const r = await fetch("/api/v1/foods-salesmen");
+      return (await r.json()) as Array<{ id: string; name: string; territory?: string; phone?: string; active: boolean }>;
+    },
+  });
+  const foodsSalesmen = foodsSalesmenQuery.data ?? [];
+
+  // Load and manage ITC customers from API
+  const customersQuery = useQuery({
+    queryKey: ["itc-customers"],
+    queryFn: async () => {
+      const r = await fetch("/api/v1/itc/customers");
+      return (await r.json()) as Array<{
+        id: string;
+        customer_id: string;
+        customer_name: string;
+        salesman_itc_id: string;
+        salesman_name: string;
+        beat_code: string;
+        beat_name: string;
+        salesman_id: string | null;
+        active: boolean;
+        is_gst: boolean;
+      }>;
+    },
+  });
+  const customers = customersQuery.data ?? [];
+
+  const [newEmpName, setNewEmpName] = useState("");
+  const [newEmpRole, setNewEmpRole] = useState("");
+  const [newEmpPhone, setNewEmpPhone] = useState("");
+
+  const [newFoodsName, setNewFoodsName] = useState("");
+  const [newFoodsTerritory, setNewFoodsTerritory] = useState("");
+  const [newFoodsPhone, setNewFoodsPhone] = useState("");
+
+  const products = arr(masters.products);
+  const cigaretteProducts = products.filter((p) => p.category === "CG-01 CIGARETTE" || p.category === "cigarette" || !p.category);
+  const confectioneryProducts = products.filter((p) => p.category === "CF-05 CONFECTIONERY" || p.category === "confectionery");
+  const salesmen = arr(masters.salesmen);
+  const accounts = arr(masters.accounts);
+
+  const [productFilter, setProductFilter] = useState<"all" | "focus" | "standard">("all");
+
+  const toggleFocus = async (productId: string, currentIsFocus: boolean) => {
+    setStatus("");
+    try {
+      await api(
+        "products/" + productId + "/focus",
+        rowSchema,
+        { isFocusBrand: !currentIsFocus },
+        "PATCH"
+      );
+      setStatus(
+        currentIsFocus
+          ? "Removed from Focus Brands."
+          : "Marked as Focus Brand (prioritized to CDM first)."
+      );
+      await qc.invalidateQueries();
+    } catch (e) {
+      setStatus((e as Error).message);
+    }
+  };
+
+  const toggleStatus = async (type: string, id: string, currentActive: boolean) => {
+    setStatus("");
+    try {
+      if (type === "employees") {
+        await api("employees/" + id, z.any(), { active: !currentActive }, "PATCH");
+        await qc.invalidateQueries({ queryKey: ["employees"] });
+        setStatus("Employee status updated.");
+        return;
+      }
+      if (type === "foods_salesmen") {
+        await api("foods-salesmen/" + id, z.any(), { active: !currentActive }, "PATCH");
+        await qc.invalidateQueries({ queryKey: ["foods-salesmen"] });
+        setStatus("Foods salesman status updated.");
+        return;
+      }
+      if (type === "customers") {
+        await fetch(`/api/v1/itc/customers/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ active: !currentActive }),
+        });
+        await qc.invalidateQueries({ queryKey: ["itc-customers"] });
+        await qc.invalidateQueries({ queryKey: ["salesman-customers"] });
+        await qc.invalidateQueries({ queryKey: ["direct-cig-summary"] });
+        setStatus("Customer status updated.");
+        return;
+      }
+      if (type === "salesmen") {
+        const item = salesmen.find((s) => s.id === id);
+        await api(
+          "salesmen/" + id,
+          rowSchema,
+          {
+            name: item?.name,
+            creditLimit: item?.credit_limit,
+            active: !currentActive,
+            details: (item?.details as Row) ?? {},
+          },
+          "PATCH"
+        );
+      } else {
+        await api("masters/" + type + "/" + id, rowSchema, { active: !currentActive }, "PATCH");
+      }
+      setStatus("Status updated; historical records preserved.");
+      await qc.invalidateQueries();
+    } catch (e) {
+      setStatus((e as Error).message);
+    }
+  };
+
+  return (
+    <section className="panel" style={{ padding: "20px 24px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: "1.35rem", fontWeight: 700 }}>Configure master records</h2>
+          <p className="muted small" style={{ margin: "4px 0 0" }}>
+            Add, edit, set credit policies/effective rates, and activate or deactivate master items without losing historical records.
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <Button
+            className="secondary"
+            onClick={() => {
+              const exportData = {
+                exportedAt: new Date().toISOString(),
+                recordCounts: {
+                  products: products.length,
+                  salesmen: salesmen.length,
+                  accounts: accounts.length,
+                  employees: employees.length,
+                  foodsSalesmen: foodsSalesmen.length,
+                  customers: customers.length,
+                },
+                salesmen,
+                products,
+                moneyAccounts: accounts,
+                employees,
+                foodsSalesmen,
+                customers,
+              };
+              const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = `master_records_${new Date().toISOString().slice(0, 10)}.json`;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+            }}
+            style={{ fontSize: "0.85rem", padding: "6px 14px", display: "inline-flex", alignItems: "center", gap: 6 }}
+          >
+            <Download size={15} /> Backup Masters JSON
+          </Button>
+          <Button className="secondary" onClick={() => setAction("opening")}>
+            Approve opening entry
+          </Button>
+          <Button className="secondary" onClick={() => setAction("adjustment")}>
+            Correcting adjustment
+          </Button>
+        </div>
+      </div>
+
+      {/* Sub Tabs: Products, Confectionery, Salesmen, Accounts, Employees */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #e7e5e4", marginBottom: 18, flexWrap: "wrap", gap: 8 }}>
+        <div style={{ display: "flex", gap: 20 }}>
+          {(
+            [
+              ["products", "Cigarette Products", cigaretteProducts.length],
+              ["confectionery", "Confectionery Master", confectioneryProducts.length],
+              ["salesmen", "Salesmen & Credit Limits", salesmen.length],
+              ["accounts", "Money & Bank Accounts", accounts.length],
+              ["employees", "Employees & Staff", employees.length],
+              ["foods_salesmen", "Foods Salesmen", foodsSalesmen.length],
+            ] as const
+          ).map(([k, label, count]) => {
+            const active = activeTab === k;
+            return (
+              <button
+                key={k}
+                type="button"
+                onClick={() => {
+                  setActiveTab(k);
+                  setShowAddForm(false);
+                  setEditingItem(null);
+                  setStatus("");
+                }}
+                style={{
+                  background: "none",
+                  border: "none",
+                  borderBottom: active ? "2.5px solid #c2410c" : "2.5px solid transparent",
+                  padding: "10px 4px",
+                  fontWeight: active ? 700 : 500,
+                  fontSize: "0.92rem",
+                  color: active ? "#9a3412" : "#78716c",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
+                <span>{label}</span>
+                <span
+                  style={{
+                    background: active ? "#ffedd5" : "#f5f5f4",
+                    color: active ? "#9a3412" : "#a8a29e",
+                    fontSize: "0.75rem",
+                    padding: "1px 7px",
+                    borderRadius: 12,
+                    fontWeight: 600,
+                  }}
+                >
+                  {count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        <Button
+          className="primary"
+          onClick={() => {
+            setShowAddForm((prev) => !prev);
+            setEditingItem(null);
+          }}
+          style={{ fontSize: "0.85rem", padding: "6px 14px", display: "inline-flex", alignItems: "center", gap: 6 }}
+        >
+          <Plus size={15} />
+          {showAddForm
+            ? "Cancel Add"
+            : `Add new ${activeTab === "products" ? "cigarette product" : activeTab === "confectionery" ? "confectionery item" : activeTab === "salesmen" ? "salesman" : activeTab === "accounts" ? "account" : activeTab === "foods_salesmen" ? "foods salesman" : "employee"}`}
+        </Button>
+      </div>
+
+      {status && (
+        <p className="notice" role="status" style={{ marginBottom: 16 }}>
+          {status}
+        </p>
+      )}
+
+      {/* Inline Add Drawer */}
+      {showAddForm && (
+        <div style={{ background: "#fcfbf7", padding: "16px 20px", borderRadius: 12, border: "1px solid #e7e5e4", marginBottom: 20 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <strong style={{ fontSize: "0.95rem" }}>
+              Add new {activeTab === "products" ? "cigarette product" : activeTab === "confectionery" ? "confectionery item" : activeTab === "salesmen" ? "salesman" : activeTab === "accounts" ? "money account" : activeTab === "foods_salesmen" ? "foods salesman" : "staff employee"}
+            </strong>
+          </div>
+          {activeTab === "confectionery" ? (
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (!newConfName.trim()) return;
+                setConfBusy(true);
+                try {
+                  const code = newConfCode.trim().toUpperCase() || `CONF-${String(confectioneryProducts.length + 1).padStart(2, "0")}`;
+                  await api("products", rowSchema, {
+                    code,
+                    name: newConfName.trim(),
+                    category: "CF-05 CONFECTIONERY",
+                    unit: "piece",
+                    baseUnit: "piece",
+                    conversion: "1",
+                    basis: "1",
+                    rate: cleanDecimal(newConfRate) || "1.00",
+                    effectiveDate: date,
+                    fractional: false,
+                    confirmed: true,
+                  });
+                  await qc.invalidateQueries();
+                  setNewConfCode("");
+                  setNewConfName("");
+                  setNewConfRate("");
+                  setShowAddForm(false);
+                  setStatus(`Added new confectionery item ${code} (${newConfName.trim()}).`);
+                } catch (err) {
+                  setStatus((err as Error).message);
+                } finally {
+                  setConfBusy(false);
+                }
+              }}
+            >
+              <div className="form-grid">
+                <Field label="Item Code / ID (optional, e.g. CONF-03)">
+                  <input
+                    value={newConfCode}
+                    onChange={(e) => setNewConfCode(e.target.value)}
+                    placeholder={`Auto: CONF-${String(confectioneryProducts.length + 1).padStart(2, "0")}`}
+                  />
+                </Field>
+                <Field label="Confectionery Product Name *">
+                  <input
+                    value={newConfName}
+                    onChange={(e) => setNewConfName(e.target.value)}
+                    placeholder="e.g. Dairy Milk 10g, Halls Candy, TicTac Mint"
+                    required
+                  />
+                </Field>
+                <Field label="Default Selling Rate per Piece (₹) *">
+                  <input
+                    inputMode="decimal"
+                    value={newConfRate}
+                    onChange={(e) => setNewConfRate(e.target.value)}
+                    placeholder="e.g. 10.00"
+                    required
+                  />
+                </Field>
+              </div>
+              <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+                <Button type="submit" className="primary" disabled={confBusy} style={{ fontSize: "0.85rem", padding: "6px 14px" }}>
+                  {confBusy ? "Adding..." : "Add Confectionery Item"}
+                </Button>
+                <Button className="secondary" onClick={() => setShowAddForm(false)} style={{ fontSize: "0.85rem", padding: "6px 14px" }}>
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          ) : activeTab === "employees" ? (
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (!newEmpName.trim()) return;
+                try {
+                  await api(
+                    "employees",
+                    z.any(),
+                    {
+                      name: newEmpName.trim(),
+                      role: newEmpRole.trim() || "Staff / Helper",
+                      phone: newEmpPhone.trim() || undefined,
+                    },
+                    "POST"
+                  );
+                  await qc.invalidateQueries({ queryKey: ["employees"] });
+                  setNewEmpName("");
+                  setNewEmpRole("");
+                  setNewEmpPhone("");
+                  setShowAddForm(false);
+                  setStatus("New employee saved to database.");
+                } catch (err) {
+                  setStatus((err as Error).message);
+                }
+              }}
+            >
+              <div className="form-grid">
+                <Field label="Employee Full Name *">
+                  <input
+                    value={newEmpName}
+                    onChange={(e) => setNewEmpName(e.target.value)}
+                    placeholder="e.g. Ramesh Kumar"
+                    required
+                  />
+                </Field>
+                <Field label="Designation / Role">
+                  <input
+                    value={newEmpRole}
+                    onChange={(e) => setNewEmpRole(e.target.value)}
+                    placeholder="e.g. Driver, Helper, Godown Worker"
+                  />
+                </Field>
+                <Field label="Contact Phone">
+                  <input
+                    value={newEmpPhone}
+                    onChange={(e) => setNewEmpPhone(e.target.value)}
+                    placeholder="e.g. 9876543210"
+                  />
+                </Field>
+              </div>
+              <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+                <Button type="submit" className="primary" style={{ fontSize: "0.85rem", padding: "6px 14px" }}>
+                  Save Employee
+                </Button>
+                <Button className="secondary" onClick={() => setShowAddForm(false)} style={{ fontSize: "0.85rem", padding: "6px 14px" }}>
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          ) : activeTab === "foods_salesmen" ? (
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (!newFoodsName.trim()) return;
+                try {
+                  await api(
+                    "foods-salesmen",
+                    z.any(),
+                    {
+                      name: newFoodsName.trim(),
+                      territory: newFoodsTerritory.trim() || undefined,
+                      phone: newFoodsPhone.trim() || undefined,
+                    },
+                    "POST"
+                  );
+                  await qc.invalidateQueries({ queryKey: ["foods-salesmen"] });
+                  setNewFoodsName("");
+                  setNewFoodsTerritory("");
+                  setNewFoodsPhone("");
+                  setShowAddForm(false);
+                  setStatus("New foods salesman saved to database.");
+                } catch (err) {
+                  setStatus((err as Error).message);
+                }
+              }}
+            >
+              <div className="form-grid">
+                <Field label="Foods Salesman Name *">
+                  <input
+                    value={newFoodsName}
+                    onChange={(e) => setNewFoodsName(e.target.value)}
+                    placeholder="e.g. Sunil Agrawal (Foods)"
+                    required
+                  />
+                </Field>
+                <Field label="Territory / Route">
+                  <input
+                    value={newFoodsTerritory}
+                    onChange={(e) => setNewFoodsTerritory(e.target.value)}
+                    placeholder="e.g. Main Market, Route 1"
+                  />
+                </Field>
+                <Field label="Contact Phone">
+                  <input
+                    value={newFoodsPhone}
+                    onChange={(e) => setNewFoodsPhone(e.target.value)}
+                    placeholder="e.g. 9823011221"
+                  />
+                </Field>
+              </div>
+              <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+                <Button type="submit" className="primary" style={{ fontSize: "0.85rem", padding: "6px 14px" }}>
+                  Save Foods Salesman
+                </Button>
+                <Button className="secondary" onClick={() => setShowAddForm(false)} style={{ fontSize: "0.85rem", padding: "6px 14px" }}>
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          ) : (
+            <MasterForm
+              kind={activeTab}
+              date={date}
+              onDone={() => {
+                setShowAddForm(false);
+              }}
+            />
+          )}
+        </div>
+      )}
+
+      {/* Tab 1: Products */}
+      {activeTab === "products" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {(() => {
+            const focusCount = cigaretteProducts.filter((p) => p.is_focus_brand === true).length;
+            const displayProducts = productFilter === "focus"
+              ? cigaretteProducts.filter((p) => p.is_focus_brand === true)
+              : productFilter === "standard"
+                ? cigaretteProducts.filter((p) => !p.is_focus_brand)
+                : cigaretteProducts;
+
+            return (
+              <>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, flexWrap: "wrap", gap: 8 }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <span style={{ fontSize: "0.85rem", color: "#64748b", fontWeight: 600 }}>Filter:</span>
+                    <button
+                      type="button"
+                      onClick={() => setProductFilter("all")}
+                      style={{
+                        background: productFilter === "all" ? "#f1f5f9" : "none",
+                        border: "1px solid",
+                        borderColor: productFilter === "all" ? "#cbd5e1" : "transparent",
+                        padding: "3px 10px",
+                        borderRadius: 6,
+                        fontSize: "0.82rem",
+                        fontWeight: productFilter === "all" ? 700 : 500,
+                        cursor: "pointer",
+                        color: productFilter === "all" ? "#0f172a" : "#64748b",
+                      }}
+                    >
+                      All Cigarettes ({cigaretteProducts.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setProductFilter("focus")}
+                      style={{
+                        background: productFilter === "focus" ? "#fef3c7" : "none",
+                        border: "1px solid",
+                        borderColor: productFilter === "focus" ? "#f59e0b" : "transparent",
+                        padding: "3px 10px",
+                        borderRadius: 6,
+                        fontSize: "0.82rem",
+                        fontWeight: productFilter === "focus" ? 700 : 500,
+                        cursor: "pointer",
+                        color: productFilter === "focus" ? "#92400e" : "#64748b",
+                      }}
+                    >
+                      ⭐ Focus Brands ({focusCount})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setProductFilter("standard")}
+                      style={{
+                        background: productFilter === "standard" ? "#f1f5f9" : "none",
+                        border: "1px solid",
+                        borderColor: productFilter === "standard" ? "#cbd5e1" : "transparent",
+                        padding: "3px 10px",
+                        borderRadius: 6,
+                        fontSize: "0.82rem",
+                        fontWeight: productFilter === "standard" ? 700 : 500,
+                        cursor: "pointer",
+                        color: productFilter === "standard" ? "#0f172a" : "#64748b",
+                      }}
+                    >
+                      Standard Brands ({cigaretteProducts.length - focusCount})
+                    </button>
+                  </div>
+                  <div style={{ fontSize: "0.82rem", color: "#64748b" }}>
+                    ⭐ Focus Brands are prioritized to CDM first during ITC export splitting.
+                  </div>
+                </div>
+
+                {displayProducts.map((p) => {
+                  const isEditing = editingItem?.type === "products" && editingItem?.id === str(p.id);
+                  return (
+                    <div
+                      key={str(p.id)}
+                      style={{
+                        border: "1px solid #e7e5e4",
+                        borderRadius: 12,
+                        padding: "14px 18px",
+                        background: p.active ? "#ffffff" : "#fafaf9",
+                        opacity: p.active ? 1 : 0.75,
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                          <div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                              <strong style={{ fontSize: "1rem" }}>{str(p.name)}</strong>
+                              <span style={{ fontSize: "0.78rem", background: "#f5f5f4", padding: "2px 6px", borderRadius: 4, fontFamily: "monospace", color: "#57534e" }}>
+                                {str(p.code)}
+                              </span>
+                              {p.is_focus_brand === true && (
+                                <span
+                                  style={{
+                                    fontSize: "0.75rem",
+                                    fontWeight: 700,
+                                    padding: "2px 8px",
+                                    borderRadius: 12,
+                                    background: "#fef3c7",
+                                    color: "#92400e",
+                                    border: "1px solid #fde68a",
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: 3,
+                                  }}
+                                >
+                                  ⭐ Focus Brand
+                                </span>
+                              )}
+                              <span
+                                style={{
+                                  fontSize: "0.75rem",
+                                  fontWeight: 600,
+                                  padding: "2px 8px",
+                                  borderRadius: 12,
+                                  background: p.active ? "#dcfce7" : "#f1f5f9",
+                                  color: p.active ? "#166534" : "#64748b",
+                                }}
+                              >
+                                {p.active ? "Active" : "Inactive"}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: "0.85rem", color: "#78716c", marginTop: 4, display: "flex", gap: 14, flexWrap: "wrap" }}>
+                              <span>Rate: <b>₹{str(p.rate)}</b> / {str(p.unit)}</span>
+                              <span>Effective: <b>{str(p.effective_date || "Original")}</b></span>
+                              <span>Base: <b>{str(p.conversion)}</b> {str(p.base_unit)}</span>
+                              <span>Fractional: <b>{p.fractional ? "Yes" : "No"}</b></span>
+                              <span>Confirmed: <b>{p.confirmed ? "Yes" : "No"}</b></span>
+                              {Boolean(p.itc_multiple) && <span>ITC Split: <b>{str(p.itc_multiple)} multiple</b></span>}
+                              {Boolean(p.barcode) && (
+                                <span>
+                                  {str(p.barcode).split(/[\s,;]+/).filter(Boolean).length > 1 ? "Barcodes: " : "Barcode: "}
+                                  <b style={{ fontFamily: "monospace" }}>
+                                    {str(p.barcode).split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean).join(", ")}
+                                  </b>
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                          <Button
+                            className="secondary"
+                            onClick={() => toggleFocus(str(p.id), p.is_focus_brand === true)}
+                            title={p.is_focus_brand ? "Remove from focus brands" : "Set as focus brand (prioritize to CDM first)"}
+                            aria-label={p.is_focus_brand ? "Remove from focus brands" : "Set as focus brand"}
+                            style={{
+                              padding: "5px 10px",
+                              fontSize: "0.82rem",
+                              background: p.is_focus_brand ? "#fffbeb" : undefined,
+                              borderColor: p.is_focus_brand ? "#fcd34d" : undefined,
+                              color: p.is_focus_brand ? "#b45309" : undefined,
+                            }}
+                          >
+                            <Star size={14} fill={p.is_focus_brand ? "#f59e0b" : "none"} color={p.is_focus_brand ? "#f59e0b" : "currentColor"} />
+                          </Button>
+                          <Button
+                            className="secondary"
+                            onClick={() => {
+                              setEditingItem(isEditing ? null : { type: "products", id: str(p.id) });
+                            }}
+                            style={{ fontSize: "0.82rem", padding: "5px 12px" }}
+                          >
+                            {isEditing ? "Close" : "Edit"}
+                          </Button>
+                          <Button
+                            className="secondary"
+                            onClick={() => toggleStatus("products", str(p.id), Boolean(p.active))}
+                            style={{ fontSize: "0.82rem", padding: "5px 12px" }}
+                          >
+                            {p.active ? "Deactivate" : "Reactivate"}
+                          </Button>
+                        </div>
+                      </div>
+                      {isEditing && (
+                        <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px dashed #e7e5e4" }}>
+                          <ProductRateEditor
+                            product={p}
+                            date={date}
+                            onDone={() => setEditingItem(null)}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* Tab: Confectionery Master */}
+      {activeTab === "confectionery" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, flexWrap: "wrap", gap: 8 }}>
+            <div style={{ fontSize: "0.85rem", color: "#64748b" }}>
+              Standard confectionery items (chocolates, candies, mints, biscuits) billed by pieces along with cigarettes.
+            </div>
+          </div>
+
+          {confectioneryProducts.length === 0 ? (
+            <div style={{ padding: "32px 0", textAlign: "center", color: "#78716c", background: "#f8fafc", borderRadius: 12, border: "1px dashed #cbd5e1", fontSize: "0.88rem" }}>
+              No confectionery items in master yet. Click <b>+ Add new confectionery item</b> above to create one.
+            </div>
+          ) : (
+            confectioneryProducts.map((p) => {
+              const isEditing = editingItem?.type === "products" && editingItem?.id === str(p.id);
+              return (
+                <div
+                  key={str(p.id)}
+                  style={{
+                    border: "1px solid #fed7aa",
+                    borderRadius: 12,
+                    padding: "14px 18px",
+                    background: p.active ? "#ffffff" : "#fafaf9",
+                    opacity: p.active ? 1 : 0.75,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                      <div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <strong style={{ fontSize: "1rem", color: "#0f172a" }}>{str(p.name)}</strong>
+                          <span style={{ fontSize: "0.78rem", background: "#fef3c7", padding: "2px 6px", borderRadius: 4, fontFamily: "monospace", color: "#92400e" }}>
+                            {str(p.code)}
+                          </span>
+                          <span
+                            style={{
+                              fontSize: "0.75rem",
+                              fontWeight: 600,
+                              padding: "2px 8px",
+                              borderRadius: 12,
+                              background: p.active ? "#dcfce7" : "#f1f5f9",
+                              color: p.active ? "#166534" : "#64748b",
+                            }}
+                          >
+                            {p.active ? "Active" : "Inactive"}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: "0.85rem", color: "#57534e", marginTop: 4, display: "flex", gap: 14, flexWrap: "wrap" }}>
+                          <span>
+                            Default Selling Rate: <strong style={{ color: "#0f172a" }}>₹{str(p.rate ?? "0.00")}</strong> / piece
+                          </span>
+                          <span>Fixed Unit: <b>piece</b></span>
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <Button
+                        className="secondary"
+                        onClick={() => {
+                          setEditingItem(isEditing ? null : { type: "products", id: str(p.id) });
+                        }}
+                        style={{ fontSize: "0.82rem", padding: "5px 12px" }}
+                      >
+                        {isEditing ? "Close" : "Edit"}
+                      </Button>
+                      <Button
+                        className="secondary"
+                        onClick={() => toggleStatus("products", str(p.id), Boolean(p.active))}
+                        style={{ fontSize: "0.82rem", padding: "5px 12px", color: p.active ? "#dc2626" : "#16a34a" }}
+                      >
+                        {p.active ? "Deactivate" : "Activate"}
+                      </Button>
+                    </div>
+                  </div>
+                  {isEditing && (
+                    <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid #fde68a" }}>
+                      <ProductRateEditor
+                        product={p}
+                        date={date}
+                        onDone={() => setEditingItem(null)}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
+      {/* Tab 2: Salesmen */}
+      {activeTab === "salesmen" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {salesmen.map((s) => {
+            const isEditing = editingItem?.type === "salesmen" && editingItem?.id === str(s.id);
+            const phone = str((s.details as Row | undefined)?.phone);
+            const route = str((s.details as Row | undefined)?.route);
+            const limit = s.credit_limit !== null && s.credit_limit !== undefined
+              ? `₹${str(s.credit_limit)}`
+              : "No limit set";
+            return (
+              <div
+                key={str(s.id)}
+                style={{
+                  border: "1px solid #e7e5e4",
+                  borderRadius: 12,
+                  padding: "14px 18px",
+                  background: s.active ? "#ffffff" : "#fafaf9",
+                  opacity: s.active ? 1 : 0.75,
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <strong style={{ fontSize: "1rem" }}>{str(s.name)}</strong>
+                      <span style={{ fontSize: "0.78rem", background: "#f5f5f4", padding: "2px 6px", borderRadius: 4, fontFamily: "monospace", color: "#57534e" }}>
+                        {str(s.code)}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: "0.75rem",
+                          fontWeight: 600,
+                          padding: "2px 8px",
+                          borderRadius: 12,
+                          background: s.active ? "#dcfce7" : "#f1f5f9",
+                          color: s.active ? "#166534" : "#64748b",
+                        }}
+                      >
+                        {s.active ? "Active" : "Inactive"}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", gap: 16, marginTop: 4, fontSize: "0.85rem", color: "#78716c", flexWrap: "wrap" }}>
+                      <span>Credit Policy: <b>{limit}</b></span>
+                      {phone && <span>Phone: <b>{phone}</b></span>}
+                      {route && <span>Route/Area: <b>{route}</b></span>}
+                      {Boolean((s.details as Row | undefined)?.itc_id) && <span>ITC Salesman ID: <b>{str((s.details as Row).itc_id)}</b></span>}
+                      {Boolean((s.details as Row | undefined)?.beat_name) && (
+                        <span>
+                          Beat: <b>{str((s.details as Row).beat_code)} - {str((s.details as Row).beat_name)}</b>
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <Button
+                      className="secondary"
+                      onClick={() => setEditingItem(isEditing ? null : { type: "salesmen", id: str(s.id) })}
+                      style={{ fontSize: "0.82rem", padding: "5px 12px" }}
+                    >
+                      {isEditing ? "Close" : "Edit"}
+                    </Button>
+                    <Button
+                      className="secondary"
+                      onClick={() => toggleStatus("salesmen", str(s.id), s.active === true)}
+                      style={{ fontSize: "0.82rem", padding: "5px 12px" }}
+                    >
+                      {s.active ? "Deactivate" : "Reactivate"}
+                    </Button>
+                  </div>
+                </div>
+                {isEditing && (
+                  <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px dashed #e7e5e4" }}>
+                    <SalesmanPolicyEditor
+                      salesman={s}
+                      onDone={() => setEditingItem(null)}
+                    />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Tab 3: Accounts */}
+      {activeTab === "accounts" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {accounts.map((a) => (
+            <div
+              key={str(a.id)}
+              style={{
+                border: "1px solid #e7e5e4",
+                borderRadius: 12,
+                padding: "14px 18px",
+                background: a.active ? "#ffffff" : "#fafaf9",
+                opacity: a.active ? 1 : 0.75,
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <strong style={{ fontSize: "1rem" }}>{str(a.name)}</strong>
+                    <span
+                      style={{
+                        fontSize: "0.75rem",
+                        fontWeight: 600,
+                        padding: "2px 8px",
+                        borderRadius: 12,
+                        background: a.type === "bank" ? "#e0e7ff" : "#fef3c7",
+                        color: a.type === "bank" ? "#3730a3" : "#92400e",
+                        textTransform: "capitalize",
+                      }}
+                    >
+                      {str(a.type)}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: "0.75rem",
+                        fontWeight: 600,
+                        padding: "2px 8px",
+                        borderRadius: 12,
+                        background: a.active ? "#dcfce7" : "#f1f5f9",
+                        color: a.active ? "#166534" : "#64748b",
+                      }}
+                    >
+                      {a.active ? "Active" : "Inactive"}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", gap: 16, marginTop: 4, fontSize: "0.85rem", color: "#78716c", flexWrap: "wrap" }}>
+                    <span>Holder / Custodian: <b>{str(a.holder || "—")}</b></span>
+                    <span>Overdraft allowed: <b>{a.allow_overdraft ? "Yes" : "No"}</b></span>
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <Button
+                    className="secondary"
+                    onClick={() => toggleStatus("money_accounts", str(a.id), a.active === true)}
+                    style={{ fontSize: "0.82rem", padding: "5px 12px" }}
+                  >
+                    {a.active ? "Deactivate" : "Reactivate"}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Tab 4: Employees */}
+      {activeTab === "employees" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {employees.map((emp) => {
+            const isEditing = editingItem?.type === "employees" && editingItem.id === emp.id;
+            return (
+              <div
+                key={emp.id}
+                style={{
+                  border: "1px solid #e7e5e4",
+                  borderRadius: 12,
+                  padding: "14px 18px",
+                  background: emp.active ? "#ffffff" : "#fafaf9",
+                  opacity: emp.active ? 1 : 0.75,
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <strong style={{ fontSize: "1rem" }}>{emp.name}</strong>
+                      <span style={{ fontSize: "0.75rem", fontWeight: 600, padding: "2px 8px", borderRadius: 12, background: "#e0f2fe", color: "#0369a1" }}>
+                        {emp.role}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: "0.75rem",
+                          fontWeight: 600,
+                          padding: "2px 8px",
+                          borderRadius: 12,
+                          background: emp.active ? "#dcfce7" : "#f1f5f9",
+                          color: emp.active ? "#166534" : "#64748b",
+                        }}
+                      >
+                        {emp.active ? "Active" : "Inactive"}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", gap: 16, marginTop: 4, fontSize: "0.85rem", color: "#78716c", flexWrap: "wrap" }}>
+                      {emp.phone && <span>Phone: <b>{emp.phone}</b></span>}
+                      <span>Ready for Salaries & Advances in Other Money</span>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <Button
+                      className="secondary"
+                      onClick={() => setEditingItem(isEditing ? null : { type: "employees", id: emp.id })}
+                      style={{ fontSize: "0.82rem", padding: "5px 12px", display: "inline-flex", alignItems: "center", gap: 5 }}
+                    >
+                      <Pencil size={13} /> {isEditing ? "Close Edit" : "Edit"}
+                    </Button>
+                    <Button
+                      className="secondary"
+                      onClick={() => toggleStatus("employees", emp.id, emp.active)}
+                      style={{ fontSize: "0.82rem", padding: "5px 12px" }}
+                    >
+                      {emp.active ? "Deactivate" : "Reactivate"}
+                    </Button>
+                  </div>
+                </div>
+                {isEditing && (
+                  <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px dashed #e7e5e4" }}>
+                    <EmployeeEditor
+                      employee={emp}
+                      onSave={async (updated) => {
+                        try {
+                          await api(
+                            "employees/" + emp.id,
+                            z.any(),
+                            {
+                              name: updated.name,
+                              role: updated.role,
+                              phone: updated.phone || undefined,
+                            },
+                            "PATCH"
+                          );
+                          await qc.invalidateQueries({ queryKey: ["employees"] });
+                          setEditingItem(null);
+                          setStatus(`Employee "${updated.name}" updated successfully.`);
+                        } catch (err) {
+                          setStatus((err as Error).message);
+                        }
+                      }}
+                      onCancel={() => setEditingItem(null)}
+                    />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Tab 5: Foods Salesmen */}
+      {activeTab === "foods_salesmen" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {foodsSalesmen.map((fs) => {
+            const isEditing = editingItem?.type === "foods_salesmen" && editingItem.id === fs.id;
+            return (
+              <div
+                key={fs.id}
+                style={{
+                  border: "1px solid #e7e5e4",
+                  borderRadius: 12,
+                  padding: "14px 18px",
+                  background: fs.active ? "#ffffff" : "#fafaf9",
+                  opacity: fs.active ? 1 : 0.75,
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <strong style={{ fontSize: "1rem" }}>{fs.name}</strong>
+                      {fs.territory && (
+                        <span style={{ fontSize: "0.75rem", fontWeight: 600, padding: "2px 8px", borderRadius: 12, background: "#fef3c7", color: "#92400e" }}>
+                          {fs.territory}
+                        </span>
+                      )}
+                      <span
+                        style={{
+                          fontSize: "0.75rem",
+                          fontWeight: 600,
+                          padding: "2px 8px",
+                          borderRadius: 12,
+                          background: fs.active ? "#dcfce7" : "#f1f5f9",
+                          color: fs.active ? "#166534" : "#64748b",
+                        }}
+                      >
+                        {fs.active ? "Active" : "Inactive"}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", gap: 16, marginTop: 4, fontSize: "0.85rem", color: "#78716c", flexWrap: "wrap" }}>
+                      {fs.phone && <span>Phone: <b>{fs.phone}</b></span>}
+                      <span>Ready for Foods Collections in Other Money</span>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <Button
+                      className="secondary"
+                      onClick={() => setEditingItem(isEditing ? null : { type: "foods_salesmen", id: fs.id })}
+                      style={{ fontSize: "0.82rem", padding: "5px 12px", display: "inline-flex", alignItems: "center", gap: 5 }}
+                    >
+                      <Pencil size={13} /> {isEditing ? "Close Edit" : "Edit"}
+                    </Button>
+                    <Button
+                      className="secondary"
+                      onClick={() => toggleStatus("foods_salesmen", fs.id, fs.active)}
+                      style={{ fontSize: "0.82rem", padding: "5px 12px" }}
+                    >
+                      {fs.active ? "Deactivate" : "Reactivate"}
+                    </Button>
+                  </div>
+                </div>
+                {isEditing && (
+                  <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px dashed #e7e5e4" }}>
+                    <FoodsSalesmanEditor
+                      salesman={fs}
+                      onSave={async (updated) => {
+                        try {
+                          await api(
+                            "foods-salesmen/" + fs.id,
+                            z.any(),
+                            {
+                              name: updated.name,
+                              territory: updated.territory || undefined,
+                              phone: updated.phone || undefined,
+                            },
+                            "PATCH"
+                          );
+                          await qc.invalidateQueries({ queryKey: ["foods-salesmen"] });
+                          setEditingItem(null);
+                          setStatus(`Foods salesman "${updated.name}" updated successfully.`);
+                        } catch (err) {
+                          setStatus((err as Error).message);
+                        }
+                      }}
+                      onCancel={() => setEditingItem(null)}
+                    />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+
+function EmployeeEditor({
+  employee,
+  onSave,
+  onCancel,
+}: {
+  employee: { id: string; name: string; role: string; phone?: string; active: boolean };
+  onSave: (updated: { id: string; name: string; role: string; phone?: string; active: boolean }) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState(employee.name);
+  const [role, setRole] = useState(employee.role);
+  const [phone, setPhone] = useState(employee.phone ?? "");
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!name.trim()) return;
+        onSave({
+          ...employee,
+          name: name.trim(),
+          role: role.trim() || "Staff / Helper",
+          phone: phone.trim(),
+        });
+      }}
+    >
+      <div className="form-grid">
+        <Field label="Employee Full Name *">
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Ramesh Kumar"
+            required
+          />
+        </Field>
+        <Field label="Designation / Role">
+          <input
+            value={role}
+            onChange={(e) => setRole(e.target.value)}
+            placeholder="e.g. Driver, Helper, Godown Worker"
+          />
+        </Field>
+        <Field label="Contact Phone">
+          <input
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            placeholder="e.g. 9876543210"
+          />
+        </Field>
+      </div>
+      <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+        <Button type="submit" className="primary" style={{ fontSize: "0.85rem", padding: "6px 14px" }}>
+          Update Employee
+        </Button>
+        <Button className="secondary" onClick={onCancel} style={{ fontSize: "0.85rem", padding: "6px 14px" }}>
+          Cancel
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function FoodsSalesmanEditor({
+  salesman,
+  onSave,
+  onCancel,
+}: {
+  salesman: { id: string; name: string; territory?: string; phone?: string; active: boolean };
+  onSave: (updated: { id: string; name: string; territory?: string; phone?: string; active: boolean }) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState(salesman.name);
+  const [territory, setTerritory] = useState(salesman.territory ?? "");
+  const [phone, setPhone] = useState(salesman.phone ?? "");
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!name.trim()) return;
+        onSave({
+          ...salesman,
+          name: name.trim(),
+          territory: territory.trim() || "All Routes",
+          phone: phone.trim(),
+        });
+      }}
+    >
+      <div className="form-grid">
+        <Field label="Foods Salesman Name *">
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Sunil Agrawal (Foods)"
+            required
+          />
+        </Field>
+        <Field label="Territory / Route">
+          <input
+            value={territory}
+            onChange={(e) => setTerritory(e.target.value)}
+            placeholder="e.g. Main Market, Route 1"
+          />
+        </Field>
+        <Field label="Contact Phone">
+          <input
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            placeholder="e.g. 9823011221"
+          />
+        </Field>
+      </div>
+      <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+        <Button type="submit" className="primary" style={{ fontSize: "0.85rem", padding: "6px 14px" }}>
+          Update Foods Salesman
+        </Button>
+        <Button className="secondary" onClick={onCancel} style={{ fontSize: "0.85rem", padding: "6px 14px" }}>
+          Cancel
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+
+function ProductRateEditor({
+  product,
+  date,
+  onDone,
+}: {
+  product: Row;
+  date: string;
+  onDone: () => void;
+}) {
+  const qc = useQueryClient();
+  const [code, setCode] = useState(str(product.code ?? ""));
+  const [name, setName] = useState(str(product.name ?? ""));
+  const rawCat = str(product.category);
+  const category = rawCat === "confectionery" || rawCat === "CF-05 CONFECTIONERY"
+    ? "CF-05 CONFECTIONERY"
+    : (rawCat || "CG-01 CIGARETTE");
+  const isConf = category === "CF-05 CONFECTIONERY";
+  const [rate, setRate] = useState(str(product.rate ?? ""));
+  const [barcode, setBarcode] = useState(str(product.barcode ?? ""));
+  const [effectiveDate, setEffectiveDate] = useState(date);
+  const [fractional, setFractional] = useState(product.fractional === true);
+  const [confirmed, setConfirmed] = useState(true);
+  const defaultMultiple = product.itc_multiple
+    ? Number(product.itc_multiple).toFixed(2)
+    : str(product.code) === "3531"
+      ? "0.40"
+      : ["3692", "3624", "3757", "3759", "3053", "3752", "3652", "3653", "4546"].includes(str(product.code))
+        ? "0.20"
+        : "0.10";
+  const [itcMultiple, setItcMultiple] = useState(defaultMultiple);
+  const [isFocusBrand, setIsFocusBrand] = useState(product.is_focus_brand === true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  return (
+    <form
+      onSubmit={async (e) => {
+        e.preventDefault();
+        setBusy(true);
+        setError("");
+        try {
+          await api("products", rowSchema, {
+            id: str(product.id),
+            code: code.trim(),
+            name: name.trim(),
+            barcode: barcode
+              .split(/[\s,;]+/)
+              .map((s) => s.trim())
+              .filter(Boolean)
+              .join(", ") || null,
+            category,
+            unit: isConf ? "piece" : "m",
+            baseUnit: isConf ? "piece" : "m",
+            conversion: "1",
+            basis: "1",
+            rate: cleanDecimal(rate),
+            effectiveDate,
+            fractional,
+            confirmed,
+            itcMultiple: itcMultiple ? cleanDecimal(itcMultiple) : itcMultiple,
+            isFocusBrand,
+          });
+          await qc.invalidateQueries();
+          onDone();
+        } catch (err) {
+          setError((err as Error).message);
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {/* Row 1: Effective date (small) | Category (small, read-only) | Code (small) | Name (remaining) */}
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <div style={{ width: 135, flexShrink: 0 }}>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 4 }}>
+              Effective date *
+            </label>
+            <input
+              type="date"
+              value={effectiveDate}
+              onChange={(e) => setEffectiveDate(e.target.value)}
+              required
+              style={{ width: "100%", padding: "7px 10px", fontSize: 13, borderRadius: 6, border: "1px solid #cbd5e1" }}
+            />
+          </div>
+          <div style={{ width: 175, flexShrink: 0 }}>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 4 }}>
+              Category
+            </label>
+            <input
+              type="text"
+              value={category}
+              readOnly
+              style={{
+                width: "100%",
+                padding: "7px 10px",
+                fontSize: 13,
+                borderRadius: 6,
+                border: "1px solid #cbd5e1",
+                background: "#f1f5f9",
+                color: "#475569",
+                cursor: "not-allowed",
+                fontWeight: 600,
+              }}
+            />
+          </div>
+          <div style={{ width: 110, flexShrink: 0 }}>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 4 }}>
+              Code *
+            </label>
+            <input
+              type="text"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              required
+              placeholder="e.g. 3531"
+              style={{
+                width: "100%",
+                padding: "7px 10px",
+                fontSize: 13,
+                borderRadius: 6,
+                border: "1px solid #cbd5e1",
+                fontFamily: "monospace",
+                fontWeight: 700,
+              }}
+            />
+          </div>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 4 }}>
+              Name *
+            </label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+              placeholder="Product name"
+              style={{
+                width: "100%",
+                padding: "7px 10px",
+                fontSize: 13,
+                borderRadius: 6,
+                border: "1px solid #cbd5e1",
+                fontWeight: 600,
+              }}
+            />
+          </div>
+        </div>
+
+        {/* Row 2: Fixed Unit (small) | Rate (₹ / m) * (small) | ITC Export Split Multiple * (small) | Barcodes / EANs (remaining) */}
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <div style={{ width: 80, flexShrink: 0 }}>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 4 }}>
+              Fixed Unit
+            </label>
+            <input
+              value={isConf ? "piece" : "m"}
+              readOnly
+              style={{
+                width: "100%",
+                padding: "7px 10px",
+                fontSize: 13,
+                borderRadius: 6,
+                border: "1px solid #cbd5e1",
+                background: "#f1f5f9",
+                color: "#475569",
+                cursor: "not-allowed",
+                fontWeight: 600,
+                textAlign: "center",
+              }}
+            />
+          </div>
+          <div style={{ width: 125, flexShrink: 0 }}>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 4 }}>
+              Rate (₹ / {isConf ? "piece" : "m"}) *
+            </label>
+            <input
+              inputMode="decimal"
+              value={rate}
+              onChange={(e) => setRate(e.target.value)}
+              placeholder="e.g. 15.00"
+              required
+              style={{ width: "100%", padding: "7px 10px", fontSize: 13, borderRadius: 6, border: "1px solid #cbd5e1", fontWeight: 600 }}
+            />
+          </div>
+          <div style={{ width: 175, flexShrink: 0 }}>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 4 }}>
+              ITC Export Split Multiple *
+            </label>
+            <select
+              value={itcMultiple}
+              onChange={(e) => setItcMultiple(e.target.value)}
+              style={{ width: "100%", padding: "7px 10px", fontSize: 13, borderRadius: 6, border: "1px solid #cbd5e1", fontWeight: 600 }}
+            >
+              <option value="0.40">0.40 multiple</option>
+              <option value="0.20">0.20 multiple</option>
+              <option value="0.10">0.10 multiple</option>
+              <option value="1.00">1.00 multiple</option>
+            </select>
+          </div>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 4 }}>
+              Barcodes / EANs (separated by space or comma)
+            </label>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input
+                value={barcode}
+                onChange={(e) => setBarcode(e.target.value)}
+                placeholder="e.g. 8901725123456, 8901725123457"
+                style={{
+                  flex: 1,
+                  padding: "7px 10px",
+                  fontSize: 13,
+                  borderRadius: 6,
+                  border: "1px solid #cbd5e1",
+                  fontFamily: barcode ? "monospace" : "inherit",
+                  fontWeight: barcode ? 700 : 400,
+                }}
+              />
+              {barcode && (
+                <button
+                  type="button"
+                  onClick={() => setBarcode("")}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "#94a3b8",
+                    cursor: "pointer",
+                    padding: "4px",
+                  }}
+                  title="Clear barcodes"
+                >
+                  <X size={16} />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 16, margin: "10px 0", flexWrap: "wrap" }}>
+        <label
+          className="checkbox"
+          style={{
+            fontWeight: isFocusBrand ? 600 : 400,
+            color: isFocusBrand ? "#b45309" : undefined,
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={isFocusBrand}
+            onChange={(e) => setIsFocusBrand(e.target.checked)}
+          />{" "}
+          ⭐ Focus Brand (prioritize to CDM first during ITC export)
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={fractional}
+            onChange={(e) => setFractional(e.target.checked)}
+          />{" "}
+          Fractional quantities allowed (e.g. 12.5 m)
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={confirmed}
+            onChange={(e) => setConfirmed(e.target.checked)}
+          />{" "}
+          Confirm unit and effective rate
+        </label>
+      </div>
+      {error && <p className="error">{error}</p>}
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <Button className="primary" type="submit" disabled={busy}>
+          {busy ? "Saving..." : "Save changes"}
+        </Button>
+        <Button className="secondary" type="button" onClick={onDone}>
+          Cancel
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+
+function SalesmanPolicyEditor({
+  salesman,
+  onDone,
+}: {
+  salesman: Row;
+  onDone: () => void;
+}) {
+  const qc = useQueryClient();
+  const [name, setName] = useState(str(salesman.name));
+  const [limit, setLimit] = useState(str(salesman.credit_limit));
+  const [enabled, setEnabled] = useState(
+    salesman.credit_limit !== null && salesman.credit_limit !== undefined,
+  );
+  const [phone, setPhone] = useState(str((salesman.details as Row | undefined)?.phone));
+  const [route, setRoute] = useState(str((salesman.details as Row | undefined)?.route));
+  const [itcId, setItcId] = useState(str((salesman.details as Row | undefined)?.itc_id));
+  const [beatCode, setBeatCode] = useState(str((salesman.details as Row | undefined)?.beat_code));
+  const [beatName, setBeatName] = useState(str((salesman.details as Row | undefined)?.beat_name));
+  const [active, setActive] = useState(salesman.active === true);
+
+  // Customer Management State
+  const customersQuery = useQuery({
+    queryKey: ["salesman-customers", str(salesman.id)],
+    queryFn: () => api(`itc/customers?salesmanId=${salesman.id}`, rowsSchema),
+  });
+
+  const [customerList, setCustomerList] = useState<Row[]>([]);
+  const [selectedCustId, setSelectedCustId] = useState("");
+  const [deletedCustIds, setDeletedCustIds] = useState<Set<string>>(new Set());
+  const [addedCustomers, setAddedCustomers] = useState<{
+    customerId: string;
+    customerName: string;
+    beatCode: string;
+    beatName: string;
+    isGst: boolean;
+  }[]>([]);
+  const [modifiedNameMap, setModifiedNameMap] = useState<Map<string, string>>(new Map());
+  const [modifiedGstMap, setModifiedGstMap] = useState<Map<string, boolean>>(new Map());
+  const [modifiedBeatCodeMap, setModifiedBeatCodeMap] = useState<Map<string, string>>(new Map());
+  const [modifiedBeatNameMap, setModifiedBeatNameMap] = useState<Map<string, string>>(new Map());
+  const [showAddCustomer, setShowAddCustomer] = useState(false);
+
+  // New customer input in bottom
+  const [newCustId, setNewCustId] = useState("");
+  const [newCustName, setNewCustName] = useState("");
+  const [newCustBeatCode, setNewCustBeatCode] = useState("");
+  const [newCustBeatName, setNewCustBeatName] = useState("");
+  const [newCustGst, setNewCustGst] = useState(false);
+
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [changeSummary, setChangeSummary] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (customersQuery.data) {
+      setCustomerList(customersQuery.data);
+      if (customersQuery.data.length > 0 && !selectedCustId) {
+        setSelectedCustId(str(customersQuery.data[0].id));
+      }
+    }
+  }, [customersQuery.data]);
+
+  // Combined visible customers (initial minus deleted, plus added)
+  const visibleCustomers: Row[] = [
+    ...customerList
+      .filter((c) => !deletedCustIds.has(str(c.id)))
+      .map((c) => ({
+        ...c,
+        customer_name: modifiedNameMap.has(str(c.id))
+          ? modifiedNameMap.get(str(c.id))
+          : str(c.customer_name || ""),
+        beat_code: modifiedBeatCodeMap.has(str(c.id))
+          ? modifiedBeatCodeMap.get(str(c.id))
+          : str(c.beat_code || ""),
+        beat_name: modifiedBeatNameMap.has(str(c.id))
+          ? modifiedBeatNameMap.get(str(c.id))
+          : str(c.beat_name || ""),
+        is_gst: modifiedGstMap.has(str(c.id))
+          ? modifiedGstMap.get(str(c.id))
+          : c.is_gst === true,
+      })),
+    ...addedCustomers.map((a, idx) => ({
+      id: "temp-" + idx,
+      customer_id: a.customerId,
+      customer_name: a.customerName,
+      beat_code: a.beatCode,
+      beat_name: a.beatName,
+      is_gst: a.isGst,
+      isNew: true,
+    })),
+  ];
+
+  const handleAddCustomer = () => {
+    if (!newCustId.trim() || !newCustName.trim()) {
+      alert("Please enter both Customer ID and Customer Name.");
+      return;
+    }
+    const newIdx = addedCustomers.length;
+    setAddedCustomers((prev) => [
+      ...prev,
+      {
+        customerId: newCustId.trim(),
+        customerName: newCustName.trim(),
+        beatCode: newCustBeatCode.trim() || beatCode.trim(),
+        beatName: newCustBeatName.trim() || beatName.trim(),
+        isGst: newCustGst,
+      },
+    ]);
+    setSelectedCustId("temp-" + newIdx);
+    setNewCustId("");
+    setNewCustName("");
+    setNewCustBeatCode("");
+    setNewCustBeatName("");
+    setNewCustGst(false);
+  };
+
+  return (
+    <form
+      onSubmit={async (e) => {
+        e.preventDefault();
+        setBusy(true);
+        setError("");
+        setChangeSummary(null);
+
+        try {
+          const changes: string[] = [];
+          if (name !== str(salesman.name)) changes.push(`Name changed to "${name}"`);
+          if (phone !== str((salesman.details as Row | undefined)?.phone)) changes.push("Phone updated");
+          if (route !== str((salesman.details as Row | undefined)?.route)) changes.push("Route updated");
+          if (itcId !== str((salesman.details as Row | undefined)?.itc_id)) changes.push(`ITC ID updated to "${itcId}"`);
+          if (beatCode !== str((salesman.details as Row | undefined)?.beat_code)) changes.push(`Beat Code updated to "${beatCode}"`);
+          if (beatName !== str((salesman.details as Row | undefined)?.beat_name)) changes.push(`Beat Name updated to "${beatName}"`);
+          if (active !== (salesman.active === true)) changes.push(`Active status: ${active ? "Active" : "Inactive"}`);
+
+          if (enabled === (salesman.credit_limit !== null && salesman.credit_limit !== undefined)) {
+            if (enabled && limit !== str(salesman.credit_limit)) {
+              changes.push(`Credit limit set to ₹${limit}`);
+            }
+          } else {
+            changes.push(enabled ? `Credit limit enforced: ₹${limit}` : "Credit limit disabled");
+          }
+
+          const parsedLimit = cleanDecimal(limit);
+          await api(
+            "salesmen/" + salesman.id,
+            rowSchema,
+            {
+              name,
+              creditLimit: (enabled && parsedLimit) || null,
+              active,
+              details: {
+                ...(salesman.details as Row),
+                phone,
+                route,
+                itc_id: itcId,
+                itc_name: name,
+                beat_code: beatCode,
+                beat_name: beatName,
+              },
+            },
+            "PATCH",
+          );
+
+          // Handle deleted customers
+          for (const delId of deletedCustIds) {
+            await fetch(`/api/v1/itc/customers/${delId}`, { method: "DELETE" });
+          }
+          if (deletedCustIds.size > 0) changes.push(`Removed ${deletedCustIds.size} customer(s)`);
+
+          // Handle added customers
+          for (const addC of addedCustomers) {
+            await api(
+              "itc/customers",
+              rowSchema,
+              {
+                customerId: addC.customerId,
+                customerName: addC.customerName,
+                salesmanId: salesman.id,
+                beatCode: addC.beatCode || beatCode || "",
+                beatName: addC.beatName || beatName || "",
+                isGst: addC.isGst,
+              },
+              "POST",
+            );
+          }
+          if (addedCustomers.length > 0) changes.push(`Added ${addedCustomers.length} new customer(s)`);
+
+          // Handle modified customers (customerName, GST tag, beatCode, beatName)
+          const allModifiedIds = new Set([
+            ...modifiedNameMap.keys(),
+            ...modifiedGstMap.keys(),
+            ...modifiedBeatCodeMap.keys(),
+            ...modifiedBeatNameMap.keys(),
+          ]);
+          let updatedCustCount = 0;
+          for (const modId of allModifiedIds) {
+            if (!deletedCustIds.has(modId)) {
+              const payload: Record<string, unknown> = {};
+              if (modifiedNameMap.has(modId)) payload.customerName = modifiedNameMap.get(modId);
+              if (modifiedGstMap.has(modId)) payload.isGst = modifiedGstMap.get(modId);
+              if (modifiedBeatCodeMap.has(modId)) payload.beatCode = modifiedBeatCodeMap.get(modId);
+              if (modifiedBeatNameMap.has(modId)) payload.beatName = modifiedBeatNameMap.get(modId);
+              if (Object.keys(payload).length > 0) {
+                await api(`itc/customers/${modId}`, rowSchema, payload, "PATCH");
+                updatedCustCount++;
+              }
+            }
+          }
+          if (updatedCustCount > 0) changes.push(`Updated ${updatedCustCount} customer(s) details/beat`);
+
+          await qc.invalidateQueries();
+          setDeletedCustIds(new Set());
+          setAddedCustomers([]);
+          setModifiedNameMap(new Map());
+          setModifiedGstMap(new Map());
+          setModifiedBeatCodeMap(new Map());
+          setModifiedBeatNameMap(new Map());
+          customersQuery.refetch();
+
+          if (changes.length === 0) changes.push("Details saved (no data values modified)");
+          setChangeSummary(changes.join(" · "));
+        } catch (err: unknown) {
+          setError((err as Error).message);
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      <div className="form-grid">
+        <Field label="Salesman display name">
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            required
+          />
+        </Field>
+        <Field label="Phone number">
+          <input
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            placeholder="e.g. 9848012345"
+          />
+        </Field>
+        <Field label="Route / delivery area">
+          <input
+            value={route}
+            onChange={(e) => setRoute(e.target.value)}
+            placeholder="e.g. Market Beat 1"
+          />
+        </Field>
+        <Field label="ITC Salesman ID (for sync)">
+          <input
+            value={itcId}
+            onChange={(e) => setItcId(e.target.value)}
+            placeholder="e.g. 1HG2"
+          />
+        </Field>
+        <Field label="Beat Code">
+          <input
+            value={beatCode}
+            onChange={(e) => setBeatCode(e.target.value)}
+            placeholder="e.g. 01"
+          />
+        </Field>
+        <Field label="Beat Name">
+          <input
+            value={beatName}
+            onChange={(e) => setBeatName(e.target.value)}
+            placeholder="e.g. TOWN BEAT"
+          />
+        </Field>
+      </div>
+
+      <div style={{ margin: "14px 0" }}>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(e) => setEnabled(e.target.checked)}
+          />{" "}
+          Enforce Maximum Outstanding Credit Policy (₹)
+        </label>
+        <label className="checkbox" style={{ marginLeft: 20 }}>
+          <input
+            type="checkbox"
+            checked={active}
+            onChange={(e) => setActive(e.target.checked)}
+          />{" "}
+          Active (Salesman can be billed)
+        </label>
+      </div>
+
+      {enabled && (
+        <Field label="Maximum Outstanding Balance Limit (₹)">
+          <input
+            inputMode="decimal"
+            value={limit}
+            onChange={(e) => setLimit(e.target.value)}
+            placeholder="e.g. 50000.00"
+          />
+        </Field>
+      )}
+
+      {/* Customers Section */}
+      <div style={{ marginTop: 14, padding: "12px 14px", border: "1px solid #e2e8f0", borderRadius: 8, background: "#f8fafc" }}>
+        {(() => {
+          const distinctBeats = Array.from(new Set(visibleCustomers.map((c) => str(c.beat_code)).filter(Boolean)));
+          const isMultiBeat = distinctBeats.length > 1;
+          return (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 6 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <strong style={{ fontSize: "0.9rem", color: "#334155" }}>
+                  Assigned Customers ({visibleCustomers.length})
+                </strong>
+                <span style={{
+                  fontSize: "0.74rem",
+                  fontWeight: 600,
+                  padding: "2px 8px",
+                  borderRadius: 12,
+                  background: isMultiBeat ? "#fef3c7" : "#e0f2fe",
+                  color: isMultiBeat ? "#92400e" : "#0369a1",
+                  border: isMultiBeat ? "1px solid #fde68a" : "1px solid #bae6fd",
+                }}>
+                  {isMultiBeat ? `Covers ${distinctBeats.length} Beats: ${distinctBeats.join(", ")}` : distinctBeats.length === 1 ? `Single Beat: Beat ${distinctBeats[0]}` : "No Beat Assigned"}
+                </span>
+              </div>
+              <span style={{ fontSize: "0.78rem", color: "#64748b" }}>
+                Used for ITC Export auto-split & capping
+              </span>
+            </div>
+          );
+        })()}
+
+        {visibleCustomers.length > 0 ? (
+          <div>
+            {(() => {
+              const cust = visibleCustomers.find((c) => str(c.id) === selectedCustId) || visibleCustomers[0];
+              const effectiveCustId = cust ? str(cust.id) : "";
+              return (
+                <div style={{ background: "#ffffff", border: "1px solid #cbd5e1", borderRadius: 8, padding: "10px 12px", marginBottom: 10 }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
+                    <div style={{ flex: "1.2 1 180px", minWidth: 160 }}>
+                      <label style={{ display: "block", fontSize: "0.72rem", color: "#64748b", fontWeight: 700, marginBottom: 3, textTransform: "uppercase" }}>
+                        Select Customer ({visibleCustomers.length})
+                      </label>
+                      <select
+                        value={effectiveCustId}
+                        onChange={(e) => setSelectedCustId(e.target.value)}
+                        style={{ width: "100%", padding: "5px 8px", borderRadius: 4, border: "1px solid #cbd5e1", fontSize: "0.84rem", background: "#f8fafc", height: 32 }}
+                      >
+                        {visibleCustomers.map((c) => {
+                          const bCode = str(c.beat_code);
+                          const bName = str(c.beat_name);
+                          const beatDisplay = bCode || bName ? `Beat ${bCode || "—"} (${bName || "No name"})` : "No beat";
+                          return (
+                            <option key={str(c.id)} value={str(c.id)}>
+                              {str(c.customer_name)} ({str(c.customer_id)}) — {beatDisplay}{c.is_gst ? " [GST]" : ""}{c.isNew ? " (New)" : ""}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </div>
+
+                    {cust && (
+                      <>
+                        <div style={{ flex: "1.5 1 180px", minWidth: 150 }}>
+                          <label style={{ display: "block", fontSize: "0.72rem", color: "#64748b", fontWeight: 700, marginBottom: 3, textTransform: "uppercase" }}>
+                            Customer Name
+                          </label>
+                          <input
+                            value={str(cust.customer_name || "")}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              if (effectiveCustId.startsWith("temp-")) {
+                                const idx = parseInt(effectiveCustId.replace("temp-", ""), 10);
+                                setAddedCustomers((prev) => prev.map((a, i) => (i === idx ? { ...a, customerName: val } : a)));
+                              } else {
+                                setModifiedNameMap((prev) => new Map(prev).set(effectiveCustId, val));
+                              }
+                            }}
+                            placeholder="Customer name"
+                            style={{ width: "100%", padding: "5px 8px", borderRadius: 4, border: "1px solid #cbd5e1", fontSize: "0.84rem", height: 32 }}
+                          />
+                        </div>
+
+                        <div style={{ flex: "0.6 1 65px", minWidth: 60, maxWidth: 85 }}>
+                          <label style={{ display: "block", fontSize: "0.72rem", color: "#64748b", fontWeight: 700, marginBottom: 3, textTransform: "uppercase" }}>
+                            Beat Code
+                          </label>
+                          <input
+                            value={str(cust.beat_code || "")}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              if (effectiveCustId.startsWith("temp-")) {
+                                const idx = parseInt(effectiveCustId.replace("temp-", ""), 10);
+                                setAddedCustomers((prev) => prev.map((a, i) => (i === idx ? { ...a, beatCode: val } : a)));
+                              } else {
+                                setModifiedBeatCodeMap((prev) => new Map(prev).set(effectiveCustId, val));
+                              }
+                            }}
+                            placeholder="e.g. 15"
+                            style={{ width: "100%", padding: "5px 8px", borderRadius: 4, border: "1px solid #cbd5e1", fontSize: "0.84rem", height: 32 }}
+                          />
+                        </div>
+
+                        <div style={{ flex: "1.2 1 130px", minWidth: 110 }}>
+                          <label style={{ display: "block", fontSize: "0.72rem", color: "#64748b", fontWeight: 700, marginBottom: 3, textTransform: "uppercase" }}>
+                            Beat Name
+                          </label>
+                          <input
+                            value={str(cust.beat_name || "")}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              if (effectiveCustId.startsWith("temp-")) {
+                                const idx = parseInt(effectiveCustId.replace("temp-", ""), 10);
+                                setAddedCustomers((prev) => prev.map((a, i) => (i === idx ? { ...a, beatName: val } : a)));
+                              } else {
+                                setModifiedBeatNameMap((prev) => new Map(prev).set(effectiveCustId, val));
+                              }
+                            }}
+                            placeholder="e.g. MLG BEAT"
+                            style={{ width: "100%", padding: "5px 8px", borderRadius: 4, border: "1px solid #cbd5e1", fontSize: "0.84rem", height: 32 }}
+                          />
+                        </div>
+
+                        <Button
+                          className="secondary"
+                          type="button"
+                          onClick={() => {
+                            if (!effectiveCustId) return;
+                            const newGst = !cust.is_gst;
+                            if (effectiveCustId.startsWith("temp-")) {
+                              const idx = parseInt(effectiveCustId.replace("temp-", ""), 10);
+                              setAddedCustomers((prev) =>
+                                prev.map((a, i) => (i === idx ? { ...a, isGst: newGst } : a))
+                              );
+                            } else {
+                              setModifiedGstMap((prev) => new Map(prev).set(effectiveCustId, newGst));
+                            }
+                          }}
+                          style={{
+                            padding: "5px 10px",
+                            fontSize: "0.8rem",
+                            fontWeight: 600,
+                            backgroundColor: cust.is_gst ? "#fef3c7" : "#f1f5f9",
+                            color: cust.is_gst ? "#92400e" : "#475569",
+                            borderColor: cust.is_gst ? "#f59e0b" : "#cbd5e1",
+                            height: 32,
+                            whiteSpace: "nowrap",
+                          }}
+                          title="Toggle GST status (GST customers are never capped during ITC export)"
+                        >
+                          {cust.is_gst ? "Tag: GST" : "Tag: Non-GST"}
+                        </Button>
+
+                        <Button
+                          className="secondary"
+                          type="button"
+                          onClick={() => {
+                            if (!effectiveCustId) return;
+                            if (effectiveCustId.startsWith("temp-")) {
+                              const idx = parseInt(effectiveCustId.replace("temp-", ""), 10);
+                              setAddedCustomers((prev) => prev.filter((_, i) => i !== idx));
+                            } else {
+                              setDeletedCustIds((prev) => new Set(prev).add(effectiveCustId));
+                            }
+                            const remaining = visibleCustomers.filter((c) => str(c.id) !== effectiveCustId);
+                            setSelectedCustId(remaining.length > 0 ? str(remaining[0].id) : "");
+                          }}
+                          style={{ color: "#dc2626", borderColor: "#fca5a5", padding: "5px 10px", fontSize: "0.8rem", height: 32, whiteSpace: "nowrap" }}
+                          title="Remove customer from this salesman"
+                        >
+                          <Trash2 size={13} /> Delete
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        ) : (
+          <p style={{ fontSize: "0.85rem", color: "#64748b", margin: "6px 0 10px 0" }}>
+            No customers currently assigned to this salesman. Check "+ Add new customer" below to add one.
+          </p>
+        )}
+
+        <div style={{ marginTop: 6 }}>
+          <label
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: "0.8rem",
+              fontWeight: 600,
+              cursor: "pointer",
+              color: showAddCustomer ? "#0369a1" : "#475569",
+              userSelect: "none",
+              padding: "3px 8px",
+              borderRadius: 5,
+              background: showAddCustomer ? "#e0f2fe" : "transparent",
+              border: showAddCustomer ? "1px solid #bae6fd" : "1px solid transparent",
+              transition: "all 0.15s ease",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={showAddCustomer}
+              onChange={(e) => setShowAddCustomer(e.target.checked)}
+              style={{ accentColor: "#0284c7", cursor: "pointer", width: 14, height: 14 }}
+            />
+            <span>+ Add new customer</span>
+          </label>
+        </div>
+
+        {showAddCustomer && (
+          <div style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap", marginTop: 8, padding: "10px 12px", background: "#f1f5f9", borderRadius: 6, border: "1px dashed #cbd5e1" }}>
+            <div style={{ flex: 1, minWidth: 100 }}>
+              <label style={{ display: "block", fontSize: "0.72rem", color: "#475569", marginBottom: 3, fontWeight: 700 }}>
+                CUSTOMER ID
+              </label>
+              <input
+                value={newCustId}
+                onChange={(e) => setNewCustId(e.target.value)}
+                placeholder="e.g. 1HGC999"
+                style={{ width: "100%", padding: "5px 8px", borderRadius: 4, border: "1px solid #cbd5e1", fontSize: "0.84rem", height: 32, background: "#fff" }}
+              />
+            </div>
+            <div style={{ flex: 2, minWidth: 140 }}>
+              <label style={{ display: "block", fontSize: "0.72rem", color: "#475569", marginBottom: 3, fontWeight: 700 }}>
+                CUSTOMER NAME / SHOP NAME
+              </label>
+              <input
+                value={newCustName}
+                onChange={(e) => setNewCustName(e.target.value)}
+                placeholder="e.g. NEW SAI KIRANAM"
+                style={{ width: "100%", padding: "5px 8px", borderRadius: 4, border: "1px solid #cbd5e1", fontSize: "0.84rem", height: 32, background: "#fff" }}
+              />
+            </div>
+            <div style={{ flex: 1, minWidth: 70, maxWidth: 90 }}>
+              <label style={{ display: "block", fontSize: "0.72rem", color: "#475569", marginBottom: 3, fontWeight: 700 }}>
+                BEAT CODE
+              </label>
+              <input
+                value={newCustBeatCode}
+                onChange={(e) => setNewCustBeatCode(e.target.value)}
+                placeholder={beatCode || "e.g. 15"}
+                style={{ width: "100%", padding: "5px 8px", borderRadius: 4, border: "1px solid #cbd5e1", fontSize: "0.84rem", height: 32, background: "#fff" }}
+              />
+            </div>
+            <div style={{ flex: 1.5, minWidth: 110 }}>
+              <label style={{ display: "block", fontSize: "0.72rem", color: "#475569", marginBottom: 3, fontWeight: 700 }}>
+                BEAT NAME
+              </label>
+              <input
+                value={newCustBeatName}
+                onChange={(e) => setNewCustBeatName(e.target.value)}
+                placeholder={beatName || "e.g. MLG BEAT"}
+                style={{ width: "100%", padding: "5px 8px", borderRadius: 4, border: "1px solid #cbd5e1", fontSize: "0.84rem", height: 32, background: "#fff" }}
+              />
+            </div>
+            <div style={{ display: "flex", alignItems: "center", height: 32 }}>
+              <label className="checkbox" style={{ fontSize: "0.8rem", fontWeight: 600, color: newCustGst ? "#92400e" : "#475569" }}>
+                <input
+                  type="checkbox"
+                  checked={newCustGst}
+                  onChange={(e) => setNewCustGst(e.target.checked)}
+                />{" "}
+                GST Customer
+              </label>
+            </div>
+            <Button
+              className="secondary"
+              type="button"
+              onClick={handleAddCustomer}
+              style={{ fontSize: "0.82rem", padding: "5px 12px", background: "#fff", height: 32 }}
+            >
+              <Plus size={14} /> Add Customer
+            </Button>
+          </div>
+        )}
+      </div>
+
+      {error && <p className="error" style={{ marginTop: 10 }}>{error}</p>}
+
+      <div style={{ display: "flex", gap: 8, marginTop: 14, alignItems: "center" }}>
+        <Button className="primary" type="submit" disabled={busy}>
+          {busy ? "Saving..." : "Save details & credit policy"}
+        </Button>
+        <Button className="secondary" type="button" onClick={onDone}>
+          Close
+        </Button>
+      </div>
+
+      {changeSummary && (
+        <div style={{ marginTop: 12, padding: "10px 14px", borderRadius: 8, background: "#f0fdf4", border: "1px solid #86efac", color: "#166534", fontSize: "0.88rem", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>✓ {changeSummary}</span>
+          <button
+            type="button"
+            onClick={() => setChangeSummary(null)}
+            style={{ background: "none", border: "none", cursor: "pointer", fontSize: "1.1rem", lineHeight: 1, color: "#166534", fontWeight: "bold", padding: "0 4px" }}
+            aria-label="Close message"
+          >
+            ×
+          </button>
+        </div>
+      )}
+    </form>
+  );
+}
+
+
+function MasterForm({
+  kind,
+  date,
+  onDone,
+}: {
+  kind: "products" | "salesmen" | "accounts";
+  date: string;
+  onDone: () => void;
+}) {
+  const [form, setForm] = useState<Record<string, string>>({
+    effectiveDate: date,
+    conversion: "1",
+    basis: "1",
+    type: "cash",
+    fractional: "true",
+    confirmed: "true",
+    itcMultiple: "0.10",
+    isFocusBrand: "false",
+  });
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const qc = useQueryClient();
+
+  return (
+    <form
+      className="master-form"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        setBusy(true);
+        setError("");
+        try {
+          if (kind === "products") {
+            await api(kind, rowSchema, {
+              code: form.code?.trim(),
+              name: form.name?.trim(),
+              barcode: form.barcode
+                ? form.barcode.split(/[\s,;]+/).map((s: string) => s.trim()).filter(Boolean).join(", ") || null
+                : null,
+              unit: "m",
+              baseUnit: "m",
+              conversion: "1",
+              basis: "1",
+              rate: form.rate?.trim(),
+              effectiveDate: form.effectiveDate,
+              fractional: form.fractional === "true",
+              confirmed: true,
+              itcMultiple: form.itcMultiple || "0.10",
+              isFocusBrand: form.isFocusBrand === "true",
+            });
+          } else if (kind === "salesmen") {
+            const limit = form.creditLimit?.trim();
+            await api(kind, rowSchema, {
+              code: form.code?.trim(),
+              name: form.name?.trim(),
+              active: true,
+              creditLimit: limit || null,
+              details: {
+                phone: form.phone?.trim() ?? "",
+                route: form.route?.trim() ?? "",
+              },
+            });
+          } else {
+            await api(kind, rowSchema, {
+              name: form.name?.trim(),
+              type: form.type || "cash",
+              holder: form.holder?.trim(),
+              allowOverdraft: false,
+            });
+          }
+          await qc.invalidateQueries();
+          setError("Saved.");
+          onDone();
+        } catch (err: unknown) {
+          setError((err as Error).message);
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      <div className="form-grid">
+        {(kind === "salesmen"
+          ? ["code", "name", "phone", "route", "creditLimit"]
+          : kind === "accounts"
+            ? ["name", "type", "holder"]
+            : ["code", "name", "barcode", "rate", "effectiveDate"]
+        ).map((f) => (
+          <Field
+            key={f}
+            label={
+              f === "rate"
+                ? "Rate (₹ / m) *"
+                : f === "creditLimit"
+                  ? "Credit Limit (₹, optional)"
+                  : f === "barcode"
+                    ? "Barcodes / EANs (Multiple allowed: space, comma, or newline separated)"
+                    : f === "phone"
+                      ? "Contact Phone (optional)"
+                      : f === "route"
+                        ? "Route / Area (optional)"
+                        : f.replace(/([A-Z])/g, " $1") + " *"
+            }
+          >
+            {f === "type" ? (
+              <select
+                value={form[f]}
+                onChange={(e) => setForm({ ...form, [f]: e.target.value })}
+              >
+                <option value="cash">Physical cash</option>
+                <option value="bank">Bank</option>
+              </select>
+            ) : (
+              <input
+                type={f === "effectiveDate" ? "date" : "text"}
+                inputMode={f === "rate" || f === "creditLimit" ? "decimal" : undefined}
+                value={form[f] ?? ""}
+                onChange={(e) => setForm({ ...form, [f]: e.target.value })}
+                placeholder={
+                  f === "code"
+                    ? "e.g. S01"
+                    : f === "name"
+                      ? "e.g. Rahul Sharma"
+                      : f === "barcode"
+                        ? "e.g. 8901725123456 8901725123457 or 8901725123456, 8901725123457"
+                        : f === "creditLimit"
+                          ? "e.g. 50000 (leave blank for none)"
+                          : f === "phone"
+                            ? "e.g. 9876543210"
+                            : f === "route"
+                              ? "e.g. North Market"
+                              : undefined
+                }
+                required={f !== "creditLimit" && f !== "phone" && f !== "route" && f !== "barcode"}
+              />
+            )}
+          </Field>
+        ))}
+
+        {kind === "products" && (
+          <>
+            <Field label="Fixed Unit">
+              <input
+                value="m"
+                readOnly
+                style={{ background: "#f5f5f4", color: "#57534e" }}
+              />
+            </Field>
+
+            <Field label="ITC Export Split Multiple *">
+              <select
+                value={form.itcMultiple || "0.10"}
+                onChange={(e) => setForm({ ...form, itcMultiple: e.target.value })}
+                style={{ fontWeight: 600 }}
+              >
+                <option value="0.40">0.40 multiple (Goldflake SLK)</option>
+                <option value="0.20">0.20 multiple (Classic / Bursts / Connect)</option>
+                <option value="0.10">0.10 multiple (Standard / Other brands)</option>
+                <option value="1.00">1.00 multiple (Whole units only)</option>
+              </select>
+            </Field>
+
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={form.isFocusBrand === "true"}
+                onChange={(e) => setForm({ ...form, isFocusBrand: String(e.target.checked) })}
+              />{" "}
+              ⭐ Focus Brand (prioritize to CDM first during ITC export)
+            </label>
+
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={form.fractional === "true"}
+                onChange={(e) => setForm({ ...form, fractional: String(e.target.checked) })}
+              />{" "}
+              Fractional quantities allowed (e.g. 10.5 m)
+            </label>
+
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={form.confirmed === "true"}
+                onChange={(e) => setForm({ ...form, confirmed: String(e.target.checked) })}
+              />{" "}
+              Unit and rate confirmed
+            </label>
+          </>
+        )}
+      </div>
+
+      {error && (
+        <p role="status" className={error === "Saved." ? "success" : "error"}>
+          {error}
+        </p>
+      )}
+
+      <Button type="submit" className="primary" disabled={busy}>
+        {busy ? "Saving…" : `Save ${kind === "products" ? "product configuration" : kind === "accounts" ? "money account" : "salesman"}`}
+      </Button>
+    </form>
+  );
+}
+
+
+function reportColumns(rows: Row[]): [string, string, boolean?][] {
+  return rows.length
+    ? Object.keys(rows[0])
+      .filter((k) => k !== "id" && !k.endsWith("_id") && k !== "matches" && (k !== "created_at" || !("date" in rows[0])))
+      .map((k) => [
+        k,
+        k.replaceAll("_", " "),
+        /^(amount|expense|due|advance|signed_balance|signed_outstanding|principal|handed_over|credited|returned|in_transit|expected|counted|difference|statement|book|remaining)$/.test(
+          k,
+        ),
+      ])
+    : [];
+}
+function StockVerificationReport({
+  masters,
+  onSelect,
+  defaultDate,
+}: {
+  masters: Row;
+  onSelect?: (id: string) => void;
+  defaultDate: string;
+}) {
+  const salesmenList = arr(masters.salesmen).filter((s) => s.active);
+
+  const [loadingSheetFrom, setLoadingSheetFrom] = useState(defaultDate);
+  const [loadingSheetTo, setLoadingSheetTo] = useState(defaultDate);
+  const [loadingSheetScope, setLoadingSheetScope] = useState<"all" | "route">("all");
+  const [selectedSalesmanId, setSelectedSalesmanId] = useState<string>(
+    salesmenList[0] ? str(salesmenList[0].id) : "",
+  );
+  const [selectedBillIds, setSelectedBillIds] = useState<string[]>([]);
+  const [hasManuallySelectedBills, setHasManuallySelectedBills] = useState(false);
+  const [showReversedBills, setShowReversedBills] = useState(false);
+  const [loadingSheetBillSearch, setLoadingSheetBillSearch] = useState("");
+  const [copyFeedback, setCopyFeedback] = useState(false);
+  const [verifiedItems, setVerifiedItems] = useState<Record<string, boolean>>({});
+  const [billsSelectorCollapsed, setBillsSelectorCollapsed] = useState(false);
+
+  // Query bills for the specified date range and route
+  const billsQuery = useQuery({
+    queryKey: [
+      "stock-verification-bills",
+      loadingSheetScope === "all" ? "all" : selectedSalesmanId,
+      loadingSheetFrom,
+      loadingSheetTo,
+    ],
+    queryFn: () => {
+      const params = new URLSearchParams({ kind: "bill", limit: "1000" });
+      if (loadingSheetScope === "route" && selectedSalesmanId) {
+        params.set("salesmanId", selectedSalesmanId);
+      }
+      if (loadingSheetFrom.trim()) {
+        params.set("from", loadingSheetFrom.trim());
+      }
+      if (loadingSheetTo.trim()) {
+        params.set("to", loadingSheetTo.trim());
+      }
+      return api<Row[]>(`documents?${params.toString()}`, rowsSchema);
+    },
+  });
+
+  const loadingBills = useMemo(() => {
+    const list = arr(billsQuery.data).filter((b) => showReversedBills || !b.reversed);
+    if (!loadingSheetBillSearch.trim()) return list;
+    const q = loadingSheetBillSearch.toLowerCase().trim();
+    return list.filter((b) => {
+      const num = str(b.number).toLowerCase();
+      const cName = str((b.data as Row)?.customerName || (b.data as Row)?.customerRef || "").toLowerCase();
+      const sName = str(b.salesman_name || "").toLowerCase();
+      return num.includes(q) || cName.includes(q) || sName.includes(q);
+    });
+  }, [billsQuery.data, loadingSheetBillSearch, showReversedBills]);
+
+  const reversedBillsCount = useMemo(() => {
+    return arr(billsQuery.data).filter((b) => b.reversed).length;
+  }, [billsQuery.data]);
+
+  // Auto-select all available bills on initial load unless user has explicitly customized selection
+  useEffect(() => {
+    if (!hasManuallySelectedBills && loadingBills.length > 0 && selectedBillIds.length === 0) {
+      setSelectedBillIds(loadingBills.map((b) => str(b.id)));
+    }
+  }, [loadingBills, hasManuallySelectedBills, selectedBillIds.length]);
+
+  // Reset bill selection when route scope or date changes
+  useEffect(() => {
+    setHasManuallySelectedBills(false);
+    setSelectedBillIds([]);
+  }, [loadingSheetScope, selectedSalesmanId, loadingSheetFrom, loadingSheetTo]);
+
+  // Query line items across selected bills
+  const linesQuery = useQuery({
+    queryKey: ["stock-verification-lines", selectedBillIds],
+    queryFn: async () => {
+      if (selectedBillIds.length === 0) return [];
+      return api<Row[]>("documents/lines", rowsSchema, { documentIds: selectedBillIds });
+    },
+    enabled: selectedBillIds.length > 0,
+  });
+
+  // Aggregate items across selected bills
+  const aggregatedProducts = useMemo(() => {
+    const lines = arr(linesQuery.data);
+    const map = new Map<
+      string,
+      {
+        id: string;
+        productId: string;
+        name: string;
+        code: string;
+        category: string;
+        unit: string;
+        rate: string;
+        quantity: Decimal;
+        amount: Decimal;
+        billNumbers: string[];
+      }
+    >();
+
+    for (const l of lines) {
+      const snap = (l.snapshot || {}) as Row;
+      const name = str(snap.name || l.name || "Item");
+      const unit = str(snap.unit || "unit");
+      const rawRate = str(snap.rate || snap.masterRate || "0.00");
+      const rate = cleanMoney(rawRate) || rawRate;
+      const code = str(snap.code || "");
+      const category = str(snap.category || "CG-01 CIGARETTE");
+      const pId = str(l.product_id || snap.id || "");
+      const key = pId ? `p_${pId}` : (code ? `c_${code.toLowerCase()}` : `n_${name.toLowerCase()}`);
+      const docNum = str(l.document_number);
+
+      const qty = D(cleanDecimal(l.quantity) || "0");
+      const amt = D(cleanMoney(l.amount) || "0");
+
+      const existing = map.get(key);
+      if (existing) {
+        existing.quantity = existing.quantity.plus(qty);
+        existing.amount = existing.amount.plus(amt);
+        if (docNum && !existing.billNumbers.includes(docNum)) {
+          existing.billNumbers.push(docNum);
+        }
+      } else {
+        map.set(key, {
+          id: key,
+          productId: pId,
+          name,
+          code,
+          category,
+          unit,
+          rate,
+          quantity: qty,
+          amount: amt,
+          billNumbers: docNum ? [docNum] : [],
+        });
+      }
+    }
+
+    return Array.from(map.values()).sort((a, b) => {
+      if (a.category !== b.category) {
+        const aIsCig = a.category === "CG-01 CIGARETTE" || a.category === "cigarette";
+        const bIsCig = b.category === "CG-01 CIGARETTE" || b.category === "cigarette";
+        if (aIsCig && !bIsCig) return -1;
+        if (!aIsCig && bIsCig) return 1;
+      }
+      return a.name.localeCompare(b.name);
+    });
+  }, [linesQuery.data]);
+
+  const totalLoadedQty = useMemo(() => {
+    return aggregatedProducts.reduce((sum, p) => sum.plus(p.quantity), D(0));
+  }, [aggregatedProducts]);
+
+  const totalLoadedAmount = useMemo(() => {
+    return aggregatedProducts.reduce((sum, p) => sum.plus(p.amount), D(0));
+  }, [aggregatedProducts]);
+
+  const toggleBill = (id: string) => {
+    setHasManuallySelectedBills(true);
+    setSelectedBillIds((prev) =>
+      prev.includes(id) ? prev.filter((bId) => bId !== id) : [...prev, id],
+    );
+  };
+
+  const toggleAllBills = () => {
+    setHasManuallySelectedBills(true);
+    if (selectedBillIds.length === loadingBills.length) {
+      setSelectedBillIds([]);
+    } else {
+      setSelectedBillIds(loadingBills.map((b) => str(b.id)));
+    }
+  };
+
+  const toggleVerified = (key: string) => {
+    setVerifiedItems((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  };
+
+  const handleCopyList = () => {
+    if (aggregatedProducts.length === 0) return;
+    const salesmanName =
+      loadingSheetScope === "all"
+        ? "All Salesmen / Routes"
+        : str(salesmenList.find((s) => str(s.id) === selectedSalesmanId)?.name || "Salesman");
+    const dateStr =
+      !loadingSheetFrom && !loadingSheetTo
+        ? "All Dates"
+        : loadingSheetFrom === loadingSheetTo
+          ? loadingSheetFrom
+          : `${loadingSheetFrom || "Start"} to ${loadingSheetTo || "End"}`;
+
+    const lines = [
+      `Stock Verification & Loading Sheet - ${salesmanName}`,
+      `Date: ${dateStr} | Bills Included: ${selectedBillIds.length}`,
+      "--------------------------------------------------",
+    ];
+
+    aggregatedProducts.forEach((p, idx) => {
+      lines.push(
+        `${idx + 1}. ${p.name}${p.code ? ` (${p.code})` : ""} - ${p.quantity.toString()} ${p.unit} @ ₹${p.rate} = ₹${p.amount.toFixed(2)} [Bills: ${p.billNumbers.length}]`,
+      );
+    });
+
+    lines.push("--------------------------------------------------");
+    lines.push(`Total Quantity to Dispatch: ${totalLoadedQty.toString()}`);
+    lines.push(`Total Billed Value: ₹${totalLoadedAmount.toFixed(2)}`);
+
+    navigator.clipboard.writeText(lines.join("\n"));
+    setCopyFeedback(true);
+    setTimeout(() => setCopyFeedback(false), 2000);
+  };
+
+  const handleExportCsv = () => {
+    if (aggregatedProducts.length === 0) return;
+    const headers = [
+      "Index",
+      "Product Name",
+      "Product Code",
+      "Category",
+      "Billed Quantity",
+      "Unit",
+      "Rate (INR)",
+      "Total Value (INR)",
+      "In Bills Count",
+      "Bill Numbers",
+    ];
+    const rows = aggregatedProducts.map((p, idx) => [
+      String(idx + 1),
+      `"${p.name.replace(/"/g, '""')}"`,
+      `"${p.code}"`,
+      `"${p.category}"`,
+      p.quantity.toString(),
+      `"${p.unit}"`,
+      p.rate,
+      p.amount.toFixed(2),
+      String(p.billNumbers.length),
+      `"${p.billNumbers.join(", ")}"`,
+    ]);
+    const csvContent = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `stock-verification-${loadingSheetFrom || "all"}-${loadingSheetTo || "all"}.csv`;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  return (
+    <section className="panel" style={{ marginTop: 6, borderRadius: 16, padding: "20px 22px" }}>
+      {/* Top Header & Filter Controls Bar */}
+      <div
+        className="no-print"
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          flexWrap: "wrap",
+          gap: 16,
+          marginBottom: 20,
+          paddingBottom: 16,
+          borderBottom: "1px solid #e2e8f0",
+        }}
+      >
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <h2 style={{ margin: 0, fontSize: 19, color: "#0f172a" }}>
+              Stock Verification & Loading Sheet
+            </h2>
+            <span
+              style={{
+                background: "#e0f2fe",
+                color: "#0369a1",
+                fontSize: 12,
+                fontWeight: 700,
+                padding: "3px 9px",
+                borderRadius: 6,
+              }}
+            >
+              {loadingSheetScope === "all"
+                ? "All Salesmen / Routes"
+                : str(salesmenList.find((s) => str(s.id) === selectedSalesmanId)?.name || "Salesman")}
+            </span>
+          </div>
+          <p className="muted" style={{ margin: "4px 0 0", fontSize: 13 }}>
+            Tally and aggregate all products across billed dispatches to verify physical vehicle loading and warehouse dispatch stock.
+          </p>
+        </div>
+
+        {/* Controls Bar: Scope Toggle & Date Range Selector */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: 12,
+          }}
+        >
+          {/* Salesman Scope Toggle & Dropdown */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              background: "#f8fafc",
+              padding: "6px 12px",
+              borderRadius: 10,
+              border: "1px solid #e2e8f0",
+            }}
+          >
+            <span style={{ fontSize: 12, fontWeight: 700, color: "#475569" }}>Route / Salesman:</span>
+            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              <button
+                type="button"
+                onClick={() => setLoadingSheetScope("all")}
+                style={{
+                  padding: "4px 8px",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  borderRadius: 5,
+                  border: "1px solid #cbd5e1",
+                  background: loadingSheetScope === "all" ? "#0284c7" : "#ffffff",
+                  color: loadingSheetScope === "all" ? "#ffffff" : "#475569",
+                  cursor: "pointer",
+                }}
+              >
+                All Routes
+              </button>
+              <button
+                type="button"
+                onClick={() => setLoadingSheetScope("route")}
+                style={{
+                  padding: "4px 8px",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  borderRadius: 5,
+                  border: "1px solid #cbd5e1",
+                  background: loadingSheetScope === "route" ? "#0284c7" : "#ffffff",
+                  color: loadingSheetScope === "route" ? "#ffffff" : "#475569",
+                  cursor: "pointer",
+                }}
+              >
+                Specific Route
+              </button>
+              {loadingSheetScope === "route" && (
+                <select
+                  value={selectedSalesmanId}
+                  onChange={(e) => setSelectedSalesmanId(e.target.value)}
+                  style={{
+                    padding: "4px 8px",
+                    fontSize: 12,
+                    borderRadius: 6,
+                    border: "1px solid #cbd5e1",
+                    background: "#ffffff",
+                  }}
+                >
+                  {salesmenList.map((s) => (
+                    <option key={str(s.id)} value={str(s.id)}>
+                      {str(s.name)}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          </div>
+
+          {/* Date Range Selector */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: 10,
+              background: "#f8fafc",
+              padding: "8px 12px",
+              borderRadius: 10,
+              border: "1px solid #e2e8f0",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <Calendar size={15} style={{ color: "#64748b" }} />
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#475569" }}>From:</span>
+              <input
+                type="date"
+                value={loadingSheetFrom}
+                onChange={(e) => setLoadingSheetFrom(e.target.value)}
+                style={{
+                  padding: "4px 8px",
+                  borderRadius: 6,
+                  border: "1px solid #cbd5e1",
+                  fontSize: 13,
+                  background: "#ffffff",
+                }}
+              />
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#475569" }}>To:</span>
+              <input
+                type="date"
+                value={loadingSheetTo}
+                onChange={(e) => setLoadingSheetTo(e.target.value)}
+                style={{
+                  padding: "4px 8px",
+                  borderRadius: 6,
+                  border: "1px solid #cbd5e1",
+                  fontSize: 13,
+                  background: "#ffffff",
+                }}
+              />
+            </div>
+
+            {/* Quick Preset Buttons */}
+            <div style={{ display: "flex", gap: 4 }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setLoadingSheetFrom(defaultDate);
+                  setLoadingSheetTo(defaultDate);
+                }}
+                style={{
+                  padding: "4px 8px",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  borderRadius: 5,
+                  border: "1px solid #cbd5e1",
+                  background: loadingSheetFrom === defaultDate && loadingSheetTo === defaultDate ? "#0284c7" : "#ffffff",
+                  color: loadingSheetFrom === defaultDate && loadingSheetTo === defaultDate ? "#ffffff" : "#475569",
+                  cursor: "pointer",
+                }}
+              >
+                Today
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const prev = new Date(defaultDate + "T12:00:00+05:30");
+                  prev.setDate(prev.getDate() - 1);
+                  const prevStr = prev.toISOString().slice(0, 10);
+                  setLoadingSheetFrom(prevStr);
+                  setLoadingSheetTo(prevStr);
+                }}
+                style={{
+                  padding: "4px 8px",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  borderRadius: 5,
+                  border: "1px solid #cbd5e1",
+                  background: "#ffffff",
+                  color: "#475569",
+                  cursor: "pointer",
+                }}
+              >
+                Yesterday
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const past = new Date(defaultDate + "T12:00:00+05:30");
+                  past.setDate(past.getDate() - 7);
+                  setLoadingSheetFrom(past.toISOString().slice(0, 10));
+                  setLoadingSheetTo(defaultDate);
+                }}
+                style={{
+                  padding: "4px 8px",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  borderRadius: 5,
+                  border: "1px solid #cbd5e1",
+                  background: "#ffffff",
+                  color: "#475569",
+                  cursor: "pointer",
+                }}
+              >
+                Last 7 Days
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setLoadingSheetFrom("");
+                  setLoadingSheetTo("");
+                }}
+                style={{
+                  padding: "4px 8px",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  borderRadius: 5,
+                  border: "1px solid #cbd5e1",
+                  background: !loadingSheetFrom && !loadingSheetTo ? "#0284c7" : "#ffffff",
+                  color: !loadingSheetFrom && !loadingSheetTo ? "#ffffff" : "#475569",
+                  cursor: "pointer",
+                }}
+              >
+                All Dates
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Quick Metrics Banner */}
+      <div
+        className="no-print"
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+          gap: 12,
+          marginBottom: 20,
+          padding: 14,
+          background: "#f8fafc",
+          border: "1px solid #e2e8f0",
+          borderRadius: 12,
+        }}
+      >
+        <div>
+          <small style={{ color: "#64748b", textTransform: "uppercase", fontSize: 11, fontWeight: 700 }}>
+            Selected Bills
+          </small>
+          <div style={{ fontSize: 20, fontWeight: 800, color: "#0f172a", marginTop: 2 }}>
+            {selectedBillIds.length}{" "}
+            <span style={{ fontSize: 12, fontWeight: 500, color: "#64748b" }}>of {loadingBills.length}</span>
+          </div>
+        </div>
+
+        <div>
+          <small style={{ color: "#64748b", textTransform: "uppercase", fontSize: 11, fontWeight: 700 }}>
+            Unique Products
+          </small>
+          <div style={{ fontSize: 20, fontWeight: 800, color: "#0284c7", marginTop: 2 }}>
+            {aggregatedProducts.length} items
+          </div>
+        </div>
+
+        <div>
+          <small style={{ color: "#64748b", textTransform: "uppercase", fontSize: 11, fontWeight: 700 }}>
+            Total Billed Quantity
+          </small>
+          <div style={{ fontSize: 20, fontWeight: 800, color: "#16a34a", marginTop: 2 }}>
+            {totalLoadedQty.toString()}
+          </div>
+        </div>
+
+        <div>
+          <small style={{ color: "#64748b", textTransform: "uppercase", fontSize: 11, fontWeight: 700 }}>
+            Total Billed Value
+          </small>
+          <div style={{ fontSize: 20, fontWeight: 800, color: "#0f172a", marginTop: 2 }}>
+            {rupees(totalLoadedAmount.toString())}
+          </div>
+        </div>
+      </div>
+
+      {/* Main 2-Column Split: Bills on Left, Products on Right */}
+      <div
+        className="loading-sheet-grid"
+        style={{ gridTemplateColumns: billsSelectorCollapsed ? "52px 1fr" : undefined }}
+      >
+        {/* LEFT COLUMN: BILL SELECTOR */}
+        {billsSelectorCollapsed ? (
+          <div
+            className="no-print"
+            onClick={() => setBillsSelectorCollapsed(false)}
+            title="Click to expand Bills selector"
+            style={{
+              background: "#ffffff",
+              border: "1px solid #e2e8f0",
+              borderRadius: 12,
+              padding: "14px 6px",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 12,
+              cursor: "pointer",
+              userSelect: "none",
+              transition: "all 0.15s ease",
+              minHeight: "420px",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
+            }}
+          >
+            <button
+              type="button"
+              className="sidebar-toggle-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                setBillsSelectorCollapsed(false);
+              }}
+              title="Expand bills selector"
+              style={{
+                background: "#f1f5f9",
+                border: "1px solid #cbd5e1",
+                borderRadius: 8,
+                padding: "6px",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "#0f172a",
+              }}
+            >
+              <PanelLeftOpen size={16} />
+            </button>
+
+            <div
+              style={{
+                background: "#eff6ff",
+                color: "#1d4ed8",
+                fontSize: 11,
+                fontWeight: 700,
+                padding: "3px 6px",
+                borderRadius: 6,
+                border: "1px solid #bfdbfe",
+              }}
+              title={`${selectedBillIds.length} bills selected`}
+            >
+              {selectedBillIds.length}
+            </div>
+
+            <div
+              style={{
+                writingMode: "vertical-rl",
+                textOrientation: "mixed",
+                transform: "rotate(180deg)",
+                fontSize: 11,
+                fontWeight: 700,
+                color: "#64748b",
+                letterSpacing: "0.8px",
+                textTransform: "uppercase",
+                marginTop: 8,
+                whiteSpace: "nowrap",
+              }}
+            >
+              Bills ({selectedBillIds.length}/{loadingBills.length})
+            </div>
+          </div>
+        ) : (
+          <div
+            className="no-print"
+            style={{
+              background: "#ffffff",
+              border: "1px solid #e2e8f0",
+              borderRadius: 12,
+              padding: "16px",
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 15, color: "#0f172a", fontWeight: 700 }}>
+                  Select Bills ({loadingBills.length})
+                </h3>
+                <small style={{ color: "#64748b" }}>Choose bills to aggregate</small>
+              </div>
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <Button
+                  className="secondary"
+                  type="button"
+                  onClick={toggleAllBills}
+                  style={{ fontSize: 11, padding: "4px 8px" }}
+                >
+                  {selectedBillIds.length === loadingBills.length && loadingBills.length > 0
+                    ? "Deselect All"
+                    : "Select All"}
+                </Button>
+                {selectedBillIds.length > 0 && (
+                  <Button
+                    className="secondary"
+                    type="button"
+                    onClick={() => {
+                      setHasManuallySelectedBills(true);
+                      setSelectedBillIds([]);
+                    }}
+                    style={{ fontSize: 11, padding: "4px 8px", color: "#dc2626" }}
+                  >
+                    Clear
+                  </Button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setBillsSelectorCollapsed(true)}
+                  title="Collapse bill selector to rail"
+                  style={{
+                    background: "#f8fafc",
+                    border: "1px solid #cbd5e1",
+                    borderRadius: 6,
+                    padding: "4px 6px",
+                    display: "flex",
+                    alignItems: "center",
+                    cursor: "pointer",
+                    color: "#475569",
+                  }}
+                >
+                  <PanelLeftClose size={15} />
+                </button>
+              </div>
+            </div>
+
+            {/* Bill Search & Reversed Filter */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ position: "relative" }}>
+                <Search
+                  size={14}
+                  style={{
+                    position: "absolute",
+                    left: 10,
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    color: "#94a3b8",
+                  }}
+                />
+                <input
+                  type="text"
+                  placeholder="Search bill #, customer, or salesman..."
+                  value={loadingSheetBillSearch}
+                  onChange={(e) => setLoadingSheetBillSearch(e.target.value)}
+                  style={{
+                    width: "100%",
+                    padding: "7px 10px 7px 32px",
+                    borderRadius: 8,
+                    border: "1px solid #cbd5e1",
+                    fontSize: 12,
+                    boxSizing: "border-box",
+                  }}
+                />
+              </div>
+
+              {reversedBillsCount > 0 && (
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    fontSize: 11,
+                    color: "#64748b",
+                    cursor: "pointer",
+                    userSelect: "none",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={showReversedBills}
+                    onChange={(e) => setShowReversedBills(e.target.checked)}
+                    style={{ width: 14, height: 14, cursor: "pointer" }}
+                  />
+                  <span>
+                    Include {reversedBillsCount} reversed {reversedBillsCount === 1 ? "bill" : "bills"}
+                  </span>
+                </label>
+              )}
+            </div>
+
+            {/* Scrollable Bills List */}
+            <div
+              style={{
+                maxHeight: "560px",
+                overflowY: "auto",
+                border: "1px solid #f1f5f9",
+                borderRadius: 8,
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+                padding: 4,
+              }}
+            >
+              {billsQuery.isLoading ? (
+                <div style={{ padding: 20, textAlign: "center", color: "#64748b", fontSize: 13 }}>
+                  Loading bills…
+                </div>
+              ) : loadingBills.length === 0 ? (
+                <div style={{ padding: 24, textAlign: "center", color: "#94a3b8", fontSize: 13 }}>
+                  No bills found for this selection.
+                </div>
+              ) : (
+                loadingBills.map((b) => {
+                  const bId = str(b.id);
+                  const isSelected = selectedBillIds.includes(bId);
+                  const bData = (b.data ?? {}) as Row;
+                  const cName = str(bData.customerName || bData.customerRef || "Direct Customer");
+                  const sName = str(b.salesman_name || "");
+                  const linesCount = Number(b.lines_count ?? 0);
+                  const qtyTotal = str(b.total_quantity ?? "");
+
+                  return (
+                    <div
+                      key={bId}
+                      onClick={() => toggleBill(bId)}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        padding: "10px 12px",
+                        borderRadius: 8,
+                        cursor: "pointer",
+                        transition: "all 0.15s ease",
+                        background: isSelected ? "#eff6ff" : "#ffffff",
+                        border: isSelected ? "1.5px solid #3b82f6" : "1px solid #f1f5f9",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => { }}
+                          style={{ cursor: "pointer", width: 16, height: 16 }}
+                        />
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <DocLink
+                              id={bId}
+                              number={str(b.number)}
+                              onSelect={onSelect}
+                              style={{
+                                fontWeight: 700,
+                                fontSize: 13,
+                                color: isSelected ? "#1d4ed8" : "#2563eb",
+                              }}
+                            />
+                            <span style={{ fontSize: 11, color: "#64748b" }}>· {str(b.business_date)}</span>
+                            {b.reversed ? (
+                              <span
+                                style={{
+                                  fontSize: 10,
+                                  fontWeight: 700,
+                                  color: "#dc2626",
+                                  background: "#fee2e2",
+                                  padding: "1px 5px",
+                                  borderRadius: 4,
+                                }}
+                              >
+                                REVERSED
+                              </span>
+                            ) : null}
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 12,
+                              color: "#475569",
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                            }}
+                          >
+                            {cName}
+                            {loadingSheetScope === "all" && sName ? (
+                              <span
+                                style={{
+                                  marginLeft: 6,
+                                  fontSize: 10,
+                                  fontWeight: 600,
+                                  color: "#0369a1",
+                                  background: "#e0f2fe",
+                                  padding: "1px 5px",
+                                  borderRadius: 4,
+                                }}
+                              >
+                                {sName}
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ textAlign: "right", flexShrink: 0, paddingLeft: 8 }}>
+                        <div style={{ fontWeight: 700, fontSize: 13, color: "#0f172a" }}>
+                          {rupees(b.amount)}
+                        </div>
+                        <div style={{ fontSize: 11, color: "#64748b" }}>
+                          {linesCount} {linesCount === 1 ? "line" : "lines"}
+                          {qtyTotal ? ` · ${qtyTotal} qty` : ""}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* RIGHT COLUMN: AGGREGATED PRODUCTS & STOCK VERIFICATION */}
+        <div className="loading-sheet-print-container">
+          {/* Top Controls & Action Buttons */}
+          <div
+            className="no-print"
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: 10,
+              paddingBottom: 12,
+              borderBottom: "1px solid #e2e8f0",
+            }}
+          >
+            <div>
+              <h3 style={{ margin: 0, fontSize: 16, color: "#0f172a", fontWeight: 700 }}>
+                Aggregated Products to Verify ({aggregatedProducts.length})
+              </h3>
+              <small style={{ color: "#64748b" }}>
+                Total dispatch requirements across {selectedBillIds.length} selected bills
+              </small>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <Button
+                className="secondary"
+                type="button"
+                onClick={() => setBillsSelectorCollapsed((prev) => !prev)}
+                style={{ fontSize: 12, padding: "6px 10px", display: "flex", alignItems: "center", gap: 5 }}
+                title={billsSelectorCollapsed ? "Expand bills sidebar" : "Collapse bills to sidebar rail"}
+              >
+                {billsSelectorCollapsed ? <PanelLeftOpen size={14} /> : <PanelLeftClose size={14} />}
+                {billsSelectorCollapsed ? "Expand Bills" : "Collapse Bills"}
+              </Button>
+              <Button
+                className="secondary"
+                type="button"
+                disabled={aggregatedProducts.length === 0}
+                onClick={handleCopyList}
+                style={{ fontSize: 12, padding: "6px 12px", display: "flex", alignItems: "center", gap: 6 }}
+              >
+                <Copy size={14} />
+                {copyFeedback ? "✓ Copied Summary!" : "Copy Summary"}
+              </Button>
+              <Button
+                className="secondary"
+                type="button"
+                disabled={aggregatedProducts.length === 0}
+                onClick={handleExportCsv}
+                style={{ fontSize: 12, padding: "6px 12px", display: "flex", alignItems: "center", gap: 6 }}
+              >
+                <Download size={14} />
+                Export CSV
+              </Button>
+              <Button
+                className="secondary"
+                type="button"
+                disabled={aggregatedProducts.length === 0}
+                onClick={() => window.print()}
+                style={{ fontSize: 12, padding: "6px 12px", display: "flex", alignItems: "center", gap: 6 }}
+              >
+                <Printer size={14} />
+                Print Sheet
+              </Button>
+            </div>
+          </div>
+
+          {selectedBillIds.length === 0 ? (
+            <div
+              style={{
+                padding: "48px 20px",
+                textAlign: "center",
+                background: "#f8fafc",
+                borderRadius: 10,
+                border: "1px dashed #cbd5e1",
+              }}
+            >
+              <Package size={36} style={{ color: "#94a3b8", marginBottom: 8 }} />
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#334155" }}>
+                No Bills Selected
+              </div>
+              <p style={{ fontSize: 13, color: "#64748b", margin: "4px 0 0" }}>
+                Select one or more bills on the left to calculate and verify aggregated products.
+              </p>
+            </div>
+          ) : linesQuery.isLoading ? (
+            <div style={{ padding: 40, textAlign: "center", color: "#64748b", fontSize: 14 }}>
+              Fetching and combining product lines…
+            </div>
+          ) : linesQuery.isError ? (
+            <div
+              style={{
+                padding: 30,
+                textAlign: "center",
+                color: "#dc2626",
+                background: "#fef2f2",
+                borderRadius: 10,
+                border: "1px solid #fecaca",
+              }}
+            >
+              <div style={{ fontWeight: 700, fontSize: 14 }}>Failed to fetch bill products</div>
+              <div style={{ fontSize: 12, marginTop: 4, color: "#7f1d1d" }}>
+                {(linesQuery.error as Error)?.message || "Error communicating with server"}
+              </div>
+              <Button
+                className="secondary"
+                type="button"
+                onClick={() => linesQuery.refetch()}
+                style={{ marginTop: 12, fontSize: 12 }}
+              >
+                Retry
+              </Button>
+            </div>
+          ) : aggregatedProducts.length === 0 ? (
+            <div style={{ padding: 30, textAlign: "center", color: "#94a3b8", fontSize: 13 }}>
+              The selected bills do not have any product lines recorded.
+            </div>
+          ) : (
+            <>
+              {/* PRINT-ONLY CLEAN HEADER */}
+              <div className="print-only" style={{ marginBottom: 14 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "baseline",
+                    borderBottom: "2px solid #0f172a",
+                    paddingBottom: 8,
+                    marginBottom: 8,
+                  }}
+                >
+                  <div>
+                    <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: "#0f172a" }}>
+                      Stock Verification & Loading Sheet
+                    </h2>
+                    <div style={{ fontSize: 13, color: "#334155", marginTop: 3 }}>
+                      Route / Salesman:{" "}
+                      <strong>
+                        {loadingSheetScope === "all"
+                          ? "All Routes / Salesmen"
+                          : str(salesmenList.find((s) => str(s.id) === selectedSalesmanId)?.name || "Salesman")}
+                      </strong>
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right", fontSize: 12, color: "#334155" }}>
+                    <div>
+                      Date:{" "}
+                      <strong>
+                        {!loadingSheetFrom && !loadingSheetTo
+                          ? "All Dates"
+                          : loadingSheetFrom === loadingSheetTo
+                            ? loadingSheetFrom
+                            : `${loadingSheetFrom || "Start"} to ${loadingSheetTo || "End"}`}
+                      </strong>
+                    </div>
+                    <div>
+                      Bills Included: <strong>{selectedBillIds.length}</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* STRUCTURED ITEMIZED BREAKDOWN TABLE */}
+              <div
+                className="loading-sheet-table-wrap"
+                style={{ overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: 8 }}
+              >
+                <table className="ledger-table loading-sheet-table" style={{ width: "100%", fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: "#f1f5f9", textAlign: "left" }}>
+                      <th style={{ padding: "8px 10px", width: 40 }}>#</th>
+                      <th style={{ padding: "8px 10px" }}>Product Name</th>
+                      <th style={{ padding: "8px 10px", textAlign: "right" }}>Billed Qty</th>
+                      <th style={{ padding: "8px 10px", textAlign: "right" }}>MRP / Rate</th>
+                      <th style={{ padding: "8px 10px", textAlign: "right" }}>Total Value</th>
+                      <th style={{ padding: "8px 10px", textAlign: "center" }}>In Bills</th>
+                      <th style={{ padding: "8px 10px", textAlign: "center", width: 100 }}>
+                        <span className="no-print">Verify</span>
+                        <span className="print-only">Physical Count</span>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {aggregatedProducts.map((p, idx) => {
+                      const isVerified = !!verifiedItems[p.id];
+                      return (
+                        <tr
+                          key={p.id}
+                          style={{
+                            borderBottom: "1px solid #f1f5f9",
+                            background: isVerified ? "#f0fdf4" : idx % 2 === 0 ? "#ffffff" : "#fbfcfe",
+                          }}
+                        >
+                          <td style={{ padding: "8px 10px", color: "#94a3b8", fontSize: 11 }}>
+                            {idx + 1}
+                          </td>
+                          <td style={{ padding: "8px 10px", fontWeight: 600, color: "#0f172a" }}>
+                            {p.name}
+                            {p.code ? (
+                              <small style={{ color: "#64748b", marginLeft: 6 }}>({p.code})</small>
+                            ) : null}
+                          </td>
+                          <td
+                            style={{
+                              padding: "8px 10px",
+                              textAlign: "right",
+                              fontWeight: 800,
+                              color: "#0369a1",
+                            }}
+                          >
+                            {p.quantity.toString()} {p.unit}
+                          </td>
+                          <td style={{ padding: "8px 10px", textAlign: "right" }}>
+                            {rupees(p.rate)}
+                          </td>
+                          <td
+                            style={{
+                              padding: "8px 10px",
+                              textAlign: "right",
+                              fontWeight: 700,
+                              color: "#0f172a",
+                            }}
+                          >
+                            {rupees(p.amount.toFixed(2))}
+                          </td>
+                          <td style={{ padding: "8px 10px", textAlign: "center" }}>
+                            <span
+                              style={{
+                                background: "#f1f5f9",
+                                color: "#334155",
+                                fontSize: 11,
+                                fontWeight: 700,
+                                padding: "2px 7px",
+                                borderRadius: 10,
+                              }}
+                              title={p.billNumbers.join(", ")}
+                            >
+                              {p.billNumbers.length} {p.billNumbers.length === 1 ? "bill" : "bills"}
+                            </span>
+                          </td>
+                          <td style={{ padding: "8px 10px", textAlign: "center" }}>
+                            {/* Screen View: Clickable Checkbox */}
+                            <div className="no-print">
+                              <label
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 4,
+                                  cursor: "pointer",
+                                }}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={isVerified}
+                                  onChange={() => toggleVerified(p.id)}
+                                  style={{ width: 16, height: 16, cursor: "pointer" }}
+                                />
+                                {isVerified && (
+                                  <span style={{ fontSize: 11, fontWeight: 700, color: "#16a34a" }}>
+                                    ✓
+                                  </span>
+                                )}
+                              </label>
+                            </div>
+                            {/* Print View: Physical count box to write on paper */}
+                            <div
+                              className="print-only"
+                              style={{
+                                border: "1px dashed #64748b",
+                                width: 55,
+                                height: 20,
+                                margin: "0 auto",
+                              }}
+                            />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot>
+                    <tr style={{ background: "#f8fafc", borderTop: "2px solid #cbd5e1", fontWeight: 800 }}>
+                      <td colSpan={2} style={{ padding: "10px", color: "#0f172a" }}>
+                        Total ({aggregatedProducts.length} items)
+                      </td>
+                      <td style={{ padding: "10px", textAlign: "right", color: "#0369a1", fontSize: 14 }}>
+                        {totalLoadedQty.toString()}
+                      </td>
+                      <td style={{ padding: "10px" }} />
+                      <td style={{ padding: "10px", textAlign: "right", color: "#0f172a", fontSize: 14 }}>
+                        {rupees(totalLoadedAmount.toFixed(2))}
+                      </td>
+                      <td style={{ padding: "10px", textAlign: "center", fontSize: 12, color: "#64748b" }}>
+                        {selectedBillIds.length} bills
+                      </td>
+                      <td style={{ padding: "10px" }} />
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+
+              {/* Print-Only Signature Section */}
+              <div
+                className="print-only"
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  marginTop: 40,
+                  paddingTop: 16,
+                  borderTop: "1px solid #cbd5e1",
+                  fontSize: 12,
+                }}
+              >
+                <div>
+                  <div>Godown / Warehouse In-Charge: _______________________</div>
+                </div>
+                <div>
+                  <div>Salesman / Vehicle Driver: _______________________</div>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+function ReportExplorer({
+  masters,
+  onSelect,
+  activeTab: propActiveTab,
+  setActiveTab: propSetActiveTab,
+}: {
+  masters: Row;
+  onSelect?: (id: string) => void;
+  activeTab?: string;
+  setActiveTab?: (tab: string) => void;
+}) {
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+  }).format(new Date()),
+    [localActiveTab, setLocalActiveTab] = useState<string>("transactions"),
+    activeTab = propActiveTab ?? localActiveTab,
+    setActiveTab = propSetActiveTab ?? setLocalActiveTab,
+    [from, setFrom] = useState(today.slice(0, 7) + "-01"),
+    [to, setTo] = useState(today),
+    [searchQuery, setSearchQuery] = useState(""),
+    [offset, setOffset] = useState(0),
+    [exportStatus, setExportStatus] = useState("");
+
+  // Dedicated column-wise filters for All Transactions
+  const [txColNo, setTxColNo] = useState("");
+  const [txColDate, setTxColDate] = useState("");
+  const [txColType, setTxColType] = useState("");
+  const [txColCategory, setTxColCategory] = useState("");
+  const [txColAmount, setTxColAmount] = useState("");
+  const [txColStatus, setTxColStatus] = useState("");
+  const [txColNote, setTxColNote] = useState("");
+
+  const reportTabs = [
+    { id: "transactions", label: "All transactions", tableTitle: "ALL TRANSACTIONS REGISTER (BILLS, RECEIPTS, EXPENSES, SALARIES & TRANSFERS)" },
+    { id: "stock_verification", label: "Stock Verification (Loading Sheet)", tableTitle: "STOCK VERIFICATION & VEHICLE LOADING DISPATCH SHEET" },
+    { id: "closes", label: "Daily closes and differences", tableTitle: "DAILY CASH CLOSINGS & DIFFERENCES" },
+  ];
+
+  // Map tab id to actual API endpoint
+  const apiPath = `reports/${activeTab}?from=${from}&to=${to}&offset=${offset}`;
+
+  const q = useQuery<Row[]>({
+    queryKey: ["report", activeTab, from, to, searchQuery, offset],
+    queryFn: async () => {
+      const res = await api<Row>(apiPath, rowSchema);
+      return arr(res.rows);
+    },
+    enabled: activeTab !== "stock_verification",
+  });
+
+  const rawRows: Row[] = q.data ?? [];
+  const normalizedRows: Row[] = rawRows.map((r) => {
+    let status = str(r.status ?? "");
+    if (!status) {
+      if (r.kind === "bill" || r.type === "bill") {
+        const parts = [str(r.settlement ?? "Unpaid")];
+        if (r.returned) parts.push("returned");
+        if (r.reversed) parts.push("reversal");
+        status = parts.join(" / ");
+      } else {
+        status = r.reversed ? "Reversed" : "Posted";
+      }
+    }
+    return {
+      ...(r.matches ? { ...r, matches: JSON.stringify(r.matches) } : r),
+      status,
+    };
+  });
+
+  // Client-side text filter for tabs whose reports endpoint doesn't accept a search query directly
+  const data: Row[] = normalizedRows.filter((r) => {
+    if (searchQuery.trim()) {
+      const qLower = searchQuery.toLowerCase().trim();
+      const matchesSearch = Object.values(r).some((v) =>
+        String(v ?? "").toLowerCase().includes(qLower),
+      );
+      if (!matchesSearch) return false;
+    }
+    if (activeTab === "transactions") {
+      if (txColNo.trim()) {
+        const noVal = String(r.no ?? "").toLowerCase();
+        if (!noVal.includes(txColNo.toLowerCase().trim())) return false;
+      }
+      if (txColDate.trim()) {
+        const qDate = txColDate.toLowerCase().trim();
+        const dateVal = String(r.date ?? "").toLowerCase();
+        const stampVal = timeOnlyLabel(r.created_at).toLowerCase();
+        if (!dateVal.includes(qDate) && !stampVal.includes(qDate)) return false;
+      }
+      if (txColType) {
+        const typeVal = String(r.type ?? "").toLowerCase();
+        if (typeVal !== txColType.toLowerCase()) return false;
+      }
+      if (txColCategory.trim()) {
+        const catVal = String(r.category ?? "").toLowerCase();
+        if (!catVal.includes(txColCategory.toLowerCase().trim())) return false;
+      }
+      if (txColAmount.trim()) {
+        const amtVal = String(r.amount ?? "").toLowerCase();
+        if (!amtVal.includes(txColAmount.toLowerCase().trim())) return false;
+      }
+      if (txColStatus.trim()) {
+        const statusVal = String(r.status ?? "").toLowerCase();
+        if (!statusVal.includes(txColStatus.toLowerCase().trim())) return false;
+      }
+      if (txColNote.trim()) {
+        const noteVal = String(r.note ?? "").toLowerCase();
+        if (!noteVal.includes(txColNote.toLowerCase().trim())) return false;
+      }
+    }
+    return true;
+  });
+
+  const PAGE_SIZE = 15;
+  const grandTotal = useMemo(() => {
+    let sum = D(0);
+    for (const r of data) {
+      sum = sum.plus(D(str(r.amount || "0")));
+    }
+    return sum;
+  }, [data]);
+  const totalPages = Math.max(1, Math.ceil(data.length / PAGE_SIZE));
+  const currentPage = Math.min(Math.floor(offset / PAGE_SIZE), totalPages - 1);
+  const pageOffset = Math.max(0, currentPage * PAGE_SIZE);
+  const displayedRows = activeTab === "transactions" ? data.slice(pageOffset, pageOffset + PAGE_SIZE) : data;
+
+  const currentTabObj = reportTabs.find((t) => t.id === activeTab) ?? reportTabs[0];
+
+  const handleExport = async () => {
+    const snapshot = data.map((r) => ({ ...r }));
+    try {
+      await api("report-export-audit", rowSchema, {
+        name: activeTab,
+        from,
+        to,
+        offset,
+        count: snapshot.length,
+      });
+      const url = URL.createObjectURL(
+        new Blob([encodeCsvRows(snapshot)], {
+          type: "text/csv;charset=utf-8",
+        }),
+      );
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${activeTab}-${from}-${to}.csv`;
+      anchor.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setExportStatus("CSV download requested for the exact displayed page.");
+    } catch (e) {
+      setExportStatus((e as Error).message);
+    }
+  };
+
+  // Determine columns based on active tab
+  const getColumns = (): [string, string, boolean?][] => {
+    if (activeTab === "transactions") {
+      return [
+        ["no", "NO"],
+        ["date", "DATE"],
+        ["type", "TYPE"],
+        ["category", "CATEGORY / PERSON"],
+        ["amount", "AMOUNT", true],
+        ["status", "STATUS"],
+        ["note", "NOTE"],
+      ];
+    }
+    return reportColumns(data);
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Header with Title & Export Button */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          flexWrap: "wrap",
+          gap: 16,
+          paddingBottom: 4,
+        }}
+      >
+        <div>
+          <h1 style={{ fontSize: "1.85rem", fontWeight: 750, margin: 0, letterSpacing: "-0.5px" }}>
+            Financial & Operational Reports
+          </h1>
+          <p className="muted" style={{ margin: "6px 0 0", fontSize: "0.95rem" }}>
+            Trial balances, salesman dues registers, and auditable ledger summaries
+          </p>
+        </div>
+        {activeTab !== "stock_verification" && (
+          <Button
+            type="button"
+            onClick={handleExport}
+            disabled={!q.data || q.isFetching}
+            style={{
+              background: "#18181b",
+              color: "#ffffff",
+              borderRadius: 24,
+              padding: "9px 20px",
+              fontWeight: 600,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              border: "none",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.12)",
+              cursor: "pointer",
+            }}
+          >
+            <Download size={16} />
+            <span>Export {activeTab === "outstanding" ? "Salesmen" : "Report"} CSV</span>
+          </Button>
+        )}
+      </div>
+
+      {/* Modern Horizontal Tabs Bar */}
+      <div
+        style={{
+          display: "flex",
+          gap: 22,
+          overflowX: "auto",
+          borderBottom: "1px solid #e7e5e4",
+          paddingBottom: 2,
+          scrollbarWidth: "none",
+        }}
+      >
+        {reportTabs.map((tab) => {
+          const active = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => {
+                setActiveTab(tab.id);
+                setOffset(0);
+                setExportStatus("");
+              }}
+              style={{
+                background: "none",
+                border: "none",
+                borderBottom: active ? "2.5px solid #c2410c" : "2.5px solid transparent",
+                padding: "8px 2px 10px",
+                fontWeight: active ? 700 : 500,
+                fontSize: "0.95rem",
+                color: active ? "#9a3412" : "#78716c",
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+                transition: "all 0.15s ease",
+              }}
+            >
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {activeTab === "stock_verification" ? (
+        <StockVerificationReport masters={masters} onSelect={onSelect} defaultDate={today} />
+      ) : (
+        <section className="panel" style={{ marginTop: 6, borderRadius: 16 }}>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: 16,
+              marginBottom: 16,
+            }}
+          >
+            <strong
+              style={{
+                textTransform: "uppercase",
+                fontSize: "0.86rem",
+                letterSpacing: "0.6px",
+                color: "#44403c",
+                fontWeight: 800,
+              }}
+            >
+              {currentTabObj.tableTitle}
+            </strong>
+
+            {/* Search & Date range filters */}
+            <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+              <input
+                type="text"
+                placeholder={`Filter ${currentTabObj.label.toLowerCase()}…`}
+                value={searchQuery}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setOffset(0);
+                }}
+                style={{
+                  padding: "5px 12px",
+                  fontSize: "0.85rem",
+                  borderRadius: 8,
+                  border: "1px solid #d6d3d1",
+                  minWidth: 200,
+                }}
+              />
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.85rem", color: "#78716c" }}>
+                <span>From:</span>
+                <input
+                  type="date"
+                  value={from}
+                  onChange={(e) => {
+                    setFrom(e.target.value);
+                    setOffset(0);
+                  }}
+                  style={{ padding: "4px 8px", fontSize: "0.85rem", borderRadius: 6, border: "1px solid #d6d3d1" }}
+                />
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.85rem", color: "#78716c" }}>
+                <span>To / As of:</span>
+                <input
+                  type="date"
+                  value={to}
+                  onChange={(e) => {
+                    setTo(e.target.value);
+                    setOffset(0);
+                  }}
+                  style={{ padding: "4px 8px", fontSize: "0.85rem", borderRadius: 6, border: "1px solid #d6d3d1" }}
+                />
+              </label>
+            </div>
+          </div>
+
+          {q.isPending ? (
+            <p style={{ padding: "24px 0", color: "#78716c" }}>Loading report records…</p>
+          ) : q.isError ? (
+            <p role="alert" className="error">
+              {q.error.message}
+            </p>
+          ) : activeTab === "transactions" ? (
+            <div style={{ overflowX: "auto" }}>
+              {/* Top Summary Bar & Filter Actions */}
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: 12,
+                  marginBottom: 12,
+                }}
+              >
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                  <div
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      background: "#f8fafc",
+                      border: "1px solid #cbd5e1",
+                      borderRadius: 8,
+                      padding: "6px 14px",
+                      fontSize: "0.85rem",
+                      color: "#475569",
+                    }}
+                  >
+                    <span style={{ color: "#64748b" }}>Total Records:</span>
+                    <strong style={{ color: "#0f172a", fontWeight: 700 }}>{data.length}</strong>
+                  </div>
+                  <div
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      background: "#f0fdf4",
+                      border: "1px solid #86efac",
+                      borderRadius: 8,
+                      padding: "6px 14px",
+                      fontSize: "0.85rem",
+                      color: "#166534",
+                    }}
+                  >
+                    <span style={{ color: "#15803d" }}>Grand Total:</span>
+                    <strong style={{ color: "#14532d", fontWeight: 750, fontSize: "0.95rem" }}>
+                      {rupees(grandTotal)}
+                    </strong>
+                  </div>
+                </div>
+
+                {(txColNo || txColDate || txColType || txColCategory || txColAmount || txColStatus || txColNote) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTxColNo("");
+                      setTxColDate("");
+                      setTxColType("");
+                      setTxColCategory("");
+                      setTxColAmount("");
+                      setTxColStatus("");
+                      setTxColNote("");
+                      setOffset(0);
+                    }}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: "#dc2626",
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      textDecoration: "underline",
+                    }}
+                  >
+                    Clear column filters
+                  </button>
+                )}
+              </div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0" }}>
+                    <th style={{ textAlign: "left", padding: "10px 12px", fontWeight: 700, fontSize: 13, color: "#475569" }}>
+                      NO
+                    </th>
+                    <th style={{ textAlign: "left", padding: "10px 12px", fontWeight: 700, fontSize: 13, color: "#475569" }}>
+                      DATE
+                    </th>
+                    <th style={{ textAlign: "left", padding: "10px 12px", fontWeight: 700, fontSize: 13, color: "#475569" }}>
+                      TYPE
+                    </th>
+                    <th style={{ textAlign: "left", padding: "10px 12px", fontWeight: 700, fontSize: 13, color: "#475569" }}>
+                      CATEGORY / PERSON
+                    </th>
+                    <th className="money-cell" style={{ textAlign: "right", padding: "10px 12px", fontWeight: 700, fontSize: 13, color: "#475569" }}>
+                      AMOUNT
+                    </th>
+                    <th style={{ textAlign: "left", padding: "10px 12px", fontWeight: 700, fontSize: 13, color: "#475569" }}>
+                      STATUS
+                    </th>
+                    <th style={{ textAlign: "center", padding: "10px 12px", fontWeight: 700, fontSize: 13, color: "#475569", width: 70 }}>
+                      NOTE
+                    </th>
+                  </tr>
+
+                  {/* Search & Filter Row Directly Below Headers */}
+                  <tr style={{ background: "#f1f5f9", borderBottom: "2px solid #cbd5e1" }}>
+                    <th style={{ padding: "6px 8px" }}>
+                      <input
+                        type="search"
+                        placeholder="Search #…"
+                        value={txColNo}
+                        onChange={(e) => {
+                          setTxColNo(e.target.value);
+                          setOffset(0);
+                        }}
+                        style={{
+                          width: "100%",
+                          padding: "6px 8px",
+                          fontSize: 12,
+                          borderRadius: 6,
+                          border: "1px solid #cbd5e1",
+                          background: "#ffffff",
+                        }}
+                      />
+                    </th>
+                    <th style={{ padding: "6px 8px" }}>
+                      <input
+                        type="search"
+                        placeholder="Search date…"
+                        value={txColDate}
+                        onChange={(e) => {
+                          setTxColDate(e.target.value);
+                          setOffset(0);
+                        }}
+                        style={{
+                          width: "100%",
+                          padding: "6px 8px",
+                          fontSize: 12,
+                          borderRadius: 6,
+                          border: "1px solid #cbd5e1",
+                          background: "#ffffff",
+                        }}
+                      />
+                    </th>
+                    <th style={{ padding: "6px 8px" }}>
+                      <select
+                        value={txColType}
+                        onChange={(e) => {
+                          setTxColType(e.target.value);
+                          setOffset(0);
+                        }}
+                        style={{
+                          width: "100%",
+                          padding: "6px 8px",
+                          fontSize: 12,
+                          borderRadius: 6,
+                          border: "1px solid #cbd5e1",
+                          background: "#ffffff",
+                        }}
+                      >
+                        <option value="">All Types</option>
+                        <option value="bill">Bill</option>
+                        <option value="receipt_cash">Cash Receipt</option>
+                        <option value="receipt_online">Online Receipt</option>
+                        <option value="foods_receipt">Foods Receipt</option>
+                        <option value="sales_return">Sales Return</option>
+                        <option value="expense">Expense</option>
+                        <option value="salary">Salary</option>
+                        <option value="employee_receipt">Employee Receipt</option>
+                        <option value="bank_deposit">Bank Deposit</option>
+                        <option value="cash_transfer">Cash Transfer</option>
+                      </select>
+                    </th>
+                    <th style={{ padding: "6px 8px" }}>
+                      <input
+                        type="search"
+                        placeholder="Search category / person…"
+                        value={txColCategory}
+                        onChange={(e) => {
+                          setTxColCategory(e.target.value);
+                          setOffset(0);
+                        }}
+                        style={{
+                          width: "100%",
+                          padding: "6px 8px",
+                          fontSize: 12,
+                          borderRadius: 6,
+                          border: "1px solid #cbd5e1",
+                          background: "#ffffff",
+                        }}
+                      />
+                    </th>
+                    <th style={{ padding: "6px 8px" }}>
+                      <input
+                        type="search"
+                        placeholder="Search ₹…"
+                        value={txColAmount}
+                        onChange={(e) => {
+                          setTxColAmount(e.target.value);
+                          setOffset(0);
+                        }}
+                        style={{
+                          width: "100%",
+                          padding: "6px 8px",
+                          fontSize: 12,
+                          borderRadius: 6,
+                          border: "1px solid #cbd5e1",
+                          background: "#ffffff",
+                          textAlign: "right",
+                        }}
+                      />
+                    </th>
+                    <th style={{ padding: "6px 8px" }}>
+                      <select
+                        value={txColStatus}
+                        onChange={(e) => {
+                          setTxColStatus(e.target.value);
+                          setOffset(0);
+                        }}
+                        style={{
+                          width: "100%",
+                          padding: "6px 8px",
+                          fontSize: 12,
+                          borderRadius: 6,
+                          border: "1px solid #cbd5e1",
+                          background: "#ffffff",
+                        }}
+                      >
+                        <option value="">All Statuses</option>
+                        <option value="Posted">Posted</option>
+                        <option value="Settled">Settled</option>
+                        <option value="Part-paid">Part-paid / credited</option>
+                        <option value="Unpaid">Unpaid</option>
+                        <option value="returned">Returned</option>
+                        <option value="reversal">Reversal / Reversed</option>
+                      </select>
+                    </th>
+                    <th style={{ padding: "6px 8px", width: 70 }}>
+                      <input
+                        type="search"
+                        placeholder="Search note…"
+                        value={txColNote}
+                        onChange={(e) => {
+                          setTxColNote(e.target.value);
+                          setOffset(0);
+                        }}
+                        style={{
+                          width: "100%",
+                          padding: "6px 8px",
+                          fontSize: 12,
+                          borderRadius: 6,
+                          border: "1px solid #cbd5e1",
+                          background: "#ffffff",
+                        }}
+                      />
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} style={{ textAlign: "center", padding: "28px 12px", color: "#64748b" }}>
+                        No transactions match the selected filters
+                      </td>
+                    </tr>
+                  ) : (
+                    displayedRows.map((r, i) => (
+                      <tr key={str(r.id) || i} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                        <td style={{ padding: '10px 12px' }}>
+                          {r.id && onSelect ? (
+                            <button
+                              type="button"
+                              className="text-link"
+                              onClick={() => onSelect(str(r.id))}
+                              style={{
+                                fontWeight: 700,
+                                color: '#2563eb',
+                                background: 'none',
+                                border: 'none',
+                                padding: 0,
+                                cursor: 'pointer',
+                                textDecoration: 'underline',
+                                fontFamily: 'inherit',
+                                fontSize: 'inherit',
+                              }}
+                            >
+                              {str(r.no)}
+                            </button>
+                          ) : (
+                            <span style={{ fontWeight: 600 }}>{str(r.no)}</span>
+                          )}
+                        </td>
+                        <td style={{ padding: '10px 12px', color: '#475569', whiteSpace: 'nowrap' }}>
+                          <div style={{ display: 'flex', flexDirection: 'column' }}>
+                            <span style={{ fontWeight: 600, color: '#0f172a' }}>{str(r.date)}</span>
+                            {r.created_at ? (
+                              <span style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+                                {timeOnlyLabel(r.created_at)}
+                              </span>
+                            ) : null}
+                          </div>
+                        </td>
+                        <td style={{ padding: '10px 12px' }}>
+                          <span
+                            className="badge"
+                            style={{
+                              textTransform: 'capitalize',
+                              fontSize: 11,
+                              padding: '2px 8px',
+                              borderRadius: 4,
+                              background:
+                                r.type === 'bill'
+                                  ? '#eff6ff'
+                                  : String(r.type ?? '').includes('receipt')
+                                    ? '#f0fdf4'
+                                    : String(r.type ?? '').includes('return')
+                                      ? '#fef3c7'
+                                      : '#f8fafc',
+                              color:
+                                r.type === 'bill'
+                                  ? '#1e40af'
+                                  : String(r.type ?? '').includes('receipt')
+                                    ? '#166534'
+                                    : String(r.type ?? '').includes('return')
+                                      ? '#92400e'
+                                      : '#334155',
+                            }}
+                          >
+                            {str(r.type).replace(/_/g, ' ')}
+                          </span>
+                        </td>
+                        <td style={{ padding: '10px 12px', fontWeight: 500, color: '#0f172a' }}>
+                          {str(r.category)}
+                        </td>
+                        <td
+                          className="money-cell"
+                          style={{
+                            padding: '10px 12px',
+                            textAlign: 'right',
+                            fontWeight: 600,
+                            color: String(r.amount ?? '').startsWith('-') ? '#dc2626' : '#0f172a',
+                          }}
+                        >
+                          {str(r.amount)}
+                        </td>
+                        <td style={{ padding: '10px 12px' }}>
+                          <span
+                            style={{
+                              fontSize: 12,
+                              fontWeight: 600,
+                              padding: '2px 8px',
+                              borderRadius: 4,
+                              background: r.reversed
+                                ? '#fee2e2'
+                                : r.returned
+                                  ? '#ffedd5'
+                                  : str(r.status).startsWith('Settled')
+                                    ? '#dcfce7'
+                                    : str(r.status).startsWith('Unpaid')
+                                      ? '#fef9c3'
+                                      : '#f1f5f9',
+                              color: r.reversed
+                                ? '#dc2626'
+                                : r.returned
+                                  ? '#c2410c'
+                                  : str(r.status).startsWith('Settled')
+                                    ? '#166534'
+                                    : str(r.status).startsWith('Unpaid')
+                                      ? '#854d0e'
+                                      : '#334155',
+                            }}
+                          >
+                            {str(r.status)}
+                          </span>
+                        </td>
+                        <td style={{ padding: '10px 12px', textAlign: 'center' }}>
+                          <NoteTooltip text={str(r.note ?? "")} />
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <Table
+              rows={data.map((r) => ({
+                ...r,
+                salesman_id:
+                  arr(masters.salesmen).find((s) => s.id === r.salesman_id)?.name ??
+                  r.salesman_id,
+                salesman_name:
+                  r.salesman_name ??
+                  arr(masters.salesmen).find((s) => s.id === r.salesman_id)?.name ??
+                  '—',
+                reverses: r.reverses ? str(r.reverses) : '—',
+                reversed: r.reversed ? 'Yes' : 'No',
+              }))}
+              columns={getColumns()}
+            />
+          )}
+
+          {exportStatus && (
+            <p className="notice" role="status" style={{ marginTop: 12 }}>
+              {exportStatus}
+            </p>
+          )}
+
+          {/* Pagination bar */}
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginTop: 18,
+              paddingTop: 14,
+              borderTop: '1px solid #f5f5f4',
+            }}
+          >
+            {activeTab === "transactions" ? (
+              <>
+                <span style={{ fontSize: '0.85rem', color: '#78716c' }}>
+                  Showing {data.length === 0 ? 0 : pageOffset + 1}–{Math.min(pageOffset + PAGE_SIZE, data.length)} of {data.length} records (Page {data.length === 0 ? 0 : currentPage + 1} of {totalPages})
+                </span>
+                <div className="pagination" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <Button
+                    className="secondary"
+                    disabled={pageOffset === 0}
+                    onClick={() => setOffset(Math.max(0, pageOffset - PAGE_SIZE))}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    className="secondary"
+                    disabled={pageOffset + PAGE_SIZE >= data.length}
+                    onClick={() => setOffset(pageOffset + PAGE_SIZE)}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <>
+                <span style={{ fontSize: '0.85rem', color: '#78716c' }}>
+                  Showing page {offset / 100 + 1} ({data.length} records)
+                </span>
+                <div className="pagination" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <Button
+                    className="secondary"
+                    disabled={!offset}
+                    onClick={() => setOffset(Math.max(0, offset - 100))}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    className="secondary"
+                    disabled={data.length < 100}
+                    onClick={() => setOffset(offset + 100)}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </>
+            )}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function BookExplorer({
+  masters,
+  date,
+  onSelect,
+}: {
+  masters: Row;
+  date: string;
+  onSelect?: (id: string) => void;
+}) {
+  const [accountId, setAccount] = useState(""),
+    [from, setFrom] = useState(date),
+    [to, setTo] = useState(date),
+    [offset, setOffset] = useState(0);
+  const selected = accountId || str(arr(masters.accounts)[0]?.id),
+    q = useQuery({
+      queryKey: ["book", selected, from, to, offset],
+      queryFn: () =>
+        api(`books/${selected}?from=${from}&to=${to}&offset=${offset}`),
+      enabled: !!selected,
+    });
+  return (
+    <section className="panel">
+      <h2>Cash & bank account book</h2>
+      <div className="report-filters">
+        <Field label="Custody / bank account">
+          <select
+            value={selected}
+            onChange={(e) => {
+              setAccount(e.target.value);
+              setOffset(0);
+            }}
+          >
+            {arr(masters.accounts).map((a) => (
+              <option key={str(a.id)} value={str(a.id)}>
+                {str(a.name)} · {str(a.holder)}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="From">
+          <input
+            type="date"
+            value={from}
+            onChange={(e) => {
+              setFrom(e.target.value);
+              setOffset(0);
+            }}
+          />
+        </Field>
+        <Field label="To">
+          <input
+            type="date"
+            value={to}
+            onChange={(e) => {
+              setTo(e.target.value);
+              setOffset(0);
+            }}
+          />
+        </Field>
+      </div>
+      {q.isError ? (
+        <p className="error">{q.error.message}</p>
+      ) : q.data ? (
+        <>
+          <div className="review-balances">
+            <p>
+              Brought forward <b>{rupees(q.data.opening)}</b>
+            </p>
+            <p>
+              Ending book balance <b>{rupees(q.data.ending)}</b>
+            </p>
+          </div>
+          <Table
+            rows={arr(q.data.entries)}
+            columns={[
+              ["date", "Date"],
+              ["number", "Record"],
+              ["kind", "Type"],
+              ["inflow", "Money in", true],
+              ["outflow", "Money out", true],
+              ["balance", "Running book", true],
+            ]}
+            cellRenderers={{
+              number: (r) => (
+                <DocLink
+                  id={str(r.id)}
+                  number={str(r.number)}
+                  onSelect={onSelect}
+                />
+              ),
+            }}
+          />
+          <div className="pagination">
+            <Button
+              disabled={!offset}
+              onClick={() => setOffset(Math.max(0, offset - 100))}
+            >
+              Previous
+            </Button>
+            <Button
+              disabled={arr(q.data.entries).length < 100}
+              onClick={() => setOffset(offset + 100)}
+            >
+              Next
+            </Button>
+          </div>
+        </>
+      ) : (
+        <p>Loading account book…</p>
+      )}
+    </section>
+  );
+}
+
+function ItcExportPage({
+  initialDate,
+  onClose,
+  onSelect,
+}: {
+  initialDate: string;
+  onClose: () => void;
+  onSelect?: (id: string) => void;
+}) {
+  const exportSectionRef = useRef<HTMLElement>(null);
+  const [exportDate, setExportDate] = useState(initialDate);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [exporting, setExporting] = useState(false);
+
+  useEffect(() => {
+    exportSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
+
+  const billsQuery = useQuery({
+    queryKey: ["itc-bills", exportDate],
+    queryFn: () => api(`itc/bills?date=${exportDate}`, rowsSchema),
+  });
+
+  const bills = billsQuery.data ?? [];
+
+  // When bills load, by default select all bills
+  useEffect(() => {
+    if (billsQuery.data) {
+      setSelectedIds(new Set(billsQuery.data.map((b) => str(b.id))));
+    }
+  }, [billsQuery.data]);
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    if (selectedIds.size === bills.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(bills.map((b) => str(b.id))));
+    }
+  };
+
+  const handleExport = async () => {
+    if (selectedIds.size === 0) {
+      alert("Please select at least one bill to export.");
+      return;
+    }
+    setExporting(true);
+    try {
+      const billsParam = Array.from(selectedIds).join(",");
+      const res = await fetch(`/api/v1/export/itc?date=${exportDate}&bills=${encodeURIComponent(billsParam)}`);
+      if (!res.ok) {
+        alert("Failed to export ITC file. Please try again.");
+        return;
+      }
+      const blob = await res.blob();
+      const contentDisposition = res.headers.get("content-disposition");
+      let downloadFilename = `itc_export_${exportDate}.zip`;
+      if (contentDisposition) {
+        const match = contentDisposition.match(/filename=["']?([^"';]+)["']?/i);
+        if (match && match[1]) {
+          downloadFilename = match[1];
+        }
+      }
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = downloadFilename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : "Error exporting ITC file");
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  return (
+    <section ref={exportSectionRef} id="itc-export-section" className="panel" style={{ padding: "20px 24px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 20, color: "#0f172a" }}>Export ITC Order Upload Files</h2>
+          <p className="muted" style={{ margin: "4px 0 0", fontSize: 13 }}>
+            Generate zip containing pre-formatted ITC order Excel / CSV files formatted for direct company upload.
+          </p>
+        </div>
+        <Button className="secondary" onClick={onClose}>
+          ✕ Close
+        </Button>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
+        <label style={{ fontSize: 13, fontWeight: 600, color: "#334155" }}>Business Date:</label>
+        <input
+          type="date"
+          value={exportDate}
+          onChange={(e) => setExportDate(e.target.value)}
+          style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 13 }}
+        />
+        <Button
+          className="primary"
+          disabled={exporting || bills.length === 0 || selectedIds.size === 0}
+          onClick={handleExport}
+          style={{ marginLeft: "auto" }}
+        >
+          {exporting ? "Generating Export…" : `Export Selected (${selectedIds.size})`}
+        </Button>
+      </div>
+
+      {billsQuery.isLoading ? (
+        <p>Loading bills for {exportDate}…</p>
+      ) : bills.length === 0 ? (
+        <Empty text={`No unreversed cigarette bills found for ${exportDate}.`} />
+      ) : (
+        <div className="table-scroll">
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "#f8fafc", textAlign: "left", borderBottom: "2px solid #e2e8f0" }}>
+                <th style={{ padding: "10px 12px", width: 40 }}>
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.size === bills.length && bills.length > 0}
+                    onChange={toggleAll}
+                  />
+                </th>
+                <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#64748b" }}>BILL #</th>
+                <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#64748b" }}>TIME</th>
+                <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#64748b" }}>SALESMAN</th>
+                <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#64748b" }}>CUSTOMER / ROUTE</th>
+                <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#64748b" }}>TYPE</th>
+                <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#64748b", textAlign: "right" }}>ITEMS</th>
+                <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#64748b", textAlign: "right" }}>AMOUNT</th>
+              </tr>
+            </thead>
+            <tbody>
+              {bills.map((b) => {
+                const isSelected = selectedIds.has(str(b.id));
+                return (
+                  <tr
+                    key={str(b.id)}
+                    style={{
+                      borderBottom: "1px solid #f1f5f9",
+                      background: isSelected ? "#f0fdf4" : "#ffffff",
+                      cursor: "pointer",
+                    }}
+                    onClick={() => toggleSelect(str(b.id))}
+                  >
+                    <td style={{ padding: "10px 12px" }} onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleSelect(str(b.id))}
+                      />
+                    </td>
+                    <td style={{ padding: "10px 12px" }}>
+                      <DocLink
+                        id={str(b.id)}
+                        number={str(b.number)}
+                        onSelect={onSelect}
+                        style={{ fontWeight: 600, color: "#2563eb" }}
+                      />
+                    </td>
+                    <td style={{ padding: "10px 12px", fontSize: 12, color: "#64748b", whiteSpace: "nowrap" }}>
+                      {b.created_at ? timeOnlyLabel(b.created_at) : "—"}
+                    </td>
+                    <td style={{ padding: "10px 12px", color: "#0f172a" }}>
+                      {str(b.salesman_name)} ({str(b.salesman_code)})
+                    </td>
+                    <td style={{ padding: "10px 12px", color: "#475569" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span>{str(b.customer_name || b.beat_name || "Retail Pool")}</span>
+                        {b.is_gst ? (
+                          <span
+                            style={{
+                              fontSize: "0.68rem",
+                              fontWeight: 700,
+                              padding: "1px 5px",
+                              borderRadius: 4,
+                              backgroundColor: "#fef3c7",
+                              color: "#92400e",
+                              border: "1px solid #fde68a",
+                            }}
+                          >
+                            GST
+                          </span>
+                        ) : null}
+                      </div>
+                    </td>
+                    <td style={{ padding: "10px 12px" }}>
+                      <span className="badge">{str(b.bill_type)}</span>
+                    </td>
+                    <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                      {str(b.lines_count)} lines
+                    </td>
+                    <td className="money-cell" style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700 }}>
+                      {rupees(b.amount)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+createRoot(document.getElementById("root")!).render(
+  <QueryClientProvider client={client}>
+    <App />
+  </QueryClientProvider>,
+);

@@ -1,0 +1,11 @@
+.git
+.tools
+.local
+.env*
+node_modules
+**/node_modules
+**/dist
+private-files
+test-results
+playwright-report
+*.textClipping

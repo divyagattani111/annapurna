@@ -1,0 +1,19 @@
+# Merge with compose.yaml only for an explicitly configured backup operation.
+services:
+  operations:
+    profiles: [operations]
+    build:
+      context: ..
+      dockerfile: infra/Dockerfiles/operations
+    environment:
+      DATABASE_URL: postgresql://ledger_admin:${POSTGRES_PASSWORD}@db:5432/family_ledger_live
+      APP_MODE: live
+      ATTACHMENT_DIR: /data/private-files
+      BACKUP_DIR: /backups
+      PG_BIN: /usr/lib/postgresql/18/bin
+    volumes:
+      - private_files:/data/private-files:ro
+      - ${BACKUP_HOST_DIR:?Set private host backup directory}:/backups
+    networks: [private]
+    depends_on:
+      db: {condition: service_healthy}

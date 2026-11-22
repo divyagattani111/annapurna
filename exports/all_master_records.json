@@ -1,0 +1,922 @@
+{
+  "exportedAt": "2026-11-10T16:31:06.043Z",
+  "recordCounts": {
+    "salesmen": 16,
+    "products": 49,
+    "moneyAccounts": 2,
+    "employees": 5,
+    "foodsSalesmen": 5
+  },
+  "salesmen": [
+    {
+      "id": "3d8c1ab9-b656-4062-b63a-f74832d22d13",
+      "code": "D001",
+      "name": "BUSTAND ROAD",
+      "active": true,
+      "credit_limit": null,
+      "details": {
+        "phone": "9160999385",
+        "route": "Retail"
+      }
+    },
+    {
+      "id": "c3708db8-16ac-45da-b399-8622484f098e",
+      "code": "D002",
+      "name": "SAVARKER NAGAR",
+      "active": true,
+      "credit_limit": null,
+      "details": {
+        "phone": "9701167335",
+        "route": "Retail"
+      }
+    },
+    {
+      "id": "b482d816-cd05-46b1-a571-526c39a3aa33",
+      "code": "D003",
+      "name": "HYD ROAD",
+      "active": true,
+      "credit_limit": null,
+      "details": {
+        "phone": "9908784334",
+        "route": "Retail"
+      }
+    },
+    {
+      "id": "ec859881-c5ce-4711-8009-60a23c4b7883",
+      "code": "D004",
+      "name": "RADHA KRISHNA",
+      "active": true,
+      "credit_limit": null,
+      "details": {
+        "phone": "9949416730",
+        "route": "Retail"
+      }
+    },
+    {
+      "id": "009b6c65-cd9a-4ab9-9971-67fcf38046a6",
+      "code": "D005",
+      "name": "NARSIMHA SALES MAN",
+      "active": true,
+      "credit_limit": null,
+      "details": {
+        "phone": "9885500528",
+        "route": "Retail"
+      }
+    },
+    {
+      "id": "2c32e349-78b1-41ef-8e7c-9937bf1ec2d4",
+      "code": "D006",
+      "name": "AKBER SALESMAN",
+      "active": true,
+      "credit_limit": null,
+      "details": {
+        "phone": "9182303903",
+        "route": "Retail"
+      }
+    },
+    {
+      "id": "6d588746-b41d-4720-983b-58aa7de2b4fb",
+      "code": "D007",
+      "name": "SWAMY SALES MAN",
+      "active": true,
+      "credit_limit": null,
+      "details": {
+        "phone": "8499004238",
+        "route": ""
+      }
+    },
+    {
+      "id": "d0d0dde8-80a2-4e4c-85c0-0a58964fd334",
+      "code": "D008",
+      "name": "FEROZ",
+      "active": true,
+      "credit_limit": null,
+      "details": {
+        "phone": "9701063917",
+        "route": "Retail"
+      }
+    },
+    {
+      "id": "8ae094f9-f372-4d38-8409-7ad73665bacd",
+      "code": "D009",
+      "name": "NAVEEN SALES MAN",
+      "active": true,
+      "credit_limit": null,
+      "details": {
+        "phone": "9701963304",
+        "route": "Retail"
+      }
+    },
+    {
+      "id": "2153c5cb-2eac-471a-9b6e-ae77490c30b7",
+      "code": "D010",
+      "name": "SOMANNA",
+      "active": true,
+      "credit_limit": null,
+      "details": {
+        "phone": "9885496103",
+        "route": "Retail"
+      }
+    },
+    {
+      "id": "6e742005-62e8-4d7c-8f7d-89e8a4eaea24",
+      "code": "D011",
+      "name": "DVK ROAD",
+      "active": true,
+      "credit_limit": null,
+      "details": {
+        "phone": "8297976565",
+        "route": "Retail"
+      }
+    },
+    {
+      "id": "e5977380-a02f-4f9c-9c8f-9301db7de446",
+      "code": "D012",
+      "name": "MLG AREA",
+      "active": true,
+      "credit_limit": null,
+      "details": {
+        "phone": "9666054266",
+        "route": "Retail"
+      }
+    },
+    {
+      "id": "6e308565-f388-45cb-83ec-616a1cc464ae",
+      "code": "D013",
+      "name": "CHANDRAKHANTH  SALESMAN",
+      "active": true,
+      "credit_limit": null,
+      "details": {
+        "phone": "7661901110",
+        "route": "Retail"
+      }
+    },
+    {
+      "id": "5d392ea5-e701-4422-96aa-a52fba7ed4be",
+      "code": "D014",
+      "name": "IBRAHEEM",
+      "active": true,
+      "credit_limit": null,
+      "details": {
+        "phone": "9603865059",
+        "route": "Retail"
+      }
+    },
+    {
+      "id": "6b448d5e-be39-41a5-ab34-6c53f4187da5",
+      "code": "D015",
+      "name": "SATYANARAYNA OMPRASAD ROUTE",
+      "active": true,
+      "credit_limit": null,
+      "details": {
+        "phone": "",
+        "route": "Retail"
+      }
+    },
+    {
+      "id": "fc4930bb-9775-4156-ad91-a161a981ed2d",
+      "code": "D016",
+      "name": "MUBASHIR SALESMAN",
+      "active": true,
+      "credit_limit": null,
+      "details": {
+        "phone": "9010885107",
+        "route": "Wholesale",
+        "is_direct_route": "true"
+      }
+    }
+  ],
+  "products": [
+    {
+      "id": "9f5e39cb-3676-4071-a950-213929091723",
+      "code": "1153",
+      "name": "FL LIBERTY DSFT -200S NPCT 10HL_1153",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "5257.93000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "b7f89b34-e295-4057-aff1-861e85db824e",
+      "code": "1736",
+      "name": "BERKELEY SPECIAL FT NPCT+NS 10BE_1736",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "6230.20000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "cf5cb0ff-6220-4a98-b4b8-c887a57695f7",
+      "code": "1783",
+      "name": "SCISSORS MENTHOL FRESH 10BE-NS_1783",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "7341.30000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "f4038b64-b9eb-4a98-a28f-72563c51d8e3",
+      "code": "3037",
+      "name": "AM CLUB FRESH MINT FK -CC 10BE_3037",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "17450.39000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "d63b32be-3cdd-4db2-97fd-09d15b287d90",
+      "code": "3041",
+      "name": "AM CLUB C FRTY T 10M -CC 10BE_3041",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "17450.39000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "fbf12245-20bb-4b0c-91a7-5a09bbaf91a9",
+      "code": "3043",
+      "name": "CLASSIC ICE BURST 10M -CC 10BE_3043",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "22023.81000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "9282e6c9-f75c-4e28-afe8-2aa27f4a1ab4",
+      "code": "3053",
+      "name": "CLASSIC REFR TASTE NPCT -CC 20BE_3053",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "22023.81000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "3fcd49c1-6b73-46a1-9817-6df67165aecd",
+      "code": "3419",
+      "name": "AMERICAN CLUB SMASH FK 10BE_3419",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "17450.39000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "bfa9d4f5-cce3-4db1-beae-1ae09e85736e",
+      "code": "3474",
+      "name": "GFLAKE CENTURY NPCT1 NS 10BE_3474",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "8134.92000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "1408ee6d-e8f3-48d5-b08b-98bfbf1704dd",
+      "code": "3531",
+      "name": "GOLDFLAKE SLK 16CP(4M)-OLV-NPCT_3531",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "2857.14000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "8026eb62-94de-4d59-931c-d44ee9a684f8",
+      "code": "3548",
+      "name": "AMERICAN CLUB SMASH FK 10BE-PI_3548",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "17450.39000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "7a0dbbf9-2fdd-43ee-a67a-8a51c9ba4a2e",
+      "code": "3580",
+      "name": "GOLD FLAKE SLK BLUE FT 10HL_3580",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "10416.66000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "96d81252-517d-441b-ad7e-c0bc7b88ecfa",
+      "code": "3581",
+      "name": "GOLD FLAKE SLK RED FT 10HL_3581",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "10416.66000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "0ee138bd-948f-4727-a63b-7b42fbd70f97",
+      "code": "3586",
+      "name": "GF INDIE MINT 10BE-MD1-12M-V1_3586",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "11408.73000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "585d49ca-048a-4045-bfa5-a13c8423b5b8",
+      "code": "3610",
+      "name": "GOLD FL FT-10BE MD+NPCT-FFT2_3610",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "11656.75000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "0ef7e085-d8ba-4102-97c5-c5cd4b18a9a2",
+      "code": "3624",
+      "name": "GOLDFLAKE FK SOCIAL 2-POD 20RC_3624",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "16864.90000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "3e7b4d46-3a25-424f-ac4e-b955a49fca84",
+      "code": "3652",
+      "name": "CL ICE BURST FS-CC-BDG-ND-20BE_3652",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "22023.81000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "3ff53af4-fb31-4e11-b6f7-ebb7f27e6de4",
+      "code": "3653",
+      "name": "CL DOUBLE BURST FS-BDG-ND 20BE_3653",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "22023.81000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "866b2127-ddac-4cfe-888f-69055d8f82a8",
+      "code": "3675",
+      "name": "AM CLUB CLOVE MINT FK 10BE-PI_3675",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "17361.12000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "48e65f3f-3f28-4e25-9f82-bec0e006b513",
+      "code": "3692",
+      "name": "CLASSIC CONNECT FTK 20RC-10M_3692",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "19642.86000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "06a50342-edd4-4c14-94f2-9aaceee5b13d",
+      "code": "3730",
+      "name": "NC DLX FT 10BE(MD+NPCT)-FFT_3730",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "11408.73000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "7fc8e287-cbd6-46fd-8ed5-c3a8b1f49148",
+      "code": "3738",
+      "name": "BRISTOL FT TIP 10BE-FFT_3738",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "8035.72000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "5a95425e-5978-4ca3-bd9b-67f800b3e8ae",
+      "code": "3742",
+      "name": "FLPRM FT 10BE-NS-NPCT V3-FIRMFT_3742",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "9970.24000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "2974039f-3709-45f0-bdd2-091b3eb486be",
+      "code": "3744",
+      "name": "WAVE COOL MINT10BE-OB-IFP-MDPCT_3744",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "8699.90000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "ad58dbf2-9a13-4454-b14a-e43665131218",
+      "code": "3746",
+      "name": "AMERICAN CLUB FRESH FT10BE_3746",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "17450.53000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "63b0af27-4ec7-4c8c-b85f-8cfaaa04b5aa",
+      "code": "3752",
+      "name": "CLASSIC BT-20FS-MD1_3752",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "22023.81000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "25290fc3-c31e-4a3d-910d-f79e0798aa55",
+      "code": "3756",
+      "name": "GFK RED NBUNDLE+NPCT1 10RC_3756",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "22023.81000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "08f5e159-2725-47f3-aa66-0786e1c4c2f7",
+      "code": "3757",
+      "name": "GFK RED NBUNDLE+NPCT1 20RC_3757",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "22023.81000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "d8e22843-5798-499f-bd0f-0071873bddba",
+      "code": "3758",
+      "name": "GFK BLUE NBUNDLE+NPCT1 10BE_3758",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "22023.81000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "a45a2962-890d-401f-9e83-37b4039ca286",
+      "code": "3759",
+      "name": "GFK BLUE NBUNDLE+NPCT1 20BE_3759",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "22023.81000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "034c56da-e188-4137-8c1a-cd6c5196313c",
+      "code": "4443",
+      "name": "AMERICAN CLUB CLOVE MINT - FRESH_4443",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "10416.50000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "04390428-36c9-4a33-92ad-696d92e66d2b",
+      "code": "4465",
+      "name": "WAVE COOL MINT DLX FT10BE_4465",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "5300.00000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "e318bed8-94a4-4dae-9efd-65c5c7d89caa",
+      "code": "4469",
+      "name": "CL BALANCED TASTE LONGS FT10BE_4469",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "16071.40000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "a7a165ca-d3d5-4741-ac73-4c590c27d66a",
+      "code": "4473",
+      "name": "GOLD FLAKE DLX FT10BE_4473",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "8521.70000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "0f85d323-bd04-4116-98ad-0869dcf3a067",
+      "code": "4483",
+      "name": "PLAYERS FRUITY COOL DLX FT10BE_4483",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "7341.30000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "4236c817-4e9a-4e43-a8aa-10b97bf7796d",
+      "code": "4491",
+      "name": "WAVEBOSS REFINED TASTE DSFT10BE_4491",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "5300.00000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "027194b9-b655-4e26-8970-e7f07b74b9ba",
+      "code": "4499",
+      "name": "CL ICE BURST OPTIMA LONGS 10BE_4499",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "16071.40000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "e34d8419-c570-42d5-a4bf-1d94cc1d5db6",
+      "code": "4519",
+      "name": "AMERICAN CLUB FRUITY LONGS 10BE_4519",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "13293.65000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "887edb7b-3c74-478c-b7ef-636e6dce7f30",
+      "code": "4530",
+      "name": "GF RED OPTIMA LONGS FT10BE_4530",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "16071.40000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "62e6401c-868d-4b8e-8542-fc72a5f5df78",
+      "code": "4531",
+      "name": "GF BLUE OPTIMA LONGS FT10BE_4531",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "16071.40000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "1597382a-b82a-492a-8cd8-40157ed373f0",
+      "code": "4532",
+      "name": "FLAKE PREMIUM RED DELUXE DSFT 10BE_4532",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "8680.56000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "502b933e-e29c-4393-820a-e7c2ea89c7f4",
+      "code": "4546",
+      "name": "AMC NY COOL SLEEK PREMIUM FTK20RC_4546",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "16750.53000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "a7655f32-a68d-400b-a28f-a6674a0ec1be",
+      "code": "4565",
+      "name": "CL BT FIRMFT NB-MD1-10BE-PI_4565",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "22023.81000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "828f5731-f1cb-41dc-beaf-d0103d5abe0e",
+      "code": "4593",
+      "name": "AMERICAN CLUB FRESH RSFT10BE-PI_4593",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "10714.29000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "c447df24-6365-43cd-99a6-f533e3e01aec",
+      "code": "4600",
+      "name": "BERKLEY SPECIAL DSFT 10BE - FFT_4600",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "6230.20000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "b50fad0f-afec-4cdf-8081-97077f59ccf4",
+      "code": "654",
+      "name": "DUKE SPECIAL DSFT 10HL_654",
+      "active": true,
+      "unit": "m",
+      "base_unit": "m",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "5257.93000000",
+      "fractional": true,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "b178cc7b-9c37-474b-8cc9-123eab052851",
+      "code": "DEMO-A",
+      "name": "Demo Meadow Pack",
+      "active": false,
+      "unit": "m/pack",
+      "base_unit": "pcs",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "100.00000000",
+      "fractional": false,
+      "effective_date": "2026-11-09T18:30:00.000Z"
+    },
+    {
+      "id": "caddc4a9-74bb-4a80-94d2-c33543bc2b5c",
+      "code": "DEMO-B",
+      "name": "Demo River Box",
+      "active": false,
+      "unit": "box",
+      "base_unit": "unit",
+      "conversion": "10.00000000",
+      "basis": "100.00000000",
+      "rate": "250.00000000",
+      "fractional": false,
+      "effective_date": "2026-11-05T18:30:00.000Z"
+    },
+    {
+      "id": "8d43b79a-9ce5-4107-8b9b-95e47a5a6e4a",
+      "code": "DEMO-C",
+      "name": "Demo Hill Unit",
+      "active": false,
+      "unit": "unit",
+      "base_unit": "unit",
+      "conversion": "1.00000000",
+      "basis": "1.00000000",
+      "rate": "10.00500000",
+      "fractional": false,
+      "effective_date": "2026-11-05T18:30:00.000Z"
+    }
+  ],
+  "moneyAccounts": [
+    {
+      "id": "56f8d9c1-4689-44ae-8a38-65af8e2755aa",
+      "name": "Demo receiving bank",
+      "type": "bank",
+      "holder": "Demo business",
+      "active": true,
+      "allow_overdraft": false,
+      "details": {}
+    },
+    {
+      "id": "f1062f14-7a18-4c20-bdc5-efec91539522",
+      "name": "Demo manager cash",
+      "type": "cash",
+      "holder": "Demo manager",
+      "active": true,
+      "allow_overdraft": false,
+      "details": {}
+    }
+  ],
+  "employees": [
+    {
+      "id": "emp-1",
+      "name": "Ramesh Kumar",
+      "role": "Driver / Delivery Staff",
+      "phone": "9876543210",
+      "active": true
+    },
+    {
+      "id": "emp-2",
+      "name": "Suresh Sharma",
+      "role": "Godown In-charge",
+      "phone": "9876543211",
+      "active": true
+    },
+    {
+      "id": "emp-3",
+      "name": "Gopal Verma",
+      "role": "Loading / Unloading Helper",
+      "phone": "9876543212",
+      "active": true
+    },
+    {
+      "id": "emp-4",
+      "name": "Mahesh Yadav",
+      "role": "Office Assistant",
+      "phone": "9876543213",
+      "active": true
+    },
+    {
+      "id": "emp-5",
+      "name": "Santosh Tiwari",
+      "role": "Accounts Assistant",
+      "phone": "9876543214",
+      "active": true
+    }
+  ],
+  "foodsSalesmen": [
+    {
+      "id": "fs-1",
+      "name": "Sunil Agrawal (Foods)",
+      "territory": "Main Market / Route 1",
+      "phone": "9823011221",
+      "active": true
+    },
+    {
+      "id": "fs-2",
+      "name": "Vikas Jain (Foods)",
+      "territory": "Old City / Route 2",
+      "phone": "9823011222",
+      "active": true
+    },
+    {
+      "id": "fs-3",
+      "name": "Rajesh Gupta (Foods)",
+      "territory": "Bypass / Route 3",
+      "phone": "9823011223",
+      "active": true
+    },
+    {
+      "id": "fs-4",
+      "name": "Amit Singhal (Foods)",
+      "territory": "Industrial Area / Route 4",
+      "phone": "9823011224",
+      "active": true
+    },
+    {
+      "id": "fs-5",
+      "name": "Dinesh Patel (Foods)",
+      "territory": "Station Road / Route 5",
+      "phone": "9823011225",
+      "active": true
+    }
+  ]
+}

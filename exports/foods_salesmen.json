@@ -1,0 +1,37 @@
+[
+  {
+    "id": "fs-1",
+    "name": "Sunil Agrawal (Foods)",
+    "territory": "Main Market / Route 1",
+    "phone": "9823011221",
+    "active": true
+  },
+  {
+    "id": "fs-2",
+    "name": "Vikas Jain (Foods)",
+    "territory": "Old City / Route 2",
+    "phone": "9823011222",
+    "active": true
+  },
+  {
+    "id": "fs-3",
+    "name": "Rajesh Gupta (Foods)",
+    "territory": "Bypass / Route 3",
+    "phone": "9823011223",
+    "active": true
+  },
+  {
+    "id": "fs-4",
+    "name": "Amit Singhal (Foods)",
+    "territory": "Industrial Area / Route 4",
+    "phone": "9823011224",
+    "active": true
+  },
+  {
+    "id": "fs-5",
+    "name": "Dinesh Patel (Foods)",
+    "territory": "Station Road / Route 5",
+    "phone": "9823011225",
+    "active": true
+  }
+]

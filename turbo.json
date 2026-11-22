@@ -1,0 +1,39 @@
+{
+  "tasks": {
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "build": {
+      "dependsOn": [
+        "^build"
+      ],
+      "outputs": [
+        "dist/**"
+      ]
+    },
+    "typecheck": {
+      "dependsOn": [
+        "^typecheck"
+      ]
+    },
+    "@ledger/db#build": {
+      "outputs": []
+    },
+    "@ledger/contracts#build": {
+      "outputs": []
+    }
+  },
+  "globalPassThroughEnv": [
+    "DATABASE_URL",
+    "APP_ORIGIN",
+    "AUTH_BASE_URL",
+    "BETTER_AUTH_SECRET",
+    "APP_MODE",
+    "COOKIE_SECURE",
+    "PORT",
+    "ATTACHMENT_DIR",
+    "API_HOST",
+    "TRUST_PROXY_HEADER"
+  ]
+}

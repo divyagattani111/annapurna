@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Annapurna Sales Corp - Daily Cash &amp; Sales</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=Plus+Jakarta+Sans:wght@600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<style>
+    @layer base {
+      html, body { margin: 0; padding: 0; }
+      body { overscroll-behavior: none; }
+    }
+    ::-webkit-scrollbar { display: none; }
+  </style>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            "surface-container-highest": "#d3e4fe",
+            "surface-bright": "#f8f9ff",
+            "primary": "#0051d5",
+            "on-primary": "#ffffff",
+            "surface-container-lowest": "#ffffff",
+            "surface-container-low": "#f1f5fd",
+            "surface-container": "#e8eefa",
+            "surface-container-high": "#dbe5f7",
+            "surface": "#f4f7fc",
+            "on-surface": "#0f172a",
+            "on-surface-variant": "#475569",
+            "outline": "#94a3b8",
+            "outline-variant": "#cbd5e1",
+            "tertiary": "#059669",
+            "tertiary-container": "#d1fae5",
+            "on-tertiary-container": "#065f46",
+            "error": "#dc2626",
+            "error-container": "#fee2e2",
+            "on-error-container": "#991b1b"
+          },
+          fontFamily: {
+            sans: ["Inter", "sans-serif"],
+            display: ["Plus Jakarta Sans", "sans-serif"]
+          }
+        }
+      }
+    };
+  </script>
+</head>
+<body class="bg-surface font-sans text-on-surface antialiased min-h-screen flex flex-col">
+<!-- Friendly Top Header -->
+<header class="bg-surface-container-lowest border-b border-outline-variant/50 sticky top-0 z-30 shadow-sm">
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+<!-- Store Name & Date Status -->
+<div class="flex items-center gap-4">
+<div class="w-12 h-12 rounded-2xl bg-primary/10 text-primary flex items-center justify-center shadow-inner">
+<span class="material-symbols-outlined text-3xl">storefront</span>
+</div>
+<div>
+<div class="flex items-center gap-2.5">
+<h1 class="text-xl font-bold font-display text-on-surface tracking-tight">Annapurna Sales Corp</h1>
+<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800">
+<span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              Shop Open
+            </span>
+</div>
+<p class="text-sm font-medium text-on-surface-variant">Today, 04 Nov 2026 • Everyday Sales &amp; Cash</p>
+</div>
+</div>
+<!-- User Profile & Help -->
+<div class="flex items-center gap-3">
+<div class="hidden sm:flex flex-col text-right">
+<span class="text-sm font-semibold text-on-surface">Family / Store Account</span>
+<span class="text-xs text-on-surface-variant">Owner Mode</span>
+</div>
+<div class="w-11 h-11 rounded-full bg-primary text-white flex items-center justify-center font-bold text-sm shadow-sm ring-2 ring-primary/20">
+          AS
+        </div>
+</div>
+</div>
+</header>
+<!-- Main Content Wrap -->
+<main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+<!-- Quick Action Ribbon (Friendly Big Buttons) -->
+<section class="bg-surface-container-lowest rounded-2xl p-4 shadow-sm border border-outline-variant/40 flex flex-wrap items-center justify-between gap-3">
+<div class="flex flex-wrap items-center gap-3">
+<button class="px-5 py-2.5 rounded-xl bg-primary hover:bg-blue-700 text-white font-semibold text-sm flex items-center gap-2 shadow-sm transition-all hover:scale-[1.01] active:scale-[0.99]" type="button">
+<span class="material-symbols-outlined text-xl">add_circle</span>
+<span>+ New Bill</span>
+</button>
+<button class="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm flex items-center gap-2 shadow-sm transition-all hover:scale-[1.01] active:scale-[0.99]" type="button">
+<span class="material-symbols-outlined text-xl">payments</span>
+<span>+ Receive Payment</span>
+</button>
+<button class="px-4 py-2.5 rounded-xl bg-surface-container-high hover:bg-surface-container text-on-surface font-semibold text-sm flex items-center gap-2 transition-all" type="button">
+<span class="material-symbols-outlined text-xl text-rose-600">receipt_long</span>
+<span>+ Add Expense</span>
+</button>
+</div>
+<div>
+<button class="px-4 py-2.5 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 font-semibold text-sm flex items-center gap-2 transition-colors" type="button">
+<span class="material-symbols-outlined text-xl text-amber-600">point_of_sale</span>
+<span>Count Cash &amp; Close Day</span>
+</button>
+</div>
+</section>
+<!-- 4 Clean, Friendly Summary Cards -->
+<section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+<!-- Card 1: Today's Sales -->
+<div class="bg-surface-container-lowest rounded-2xl p-5 shadow-sm border border-outline-variant/40 flex flex-col justify-between hover:shadow-md transition-shadow">
+<div class="flex items-center justify-between mb-3">
+<span class="text-sm font-semibold text-on-surface-variant">Today's Sales</span>
+<div class="w-10 h-10 rounded-xl bg-blue-50 text-primary flex items-center justify-center">
+<span class="material-symbols-outlined text-2xl">shopping_bag</span>
+</div>
+</div>
+<div>
+<div class="text-2xl sm:text-3xl font-bold font-display text-on-surface tracking-tight">₹84,250</div>
+<div class="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full">
+<span class="material-symbols-outlined text-sm">receipt</span>
+<span>14 Bills Made Today</span>
+</div>
+</div>
+</div>
+<!-- Card 2: Cash in Drawer -->
+<div class="bg-surface-container-lowest rounded-2xl p-5 shadow-sm border border-outline-variant/40 flex flex-col justify-between hover:shadow-md transition-shadow">
+<div class="flex items-center justify-between mb-3">
+<span class="text-sm font-semibold text-on-surface-variant">Cash in Drawer</span>
+<div class="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+<span class="material-symbols-outlined text-2xl">account_balance_wallet</span>
+</div>
+</div>
+<div>
+<div class="text-2xl sm:text-3xl font-bold font-display text-emerald-700 tracking-tight">₹38,650</div>
+<div class="mt-2 text-xs text-on-surface-variant font-medium">
+            Physical notes currently in drawer
+          </div>
+</div>
+</div>
+<!-- Card 3: Bank Payments Received -->
+<div class="bg-surface-container-lowest rounded-2xl p-5 shadow-sm border border-outline-variant/40 flex flex-col justify-between hover:shadow-md transition-shadow">
+<div class="flex items-center justify-between mb-3">
+<span class="text-sm font-semibold text-on-surface-variant">Bank &amp; UPI Received</span>
+<div class="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+<span class="material-symbols-outlined text-2xl">account_balance</span>
+</div>
+</div>
+<div>
+<div class="text-2xl sm:text-3xl font-bold font-display text-on-surface tracking-tight">₹26,000</div>
+<div class="mt-2 text-xs text-on-surface-variant font-medium">
+            Received in SBI &amp; HDFC bank
+          </div>
+</div>
+</div>
+<!-- Card 4: Today's Expenses -->
+<div class="bg-surface-container-lowest rounded-2xl p-5 shadow-sm border border-outline-variant/40 flex flex-col justify-between hover:shadow-md transition-shadow">
+<div class="flex items-center justify-between mb-3">
+<span class="text-sm font-semibold text-on-surface-variant">Today's Expenses</span>
+<div class="w-10 h-10 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center">
+<span class="material-symbols-outlined text-2xl">receipt_long</span>
+</div>
+</div>
+<div>
+<div class="text-2xl sm:text-3xl font-bold font-display text-rose-600 tracking-tight">₹4,850</div>
+<div class="mt-2 text-xs text-on-surface-variant font-medium">
+            Petrol, Tea, Snacks &amp; Repairs
+          </div>
+</div>
+</div>
+</section>
+<!-- Two Friendly Main Content Sections -->
+<div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+<!-- Section 1: Online / UPI Payments to Confirm (7 Columns) -->
+<div class="lg:col-span-7 bg-surface-container-lowest rounded-2xl shadow-sm border border-outline-variant/40 overflow-hidden flex flex-col">
+<div class="p-5 border-b border-outline-variant/30 flex items-center justify-between bg-surface-container-low/50">
+<div class="flex items-center gap-3">
+<div class="w-9 h-9 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
+<span class="material-symbols-outlined text-xl">qr_code_scanner</span>
+</div>
+<div>
+<h2 class="font-bold font-display text-base text-on-surface">Online / UPI Payments to Confirm</h2>
+<p class="text-xs text-on-surface-variant">Check your phone/bank message and click Confirm</p>
+</div>
+</div>
+<span class="px-2.5 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-800">
+            3 to Confirm
+          </span>
+</div>
+<!-- Clean Friendly List -->
+<div class="divide-y divide-outline-variant/20 p-2">
+<!-- Item 1 -->
+<div class="p-3.5 hover:bg-surface-container-low rounded-xl transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded-full bg-blue-50 text-primary flex items-center justify-center font-bold text-sm shrink-0">
+                G
+              </div>
+<div>
+<div class="font-semibold text-sm text-on-surface">Pooja Stores (via Ramesh)</div>
+<div class="text-xs text-on-surface-variant flex items-center gap-2 mt-0.5">
+<span class="bg-surface-container px-2 py-0.5 rounded text-[11px] font-medium text-on-surface">Google Pay UPI</span>
+<span>11:42 AM</span>
+</div>
+</div>
+</div>
+<div class="flex items-center justify-between sm:justify-end gap-3">
+<span class="text-base font-bold text-on-surface">₹4,500</span>
+<button class="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-xs flex items-center gap-1 shadow-sm transition-all" onclick="this.textContent = 'Confirmed ✓'; this.className = 'px-3 py-1.5 rounded-lg bg-emerald-100 text-emerald-800 font-medium text-xs';" type="button">
+<span class="material-symbols-outlined text-sm">check</span>
+<span>Confirm</span>
+</button>
+</div>
+</div>
+<!-- Item 2 -->
+<div class="p-3.5 hover:bg-surface-container-low rounded-xl transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded-full bg-indigo-50 text-indigo-700 flex items-center justify-center font-bold text-sm shrink-0">
+                H
+              </div>
+<div>
+<div class="font-semibold text-sm text-on-surface">Tirupati Retail (via Priya)</div>
+<div class="text-xs text-on-surface-variant flex items-center gap-2 mt-0.5">
+<span class="bg-surface-container px-2 py-0.5 rounded text-[11px] font-medium text-on-surface">HDFC QR Code</span>
+<span>01:15 PM</span>
+</div>
+</div>
+</div>
+<div class="flex items-center justify-between sm:justify-end gap-3">
+<span class="text-base font-bold text-on-surface">₹3,900</span>
+<button class="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-xs flex items-center gap-1 shadow-sm transition-all" onclick="this.textContent = 'Confirmed ✓'; this.className = 'px-3 py-1.5 rounded-lg bg-emerald-100 text-emerald-800 font-medium text-xs';" type="button">
+<span class="material-symbols-outlined text-sm">check</span>
+<span>Confirm</span>
+</button>
+</div>
+</div>
+<!-- Item 3 -->
+<div class="p-3.5 hover:bg-surface-container-low rounded-xl transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded-full bg-purple-50 text-purple-700 flex items-center justify-center font-bold text-sm shrink-0">
+                P
+              </div>
+<div>
+<div class="font-semibold text-sm text-on-surface">Laxmi Provision (via Santosh)</div>
+<div class="text-xs text-on-surface-variant flex items-center gap-2 mt-0.5">
+<span class="bg-surface-container px-2 py-0.5 rounded text-[11px] font-medium text-on-surface">PhonePe UPI</span>
+<span>03:20 PM</span>
+</div>
+</div>
+</div>
+<div class="flex items-center justify-between sm:justify-end gap-3">
+<span class="text-base font-bold text-on-surface">₹4,000</span>
+<button class="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-xs flex items-center gap-1 shadow-sm transition-all" onclick="this.textContent = 'Confirmed ✓'; this.className = 'px-3 py-1.5 rounded-lg bg-emerald-100 text-emerald-800 font-medium text-xs';" type="button">
+<span class="material-symbols-outlined text-sm">check</span>
+<span>Confirm</span>
+</button>
+</div>
+</div>
+</div>
+<div class="p-3 bg-surface-container-low border-t border-outline-variant/30 text-center">
+<span class="text-xs text-on-surface-variant">Total Unconfirmed: <strong class="text-on-surface">₹12,400</strong> across 3 customers</span>
+</div>
+</div>
+<!-- Section 2: Today's Sales & Cash Summary (5 Columns) -->
+<div class="lg:col-span-5 bg-surface-container-lowest rounded-2xl shadow-sm border border-outline-variant/40 p-5 flex flex-col justify-between">
+<div>
+<div class="flex items-center gap-3 mb-4">
+<div class="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-800 flex items-center justify-center">
+<span class="material-symbols-outlined text-xl">calculate</span>
+</div>
+<div>
+<h2 class="font-bold font-display text-base text-on-surface">Today's Cash Summary</h2>
+<p class="text-xs text-on-surface-variant">Simple drawer tally for easy counting</p>
+</div>
+</div>
+<!-- Plain Simple Math Breakdown -->
+<div class="bg-surface rounded-xl p-4 space-y-3.5 border border-outline-variant/30">
+<div class="flex items-center justify-between text-sm">
+<span class="text-on-surface-variant flex items-center gap-2">
+<span class="w-2 h-2 rounded-full bg-slate-400"></span>
+                Morning Cash (Opening)
+              </span>
+<span class="font-semibold text-on-surface">₹5,000</span>
+</div>
+<div class="flex items-center justify-between text-sm">
+<span class="text-emerald-700 font-medium flex items-center gap-2">
+<span class="material-symbols-outlined text-base">add</span>
+                Cash Collected Today
+              </span>
+<span class="font-bold text-emerald-700">+ ₹38,500</span>
+</div>
+<div class="flex items-center justify-between text-sm">
+<span class="text-rose-600 font-medium flex items-center gap-2">
+<span class="material-symbols-outlined text-base">remove</span>
+                Spent on Expenses
+              </span>
+<span class="font-bold text-rose-600">- ₹4,850</span>
+</div>
+<div class="pt-3 border-t border-outline-variant/40 flex items-center justify-between">
+<div>
+<span class="font-bold text-base text-on-surface block">Cash in Drawer</span>
+<span class="text-[11px] text-on-surface-variant">Physical notes count should match</span>
+</div>
+<div class="text-2xl font-bold font-display text-primary">₹38,650</div>
+</div>
+</div>
+<!-- Little Quick Breakdown of Expenses -->
+<div class="mt-4 pt-3 border-t border-outline-variant/20">
+<span class="text-xs font-bold text-on-surface-variant uppercase tracking-wider block mb-2">Today's Quick Expenses:</span>
+<div class="space-y-1.5 text-xs text-on-surface-variant">
+<div class="flex justify-between">
+<span>• Van Diesel MH-12</span>
+<span class="font-medium text-on-surface">₹3,200</span>
+</div>
+<div class="flex justify-between">
+<span>• Scale Servicing</span>
+<span class="font-medium text-on-surface">₹1,000</span>
+</div>
+<div class="flex justify-between">
+<span>• Office Tea &amp; Courier</span>
+<span class="font-medium text-on-surface">₹650</span>
+</div>
+</div>
+</div>
+</div>
+<div class="mt-5">
+<button class="w-full py-2.5 rounded-xl bg-surface-container-high hover:bg-surface-container text-on-surface font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors" type="button">
+<span class="material-symbols-outlined text-base">print</span>
+<span>Print Cash Summary Slip</span>
+</button>
+</div>
+</div>
+</div>
+</main>
+<!-- Clean Friendly Footer -->
+<footer class="bg-surface-container-lowest border-t border-outline-variant/30 py-4 mt-8">
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between text-xs text-on-surface-variant gap-2">
+<div class="flex items-center gap-2">
+<span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+<span class="font-semibold text-on-surface">Annapurna Sales Corp</span>
+<span>• Simple Store Ledger</span>
+</div>
+<div>
+<span>Everything saved safely • Have a great business day!</span>
+</div>
+</div>
+</footer>
+</body></html>

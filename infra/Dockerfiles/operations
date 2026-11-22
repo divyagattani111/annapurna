@@ -1,0 +1,19 @@
+FROM oven/bun:1.4.4 AS app
+WORKDIR /app
+COPY package.json bun.lock turbo.json tsconfig.base.json ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY packages/db/package.json packages/db/package.json
+COPY packages/contracts/package.json packages/contracts/package.json
+RUN bun install --frozen-lockfile
+COPY apps/api apps/api
+COPY packages packages
+COPY scripts scripts
+FROM postgres:18.6-bookworm
+COPY --from=app /usr/local/bin/bun /usr/local/bin/bun
+COPY --from=app /app /app
+WORKDIR /app
+ENV PG_BIN=/usr/lib/postgresql/18/bin
+USER 1000:1000
+ENTRYPOINT []
+CMD ["bun", "--no-env-file", "scripts/backup.ts"]

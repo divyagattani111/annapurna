@@ -1,0 +1,20 @@
+[
+  {
+    "id": "56f8d9c1-4689-44ae-8a38-65af8e2755aa",
+    "name": "Demo receiving bank",
+    "type": "bank",
+    "holder": "Demo business",
+    "active": true,
+    "allow_overdraft": false,
+    "details": {}
+  },
+  {
+    "id": "f1062f14-7a18-4c20-bdc5-efec91539522",
+    "name": "Demo manager cash",
+    "type": "cash",
+    "holder": "Demo manager",
+    "active": true,
+    "allow_overdraft": false,
+    "details": {}
+  }
+]

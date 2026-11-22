@@ -1,0 +1,139 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1793953332798,
+      "tag": "0000_lush_purple_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1793953332799,
+      "tag": "0001_integrity",
+      "breakpoints": false
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793953332800,
+      "tag": "0002_balance_trigger_record",
+      "breakpoints": false
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793953332801,
+      "tag": "0003_query_indexes",
+      "breakpoints": false
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793955807449,
+      "tag": "0004_salty_mordo",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793955807450,
+      "tag": "0005_opening_identity",
+      "breakpoints": false
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793955807451,
+      "tag": "0006_itc_customers",
+      "breakpoints": false
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793955807452,
+      "tag": "0007_product_itc_multiple",
+      "breakpoints": false
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793955807453,
+      "tag": "0008_product_focus_brand",
+      "breakpoints": false
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793955807454,
+      "tag": "0009_itc_customer_gst",
+      "breakpoints": false
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793955807455,
+      "tag": "0010_cash_handovers",
+      "breakpoints": false
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1793955807456,
+      "tag": "0011_product_barcode",
+      "breakpoints": false
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1793955807457,
+      "tag": "0012_claim_reversed_status",
+      "breakpoints": false
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1793955807458,
+      "tag": "0013_salesman_role",
+      "breakpoints": false
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1793955807459,
+      "tag": "0014_confectionery_and_manual_lines",
+      "breakpoints": false
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1793955807460,
+      "tag": "0015_great_architecture",
+      "breakpoints": false
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1793955807461,
+      "tag": "0016_performance_indexes",
+      "breakpoints": false
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1793955807462,
+      "tag": "0017_employee_and_foods_fks",
+      "breakpoints": false
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1793955807463,
+      "tag": "0018_product_categories_standardization",
+      "breakpoints": false
+    }
+  ]
+}

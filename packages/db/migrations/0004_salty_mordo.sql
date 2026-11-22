@@ -1,0 +1,1 @@
+ALTER TABLE "reconciliations" ADD COLUMN "state" text DEFAULT 'active' NOT NULL;

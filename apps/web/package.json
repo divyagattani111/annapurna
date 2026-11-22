@@ -1,0 +1,24 @@
+{
+  "name": "@ledger/web",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "vite": "8.3.6",
+    "@vitejs/plugin-react": "6.2.1",
+    "@tanstack/react-query": "5.106.1",
+    "tailwindcss": "4.3.4",
+    "@tailwindcss/vite": "4.3.4",
+    "echarts": "6.1.0",
+    "lucide-react": "1.70.0",
+    "@ledger/contracts": "workspace:*",
+    "zod": "4.6.7"
+  }
+}

@@ -1,0 +1,12 @@
+node_modules/
+.tools/
+.local/
+.env
+.env.*
+!.env.example
+dist/
+.turbo/
+playwright-report/
+test-results/
+private-files/
+*.log

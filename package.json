@@ -1,0 +1,47 @@
+{
+  "name": "family-sales-ledger",
+  "private": true,
+  "packageManager": "bun@1.4.4",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "typecheck": "turbo typecheck",
+    "lint": "eslint .",
+    "test": "bun --no-env-file test tests/unit.test.ts",
+    "test:integration": "bun --no-env-file test tests/integration.test.ts",
+    "test:e2e": "playwright test",
+    "db:generate": "bun --no-env-file run --cwd packages/db generate",
+    "db:migrate": "bun --no-env-file packages/db/src/migrate.ts",
+    "db:seed:demo": "bun --no-env-file apps/api/src/seed.ts",
+    "backup": "bun --no-env-file scripts/backup.ts",
+    "restore:drill": "bun --no-env-file scripts/restore-drill.ts",
+    "test:performance": "bun --no-env-file scripts/performance.ts",
+    "format": "prettier --write apps packages/*/src tests scripts *.json *.ts *.js"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.65.0",
+    "@types/bun": "1.4.4",
+    "@types/pg": "8.23.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "drizzle-orm": "0.45.4",
+    "eslint": "10.14.0",
+    "prettier": "3.9.10",
+    "turbo": "2.11.10",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.1"
+  },
+  "dependencies": {
+    "decimal.js": "10.6.0"
+  },
+  "type": "module",
+  "overrides": {
+    "esbuild": "0.28.2",
+    "minimatch": "11.0.1"
+  }
+}

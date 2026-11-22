@@ -1,0 +1,37 @@
+[
+  {
+    "id": "emp-1",
+    "name": "Ramesh Kumar",
+    "role": "Driver / Delivery Staff",
+    "phone": "9876543210",
+    "active": true
+  },
+  {
+    "id": "emp-2",
+    "name": "Suresh Sharma",
+    "role": "Godown In-charge",
+    "phone": "9876543211",
+    "active": true
+  },
+  {
+    "id": "emp-3",
+    "name": "Gopal Verma",
+    "role": "Loading / Unloading Helper",
+    "phone": "9876543212",
+    "active": true
+  },
+  {
+    "id": "emp-4",
+    "name": "Mahesh Yadav",
+    "role": "Office Assistant",
+    "phone": "9876543213",
+    "active": true
+  },
+  {
+    "id": "emp-5",
+    "name": "Santosh Tiwari",
+    "role": "Accounts Assistant",
+    "phone": "9876543214",
+    "active": true
+  }
+]
