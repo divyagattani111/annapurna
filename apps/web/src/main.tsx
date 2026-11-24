@@ -4282,6 +4282,11 @@ function DraftReviewModal({
     : displayItems.reduce((acc, it) => acc + Number(it.amount || 0), 0) - Number(cleanBillDisc || 0);
   const balanceRemaining = (billTotalNum - Number(totalPaid)).toFixed(2);
 
+  const totalQuantityNum = displayItems.reduce((acc, it) => acc + (Number(it.quantity) || 0), 0);
+  const totalQuantityFormatted = Number.isInteger(totalQuantityNum)
+    ? String(totalQuantityNum)
+    : (Math.round(totalQuantityNum * 100) / 100).toFixed(2);
+
   return (
     <div
       role="dialog"
@@ -4443,9 +4448,25 @@ function DraftReviewModal({
           {/* Products Table */}
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#1e293b" }}>
-                Billed Products & Items ({displayItems.length})
-              </h4>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#1e293b" }}>
+                  Billed Products & Items ({displayItems.length})
+                </h4>
+                {displayItems.length > 0 && (
+                  <span
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 600,
+                      background: "#e0f2fe",
+                      color: "#0369a1",
+                      padding: "2px 8px",
+                      borderRadius: 10,
+                    }}
+                  >
+                    Total Qty: {totalQuantityFormatted}
+                  </span>
+                )}
+              </div>
               {quoteLoading && (
                 <span style={{ fontSize: 12, color: "#2563eb", display: "flex", alignItems: "center", gap: 4 }}>
                   <RefreshCw size={12} className="spin" /> Verifying ledger rates…
@@ -4474,7 +4495,7 @@ function DraftReviewModal({
                       <tr
                         key={item.id}
                         style={{
-                          borderBottom: i === displayItems.length - 1 ? "none" : "1px solid #f1f5f9",
+                          borderBottom: "1px solid #f1f5f9",
                           background: i % 2 === 0 ? "#ffffff" : "#fcfcfd",
                         }}
                       >
@@ -4497,6 +4518,19 @@ function DraftReviewModal({
                       </tr>
                     ))}
                   </tbody>
+                  <tfoot>
+                    <tr style={{ background: "#f8fafc", fontWeight: 700, borderTop: "2px solid #e2e8f0" }}>
+                      <td colSpan={3} style={{ padding: "10px 12px", textAlign: "right", color: "#475569", fontSize: 12, textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                        Total:
+                      </td>
+                      <td style={{ padding: "10px 12px", textAlign: "right", color: "#0369a1", fontSize: 13, fontWeight: 700 }}>
+                        {totalQuantityFormatted}
+                      </td>
+                      <td style={{ padding: "10px 12px", textAlign: "right", color: "#0f172a", fontSize: 13, fontWeight: 700 }}>
+                        {quote?.subtotal ? rupees(quote.subtotal) : rupees(displayItems.reduce((acc, it) => acc + Number(it.amount || 0), 0))}
+                      </td>
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
             )}
