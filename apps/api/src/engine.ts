@@ -55,6 +55,8 @@ export function ensure(
 }
 export const owner = (a: Actor) =>
   ensure(a.role === "owner", "Owner approval is required", "FORBIDDEN", 403);
+export const ownerOrManager = (a: Actor) =>
+  ensure(a.role === "owner" || a.role === "manager", "Owner or Manager permission is required", "FORBIDDEN", 403);
 export const auditEvent = async (
   t: Tx,
   a: Actor,

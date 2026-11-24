@@ -19,6 +19,7 @@ import {
   DomainError,
   ensure,
   owner,
+  ownerOrManager,
   auditEvent,
   lock,
   balance,
@@ -192,7 +193,7 @@ app.post("/api/v1/salesmen", async (c) => {
 });
 app.post("/api/v1/products", async (c) => {
   const a = c.get("actor");
-  owner(a);
+  ownerOrManager(a);
   const p = productSchema.parse(await c.req.json());
   ensure(
     D(p.conversion).gt(0) && D(p.basis).gt(0),
@@ -242,7 +243,7 @@ app.post("/api/v1/products", async (c) => {
 });
 app.post("/api/v1/accounts", async (c) => {
   const a = c.get("actor");
-  owner(a);
+  ownerOrManager(a);
   const p = accountSchema.parse(await c.req.json());
   ensure(
     p.type !== "cash" || !p.allowOverdraft,
@@ -261,7 +262,7 @@ app.post("/api/v1/accounts", async (c) => {
 });
 app.patch("/api/v1/masters/:type/:id", async (c) => {
   const a = c.get("actor");
-  owner(a);
+  ownerOrManager(a);
   const type = z
     .enum(["salesmen", "products", "money_accounts"])
     .parse(c.req.param("type")),
@@ -289,7 +290,7 @@ app.patch("/api/v1/masters/:type/:id", async (c) => {
 });
 app.patch("/api/v1/products/:id/focus", async (c) => {
   const a = c.get("actor");
-  owner(a);
+  ownerOrManager(a);
   const productId = id.parse(c.req.param("id"));
   const p = z.object({ isFocusBrand: z.boolean() }).parse(await c.req.json());
   const [updated] = await rows(
@@ -302,7 +303,7 @@ app.patch("/api/v1/products/:id/focus", async (c) => {
 });
 app.patch("/api/v1/products/:id/barcode", async (c) => {
   const a = c.get("actor");
-  owner(a);
+  ownerOrManager(a);
   const productId = id.parse(c.req.param("id"));
   const p = z.object({ barcode: z.string().max(500).nullable() }).parse(await c.req.json());
   const [updated] = await rows(
@@ -1813,7 +1814,7 @@ app.get("/api/v1/itc/customers", async (c) => {
 });
 app.post("/api/v1/itc/customers", async (c) => {
   const a = c.get("actor");
-  owner(a);
+  ownerOrManager(a);
   const p = z
     .object({
       customerId: z.string().min(1).max(100),
@@ -1851,7 +1852,7 @@ app.post("/api/v1/itc/customers", async (c) => {
 });
 app.patch("/api/v1/itc/customers/:id", async (c) => {
   const a = c.get("actor");
-  owner(a);
+  ownerOrManager(a);
   const custId = id.parse(c.req.param("id"));
   const p = z
     .object({
@@ -3207,7 +3208,7 @@ app.get("/api/v1/employees", async (c) => {
 });
 app.post("/api/v1/employees", async (c) => {
   const a = c.get("actor");
-  owner(a);
+  ownerOrManager(a);
   const p = z.object({
     name: z.string().min(1).max(200),
     role: z.string().default(""),
@@ -3218,7 +3219,7 @@ app.post("/api/v1/employees", async (c) => {
 });
 app.patch("/api/v1/employees/:id", async (c) => {
   const a = c.get("actor");
-  owner(a);
+  ownerOrManager(a);
   const eid = id.parse(c.req.param("id"));
   const p = z.object({
     name: z.string().min(1).max(200).optional(),
@@ -3243,7 +3244,7 @@ app.get("/api/v1/foods-salesmen", async (c) => {
 });
 app.post("/api/v1/foods-salesmen", async (c) => {
   const a = c.get("actor");
-  owner(a);
+  ownerOrManager(a);
   const p = z.object({
     name: z.string().min(1).max(200),
     territory: z.string().optional(),
@@ -3254,7 +3255,7 @@ app.post("/api/v1/foods-salesmen", async (c) => {
 });
 app.patch("/api/v1/foods-salesmen/:id", async (c) => {
   const a = c.get("actor");
-  owner(a);
+  ownerOrManager(a);
   const fid = id.parse(c.req.param("id"));
   const p = z.object({
     name: z.string().min(1).max(200).optional(),
@@ -3279,7 +3280,7 @@ app.get("/api/v1/product-pack-pcs", async (c) => {
 });
 app.post("/api/v1/product-pack-pcs", async (c) => {
   const a = c.get("actor");
-  owner(a);
+  ownerOrManager(a);
   const p = z.object({
     productId: id,
     pcsPerPack: z.number().int().min(1).max(10000),

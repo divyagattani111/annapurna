@@ -17,6 +17,22 @@ export function cleanMoney(val: unknown): string {
   return (neg ? "-" : "") + normalizedWhole + (parts.length === 2 ? "." + frac.padEnd(2, "0") : ".00");
 }
 
+export function parseMultiAmounts(val: unknown): string[] {
+  if (val === null || val === undefined) return [];
+  const raw = String(val).trim();
+  if (!raw) return [];
+  // Split by comma, space, newline, semicolon, or plus sign
+  const tokens = raw.split(/[\s,;+]+/).filter(Boolean);
+  const results: string[] = [];
+  for (const t of tokens) {
+    const cleaned = cleanMoney(t);
+    if (cleaned && !cleaned.startsWith("-") && cleaned !== "0.00") {
+      results.push(cleaned);
+    }
+  }
+  return results;
+}
+
 export function cleanDecimal(val: unknown): string {
   if (val === null || val === undefined) return "";
   let s = String(val).trim().replace(/[₹\u20B9,\s]/g, "").replace(/^rs\.?/i, "").trim();
@@ -112,7 +128,7 @@ export const bill = z
       .max(100),
     receipts: z
       .array(receipt.omit({ salesmanId: true }))
-      .max(10)
+      .max(50)
       .default([]),
     paperReference: z.string().max(200).default(""),
     discount: money.optional(),
@@ -149,7 +165,7 @@ export const commands = {
       receipts: z
         .array(receipt.omit({ salesmanId: true }))
         .min(1)
-        .max(10),
+        .max(50),
     })
     .strict(),
   adjustment: z

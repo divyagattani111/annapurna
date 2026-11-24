@@ -30,6 +30,7 @@ import {
   commands,
   cleanMoney,
   cleanDecimal,
+  parseMultiAmounts,
   type CommandName,
 } from "@ledger/contracts";
 import {
@@ -74,6 +75,7 @@ import {
   Copy,
   AlertTriangle,
   Eye,
+  Utensils,
 } from "lucide-react";
 import "./style.css";
 import Decimal from "decimal.js";
@@ -617,6 +619,7 @@ const nav = [
   ["Home", LayoutDashboard],
   ["Retail", Users],
   ["Mudashir", Store],
+  ["Foods", Utensils],
   ["Other Money", ArrowLeftRight],
   ["Reports", BarChart3],
   ["Settings", Settings],
@@ -972,6 +975,8 @@ function App() {
                       "Salesmen ledger, new cigarette bills, customer collections and registers."
                     ) : page === "Mudashir" ? (
                       "Direct cigarette sales, customer billing, dues and collections for route customers."
+                    ) : page === "Foods" ? (
+                      "Foods salesmen collections, bills, items and registers."
                     ) : page === "Other Money" ? (
                       "Expenses, employee salaries & advances, and cash/bank transfers."
                     ) : (
@@ -1119,6 +1124,13 @@ function App() {
                     onClearInitialBillCustomer={() => setDirectBillCustomerId(null)}
                     onClearInitialReceiveCustomer={() => setDirectReceiveCustomerId(null)}
                     initialSalesmanId={selectedSalesmanId}
+                  />
+                ) : page === "Foods" ? (
+                  <FoodsPage
+                    date={date}
+                    masters={md}
+                    owner={owner}
+                    onSelect={openDocument}
                   />
                 ) : page === "Other Money" ? (
                   <OtherMoneyPage
@@ -1656,6 +1668,7 @@ function Dashboard({
           [
             ["Retail", "Retail", "Salesmen & wholesale", Users, "action-retail"],
             ["Mudashir", "Mudashir", "Direct cig sales & beats", Store, "action-mudashir"],
+            ["Foods", "Foods", "Foods collections & salesmen", Utensils, "action-foods"],
             ["Other Money", "Other Money", "Expenses, loans & salaries", ArrowLeftRight, "action-other"],
             ["Reports", "Reports", "Statements & ledger views", BarChart3, "action-reports"],
             ["Settings", "Settings", "Masters & configuration", Settings, "action-settings"],
@@ -2692,11 +2705,11 @@ function ReceiveMoneyPage({
       return;
     }
     const cleanCash = cleanMoney(cashAmount);
-    const cleanBank = cleanMoney(bankAmount);
+    const bankAmounts = parseMultiAmounts(bankAmount);
     const hasCash = Boolean(cleanCash && parseMoneyNumber(cleanCash) > 0);
-    const hasBank = Boolean(cleanBank && parseMoneyNumber(cleanBank) > 0);
+    const hasBank = bankAmounts.length > 0;
     if (!hasCash && !hasBank) {
-      setError("Enter either a cash amount or a bank amount.");
+      setError("Enter either a cash amount or at least one valid bank/online amount (separate multiple with space or comma).");
       return;
     }
 
@@ -2714,13 +2727,16 @@ function ReceiveMoneyPage({
         });
       }
       if (hasBank) {
-        receipts.push({
-          amount: cleanBank,
-          accountId: defaultBankId,
-          method: "online",
-          actualDate: paymentDate,
-          reference: note || "Online payment",
-          verified: false,
+        bankAmounts.forEach((amt, idx) => {
+          const suffix = bankAmounts.length > 1 ? ` (${idx + 1}/${bankAmounts.length})` : "";
+          receipts.push({
+            amount: amt,
+            accountId: defaultBankId,
+            method: "online",
+            actualDate: paymentDate,
+            reference: (note ? `${note}${suffix}` : `Online payment${suffix}`).trim(),
+            verified: false,
+          });
         });
       }
 
@@ -2795,13 +2811,34 @@ function ReceiveMoneyPage({
                 onChange={(e) => setCashAmount(e.target.value)}
               />
             </Field>
-            <Field label="Bank amount (₹)">
+            <Field label="Bank / Online amount(s) (₹)">
               <input
-                inputMode="decimal"
-                placeholder="0.00"
+                placeholder="e.g. 500, 1200 or 500 1200"
                 value={bankAmount}
                 onChange={(e) => setBankAmount(e.target.value)}
               />
+              {(() => {
+                const parsed = parseMultiAmounts(bankAmount);
+                if (parsed.length > 1) {
+                  const totalParsed = parsed.reduce((acc, curr) => acc.plus(curr), D(0)).toFixed(2);
+                  return (
+                    <div style={{ marginTop: 4, fontSize: 11, color: "#0369a1", display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
+                      <span>{parsed.length} split online records:</span>
+                      {parsed.map((p, i) => (
+                        <span key={i} style={{ background: "#e0f2fe", padding: "1px 6px", borderRadius: 4, fontWeight: 600 }}>
+                          ₹{p}
+                        </span>
+                      ))}
+                      <strong style={{ color: "#0c4a6e" }}>(Total ₹{totalParsed})</strong>
+                    </div>
+                  );
+                }
+                return (
+                  <div style={{ marginTop: 2, fontSize: 11, color: "#64748b" }}>
+                    Separate multiple transactions by comma or space
+                  </div>
+                );
+              })()}
             </Field>
             <Field label="Notes">
               <input
@@ -4105,9 +4142,8 @@ function DraftReviewModal({
     const r: Row[] = [];
     if (withPayments) {
       const cleanCash = cleanMoney(cashPay);
-      const cleanOnline = cleanMoney(onlinePay);
+      const onlineAmounts = parseMultiAmounts(onlinePay);
       const hasCash = Boolean(cleanCash && parseMoneyNumber(cleanCash) > 0);
-      const hasOnline = Boolean(cleanOnline && parseMoneyNumber(cleanOnline) > 0);
 
       const defaultCash = arr(masters.accounts).find((a) => a.type === "cash")?.id || "";
       const defaultBank = arr(masters.accounts).find((a) => a.type === "bank")?.id || "";
@@ -4124,14 +4160,17 @@ function DraftReviewModal({
           verified: false,
         });
       }
-      if (hasOnline) {
-        r.push({
-          amount: cleanOnline,
-          accountId: activeBankId,
-          method: "online",
-          actualDate: billDate,
-          reference: paymentNote || "Draft Online Payment",
-          verified: false,
+      if (onlineAmounts.length > 0) {
+        onlineAmounts.forEach((amt, idx) => {
+          const suffix = onlineAmounts.length > 1 ? ` (${idx + 1}/${onlineAmounts.length})` : "";
+          r.push({
+            amount: amt,
+            accountId: activeBankId,
+            method: "online",
+            actualDate: billDate,
+            reference: (paymentNote ? `${paymentNote}${suffix}` : `Draft Online Payment${suffix}`).trim(),
+            verified: false,
+          });
         });
       }
     }
@@ -4274,8 +4313,10 @@ function DraftReviewModal({
     }
   };
 
+  const onlineAmountsList = parseMultiAmounts(onlinePay);
+  const totalOnlinePaid = onlineAmountsList.reduce((acc, curr) => acc.plus(curr), D(0));
   const totalPaid = withPayments
-    ? (Number(cleanMoney(cashPay) || "0") + Number(cleanMoney(onlinePay) || "0")).toFixed(2)
+    ? D(cleanMoney(cashPay) || "0").plus(totalOnlinePaid).toFixed(2)
     : "0.00";
   const billTotalNum = quote?.total
     ? Number(quote.total)
@@ -4601,10 +4642,13 @@ function DraftReviewModal({
                     <span style={{ fontWeight: 600 }}>{rupees(cashPay)}</span>
                   </div>
                 )}
-                {Boolean(cleanMoney(onlinePay) && parseMoneyNumber(cleanMoney(onlinePay)) > 0) && (
+                {onlineAmountsList.length > 0 && (
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#1e40af" }}>
-                    <span>🏦 Online Bank ({bankAccName}):</span>
-                    <span style={{ fontWeight: 600 }}>{rupees(onlinePay)}</span>
+                    <span>
+                      🏦 Online Bank ({bankAccName})
+                      {onlineAmountsList.length > 1 ? ` (${onlineAmountsList.length} txns: ${onlineAmountsList.map((a) => `₹${a}`).join(", ")})` : ""}:
+                    </span>
+                    <span style={{ fontWeight: 600 }}>{rupees(totalOnlinePaid.toFixed(2))}</span>
                   </div>
                 )}
                 <div
@@ -5243,11 +5287,11 @@ function RetailCigSalesPage({
     }
 
     const cleanCash = cleanMoney(receiveCashAmount);
-    const cleanBank = cleanMoney(receiveBankAmount);
+    const bankAmounts = parseMultiAmounts(receiveBankAmount);
     const hasCash = Boolean(cleanCash && parseMoneyNumber(cleanCash) > 0);
-    const hasBank = Boolean(cleanBank && parseMoneyNumber(cleanBank) > 0);
+    const hasBank = bankAmounts.length > 0;
     if (!hasCash && !hasBank) {
-      setReceiveError("Enter either a cash amount or a bank amount.");
+      setReceiveError("Enter either a cash amount or at least one bank/online amount (separate multiple with space or comma).");
       return;
     }
 
@@ -5265,13 +5309,16 @@ function RetailCigSalesPage({
         });
       }
       if (hasBank) {
-        receipts.push({
-          amount: cleanBank,
-          accountId: activeReceiveBankId,
-          method: "online",
-          actualDate: receivePaymentDate,
-          reference: receiveNote || "Online payment",
-          verified: false,
+        bankAmounts.forEach((amt, idx) => {
+          const suffix = bankAmounts.length > 1 ? ` (${idx + 1}/${bankAmounts.length})` : "";
+          receipts.push({
+            amount: amt,
+            accountId: activeReceiveBankId,
+            method: "online",
+            actualDate: receivePaymentDate,
+            reference: (receiveNote ? `${receiveNote}${suffix}` : `Online payment${suffix}`).trim(),
+            verified: false,
+          });
         });
       }
 
@@ -6679,16 +6726,33 @@ function RetailCigSalesPage({
                     </div>
                     <div>
                       <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-                        Online / Bank Amount (₹)
+                        Online / Bank Amount(s) (₹)
                       </label>
                       <input
                         type="text"
-                        inputMode="decimal"
-                        placeholder="0.00"
+                        placeholder="0.00 or e.g. 500, 1200"
                         value={billOnlinePay}
                         onChange={(e) => setBillOnlinePay(e.target.value)}
                         style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 14 }}
                       />
+                      {(() => {
+                        const parsed = parseMultiAmounts(billOnlinePay);
+                        if (parsed.length > 1) {
+                          const totalParsed = parsed.reduce((acc, curr) => acc.plus(curr), D(0)).toFixed(2);
+                          return (
+                            <div style={{ marginTop: 4, fontSize: 11, color: "#0369a1", display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
+                              <span>{parsed.length} split online records:</span>
+                              {parsed.map((p, i) => (
+                                <span key={i} style={{ background: "#e0f2fe", padding: "1px 6px", borderRadius: 4, fontWeight: 600 }}>
+                                  ₹{p}
+                                </span>
+                              ))}
+                              <strong style={{ color: "#0c4a6e" }}>(Total ₹{totalParsed})</strong>
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
                     </div>
                   </div>
                   <div>
@@ -6875,12 +6939,33 @@ function RetailCigSalesPage({
                 </div>
                 <input
                   type="text"
-                  inputMode="decimal"
-                  placeholder="0.00"
+                  placeholder="0.00 or e.g. 500, 1200"
                   value={receiveBankAmount}
                   onChange={(e) => setReceiveBankAmount(e.target.value)}
                   style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1.5px solid #cbd5e1", fontSize: 16, fontWeight: 700 }}
                 />
+                {(() => {
+                  const parsed = parseMultiAmounts(receiveBankAmount);
+                  if (parsed.length > 1) {
+                    const totalParsed = parsed.reduce((acc, curr) => acc.plus(curr), D(0)).toFixed(2);
+                    return (
+                      <div style={{ marginTop: 4, fontSize: 11, color: "#0369a1", display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
+                        <span>{parsed.length} split online records:</span>
+                        {parsed.map((p, i) => (
+                          <span key={i} style={{ background: "#e0f2fe", padding: "1px 6px", borderRadius: 4, fontWeight: 600 }}>
+                            ₹{p}
+                          </span>
+                        ))}
+                        <strong style={{ color: "#0c4a6e" }}>(Total ₹{totalParsed})</strong>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div style={{ marginTop: 3, fontSize: 11, color: "#64748b" }}>
+                      Separate multiple transactions by comma or space
+                    </div>
+                  );
+                })()}
                 {accounts.filter((a) => a.type === "bank").length > 1 && (
                   <div style={{ marginTop: 8 }}>
                     <label style={{ fontSize: 11, color: "#64748b" }}>Received into Bank Account:</label>
@@ -7639,11 +7724,11 @@ function DirectCigSalesPage({
     }
 
     const cleanCash = cleanMoney(cashAmount);
-    const cleanBank = cleanMoney(bankAmount);
+    const bankAmounts = parseMultiAmounts(bankAmount);
     const hasCash = Boolean(cleanCash && parseMoneyNumber(cleanCash) > 0);
-    const hasBank = Boolean(cleanBank && parseMoneyNumber(cleanBank) > 0);
+    const hasBank = bankAmounts.length > 0;
     if (!hasCash && !hasBank) {
-      setPayError("Enter either a cash amount or a bank amount.");
+      setPayError("Enter either a cash amount or at least one bank/online amount (separate multiple with space or comma).");
       return;
     }
 
@@ -7670,13 +7755,16 @@ function DirectCigSalesPage({
         });
       }
       if (hasBank) {
-        receipts.push({
-          amount: cleanBank,
-          accountId: activeBankAccountId,
-          method: "online",
-          actualDate: paymentDate,
-          reference: paymentNote || "Direct Cigarette Online Payment",
-          verified: false,
+        bankAmounts.forEach((amt, idx) => {
+          const suffix = bankAmounts.length > 1 ? ` (${idx + 1}/${bankAmounts.length})` : "";
+          receipts.push({
+            amount: amt,
+            accountId: activeBankAccountId,
+            method: "online",
+            actualDate: paymentDate,
+            reference: (paymentNote ? `${paymentNote}${suffix}` : `Direct Cigarette Online Payment${suffix}`).trim(),
+            verified: false,
+          });
         });
       }
 
@@ -9421,16 +9509,33 @@ function DirectCigSalesPage({
                     <div style={{ background: "#ffffff", border: "1px solid #cbd5e1", borderRadius: 10, padding: "12px 14px" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
                         <CreditCard size={15} color="#0284c7" />
-                        <label style={{ fontSize: 12, fontWeight: 700, color: "#0f172a" }}>Online / Bank amount (₹)</label>
+                        <label style={{ fontSize: 12, fontWeight: 700, color: "#0f172a" }}>Online / Bank amount(s) (₹)</label>
                       </div>
                       <input
                         type="text"
-                        inputMode="decimal"
-                        placeholder="0.00"
+                        placeholder="0.00 or e.g. 500, 1200"
                         value={billOnlinePay}
                         onChange={(e) => setBillOnlinePay(e.target.value)}
                         style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 14, fontWeight: 600 }}
                       />
+                      {(() => {
+                        const parsed = parseMultiAmounts(billOnlinePay);
+                        if (parsed.length > 1) {
+                          const totalParsed = parsed.reduce((acc, curr) => acc.plus(curr), D(0)).toFixed(2);
+                          return (
+                            <div style={{ marginTop: 4, fontSize: 11, color: "#0369a1", display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
+                              <span>{parsed.length} split online records:</span>
+                              {parsed.map((p, i) => (
+                                <span key={i} style={{ background: "#e0f2fe", padding: "1px 6px", borderRadius: 4, fontWeight: 600 }}>
+                                  ₹{p}
+                                </span>
+                              ))}
+                              <strong style={{ color: "#0c4a6e" }}>(Total ₹{totalParsed})</strong>
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
                       {accounts.filter((a) => a.type === "bank").length > 1 && (
                         <div style={{ marginTop: 6 }}>
                           <select
@@ -9606,12 +9711,33 @@ function DirectCigSalesPage({
                 </div>
                 <input
                   type="text"
-                  inputMode="decimal"
-                  placeholder="0.00"
+                  placeholder="0.00 or e.g. 500, 1200"
                   value={bankAmount}
                   onChange={(e) => setBankAmount(e.target.value)}
                   style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1.5px solid #cbd5e1", fontSize: 16, fontWeight: 700 }}
                 />
+                {(() => {
+                  const parsed = parseMultiAmounts(bankAmount);
+                  if (parsed.length > 1) {
+                    const totalParsed = parsed.reduce((acc, curr) => acc.plus(curr), D(0)).toFixed(2);
+                    return (
+                      <div style={{ marginTop: 4, fontSize: 11, color: "#0369a1", display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
+                        <span>{parsed.length} split online records:</span>
+                        {parsed.map((p, i) => (
+                          <span key={i} style={{ background: "#e0f2fe", padding: "1px 6px", borderRadius: 4, fontWeight: 600 }}>
+                            ₹{p}
+                          </span>
+                        ))}
+                        <strong style={{ color: "#0c4a6e" }}>(Total ₹{totalParsed})</strong>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div style={{ marginTop: 3, fontSize: 11, color: "#64748b" }}>
+                      Separate multiple transactions by comma or space
+                    </div>
+                  );
+                })()}
                 {accounts.filter((a) => a.type === "bank").length > 1 && (
                   <div style={{ marginTop: 8 }}>
                     <label style={{ fontSize: 11, color: "#64748b" }}>Received into Bank Account:</label>
@@ -10922,6 +11048,224 @@ function DirectCigSalesPage({
   );
 }
 
+function FoodsPage({
+  date,
+  masters: _masters,
+  owner: _owner,
+  onSelect,
+}: {
+  date: string;
+  masters: Row;
+  owner: boolean;
+  onSelect: (id: string) => void;
+}) {
+  const qc = useQueryClient(),
+    [activeTab, setActiveTab] = useState<"foods">("foods"),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState(""),
+    [success, setSuccess] = useState("");
+
+  // Load registered foods salesmen list from API
+  const foodsSalesmenQuery = useQuery({
+    queryKey: ["foods-salesmen"],
+    queryFn: async () => {
+      const r = await fetch("/api/v1/foods-salesmen");
+      return (await r.json()) as Array<{ id: string; name: string; territory?: string; phone?: string; active: boolean }>;
+    },
+  });
+  const foodsSalesmenOptions = (foodsSalesmenQuery.data ?? []).filter((f) => f.active);
+
+  // Foods Collections state
+  const [foodsSalesman, setFoodsSalesman] = useState(""),
+    [foodsDate, setFoodsDate] = useState(date),
+    [foodsBillNo, setFoodsBillNo] = useState(""),
+    [foodsItems, setFoodsItems] = useState(""),
+    [foodsCashAmount, setFoodsCashAmount] = useState(""),
+    [foodsBankAmount, setFoodsBankAmount] = useState(""),
+    [foodsNotes, setFoodsNotes] = useState("");
+
+  const handleFoodsSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setSuccess("");
+    if (!foodsSalesman) {
+      setError("Please select the foods salesman.");
+      return;
+    }
+    const cleanCash = cleanMoney(foodsCashAmount);
+    const cleanBank = cleanMoney(foodsBankAmount);
+    const cashVal = cleanCash ? parseMoneyNumber(cleanCash) : 0;
+    const bankVal = cleanBank ? parseMoneyNumber(cleanBank) : 0;
+    if (cashVal <= 0 && bankVal <= 0) {
+      setError("Please enter at least one amount (cash or bank).");
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const foodsObj = foodsSalesmenOptions.find((f) => f.name === foodsSalesman || f.id === foodsSalesman);
+      const foodsSalesmanId = foodsObj?.id;
+      const foodsDisplayName = foodsObj?.name || foodsSalesman;
+
+      await api(
+        "commands/foodsReceipt",
+        commandResult,
+        {
+          date: foodsDate,
+          foodsSalesman: foodsDisplayName,
+          foodsSalesmanId,
+          billNo: foodsBillNo.trim(),
+          foodItems: foodsItems.trim(),
+          cashAmount: cashVal > 0 ? cleanCash : "0.00",
+          bankAmount: bankVal > 0 ? cleanBank : "0.00",
+          note: foodsNotes.trim(),
+        },
+        "POST",
+        crypto.randomUUID(),
+      );
+      setSuccess("Foods collection recorded successfully as FOODS-RECEIPT.");
+      setFoodsBillNo("");
+      setFoodsItems("");
+      setFoodsCashAmount("");
+      setFoodsBankAmount("");
+      setFoodsNotes("");
+      await qc.invalidateQueries();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <section className="panel" style={{ paddingBottom: 8 }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 24,
+            borderBottom: "1px solid #e7e5e4",
+            marginBottom: 20,
+          }}
+        >
+          {[
+            ["foods", "Foods Collection"],
+          ].map(([k, label]) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => {
+                setActiveTab(k as typeof activeTab);
+                setError("");
+                setSuccess("");
+              }}
+              style={{
+                background: "none",
+                border: "none",
+                padding: "10px 4px",
+                fontSize: "14px",
+                fontWeight: activeTab === k ? 700 : 500,
+                color: activeTab === k ? "#c2410c" : "#78716c",
+                borderBottom: activeTab === k ? "3px solid #ea580c" : "3px solid transparent",
+                cursor: "pointer",
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {activeTab === "foods" && (
+          <form onSubmit={handleFoodsSubmit}>
+            <div className="form-grid">
+              <Field label="Foods Salesman *">
+                <select
+                  value={foodsSalesman}
+                  onChange={(e) => setFoodsSalesman(e.target.value)}
+                  required
+                >
+                  <option value="">Choose foods salesman…</option>
+                  {foodsSalesmenOptions.map((f) => (
+                    <option key={f.id} value={f.name}>
+                      {f.name} {f.territory ? `· ${f.territory}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              <Field label="Date *">
+                <input
+                  type="date"
+                  value={foodsDate}
+                  onChange={(e) => setFoodsDate(e.target.value)}
+                  required
+                />
+              </Field>
+
+              <Field label="Bill No (optional)">
+                <input
+                  placeholder="e.g. FOOD-BILL-089"
+                  value={foodsBillNo}
+                  onChange={(e) => setFoodsBillNo(e.target.value)}
+                />
+              </Field>
+
+              <Field label="Food Items (optional)">
+                <input
+                  placeholder="e.g. Spices, Atta, Grains, Snacks"
+                  value={foodsItems}
+                  onChange={(e) => setFoodsItems(e.target.value)}
+                />
+              </Field>
+
+              <Field label="Cash Amount (₹)">
+                <input
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  value={foodsCashAmount}
+                  onChange={(e) => setFoodsCashAmount(e.target.value)}
+                />
+              </Field>
+
+              <Field label="Bank Amount (₹)">
+                <input
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  value={foodsBankAmount}
+                  onChange={(e) => setFoodsBankAmount(e.target.value)}
+                />
+              </Field>
+
+              <Field label="Notes (optional)">
+                <input
+                  placeholder="Additional remarks or slip reference…"
+                  value={foodsNotes}
+                  onChange={(e) => setFoodsNotes(e.target.value)}
+                />
+              </Field>
+            </div>
+
+            {error && <p role="alert" className="error">{error}</p>}
+            {success && <p role="status" className="notice">{success}</p>}
+
+            <div style={{ marginTop: 20, display: "flex", justifyContent: "flex-end" }}>
+              <Button className="primary" disabled={busy} type="submit" style={{ padding: "10px 24px" }}>
+                {busy ? "Recording…" : "Save Foods Collection"}
+              </Button>
+            </div>
+          </form>
+        )}
+      </section>
+
+      {/* Relevant register table for Foods Collection */}
+      <Documents
+        onSelect={onSelect}
+        kind="foods_receipt"
+      />
+    </>
+  );
+}
+
 function OtherMoneyPage({
   date,
   masters,
@@ -10934,7 +11278,7 @@ function OtherMoneyPage({
   onSelect: (id: string) => void;
 }) {
   const qc = useQueryClient(),
-    [activeTab, setActiveTab] = useState<"foods" | "expense" | "employee" | "transfer">("foods"),
+    [activeTab, setActiveTab] = useState<"expense" | "employee" | "transfer">("expense"),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [success, setSuccess] = useState("");
@@ -10952,16 +11296,6 @@ function OtherMoneyPage({
     },
   });
   const employeeOptions = (employeesQuery.data ?? []).filter((e) => e.active);
-
-  // Load registered foods salesmen list from API
-  const foodsSalesmenQuery = useQuery({
-    queryKey: ["foods-salesmen"],
-    queryFn: async () => {
-      const r = await fetch("/api/v1/foods-salesmen");
-      return (await r.json()) as Array<{ id: string; name: string; territory?: string; phone?: string; active: boolean }>;
-    },
-  });
-  const foodsSalesmenOptions = (foodsSalesmenQuery.data ?? []).filter((f) => f.active);
 
   // 1. Operating expense state
   const [expenseCategory, setExpenseCategory] = useState("Diesel / Vehicle Fuel"),
@@ -10988,15 +11322,6 @@ function OtherMoneyPage({
     [transferAmount, setTransferAmount] = useState(""),
     [transferDate, setTransferDate] = useState(date),
     [transferNotes, setTransferNotes] = useState("");
-
-  // 4. Foods Collections state
-  const [foodsSalesman, setFoodsSalesman] = useState(""),
-    [foodsDate, setFoodsDate] = useState(date),
-    [foodsBillNo, setFoodsBillNo] = useState(""),
-    [foodsItems, setFoodsItems] = useState(""),
-    [foodsCashAmount, setFoodsCashAmount] = useState(""),
-    [foodsBankAmount, setFoodsBankAmount] = useState(""),
-    [foodsNotes, setFoodsNotes] = useState("");
 
   useEffect(() => {
     if (!expenseAccount && defaultCash) setExpenseAccount(defaultCash);
@@ -11218,59 +11543,6 @@ function OtherMoneyPage({
     }
   };
 
-  const handleFoodsSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
-    setSuccess("");
-    if (!foodsSalesman) {
-      setError("Please select the foods salesman.");
-      return;
-    }
-    const cleanCash = cleanMoney(foodsCashAmount);
-    const cleanBank = cleanMoney(foodsBankAmount);
-    const cashVal = cleanCash ? parseMoneyNumber(cleanCash) : 0;
-    const bankVal = cleanBank ? parseMoneyNumber(cleanBank) : 0;
-    if (cashVal <= 0 && bankVal <= 0) {
-      setError("Please enter at least one amount (cash or bank).");
-      return;
-    }
-
-    setBusy(true);
-    try {
-      const foodsObj = foodsSalesmenOptions.find((f) => f.name === foodsSalesman || f.id === foodsSalesman);
-      const foodsSalesmanId = foodsObj?.id;
-      const foodsDisplayName = foodsObj?.name || foodsSalesman;
-
-      await api(
-        "commands/foodsReceipt",
-        commandResult,
-        {
-          date: foodsDate,
-          foodsSalesman: foodsDisplayName,
-          foodsSalesmanId,
-          billNo: foodsBillNo.trim(),
-          foodItems: foodsItems.trim(),
-          cashAmount: cashVal > 0 ? cleanCash : "0.00",
-          bankAmount: bankVal > 0 ? cleanBank : "0.00",
-          note: foodsNotes.trim(),
-        },
-        "POST",
-        crypto.randomUUID(),
-      );
-      setSuccess("Foods collection recorded successfully as FOODS-RECEIPT.");
-      setFoodsBillNo("");
-      setFoodsItems("");
-      setFoodsCashAmount("");
-      setFoodsBankAmount("");
-      setFoodsNotes("");
-      await qc.invalidateQueries();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <>
       <section className="panel" style={{ paddingBottom: 8 }}>
@@ -11283,7 +11555,6 @@ function OtherMoneyPage({
           }}
         >
           {[
-            ["foods", "Foods Collections"],
             ["expense", "Operating Expenses"],
             ["employee", "Employee & Staff / Foods (Salary / Advance / Expense)"],
             ["transfer", "Cash to Bank Transfer"],
@@ -11631,87 +11902,6 @@ function OtherMoneyPage({
           </form>
         )}
 
-        {/* 4. Foods Collections form */}
-        {activeTab === "foods" && (
-          <form onSubmit={handleFoodsSubmit}>
-            <div className="form-grid">
-              <Field label="Foods Salesman *">
-                <select
-                  value={foodsSalesman}
-                  onChange={(e) => setFoodsSalesman(e.target.value)}
-                  required
-                >
-                  <option value="">Choose foods salesman…</option>
-                  {foodsSalesmenOptions.map((f) => (
-                    <option key={f.id} value={f.name}>
-                      {f.name} {f.territory ? `· ${f.territory}` : ""}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-
-              <Field label="Date *">
-                <input
-                  type="date"
-                  value={foodsDate}
-                  onChange={(e) => setFoodsDate(e.target.value)}
-                  required
-                />
-              </Field>
-
-              <Field label="Bill No (optional)">
-                <input
-                  placeholder="e.g. FOOD-BILL-089"
-                  value={foodsBillNo}
-                  onChange={(e) => setFoodsBillNo(e.target.value)}
-                />
-              </Field>
-
-              <Field label="Food Items (optional)">
-                <input
-                  placeholder="e.g. Spices, Atta, Grains, Snacks"
-                  value={foodsItems}
-                  onChange={(e) => setFoodsItems(e.target.value)}
-                />
-              </Field>
-
-              <Field label="Cash Amount (₹)">
-                <input
-                  inputMode="decimal"
-                  placeholder="0.00"
-                  value={foodsCashAmount}
-                  onChange={(e) => setFoodsCashAmount(e.target.value)}
-                />
-              </Field>
-
-              <Field label="Bank Amount (₹)">
-                <input
-                  inputMode="decimal"
-                  placeholder="0.00"
-                  value={foodsBankAmount}
-                  onChange={(e) => setFoodsBankAmount(e.target.value)}
-                />
-              </Field>
-
-              <Field label="Notes (optional)">
-                <input
-                  placeholder="Additional remarks or slip reference…"
-                  value={foodsNotes}
-                  onChange={(e) => setFoodsNotes(e.target.value)}
-                />
-              </Field>
-            </div>
-
-            {error && <p role="alert" className="error">{error}</p>}
-            {success && <p role="status" className="notice">{success}</p>}
-
-            <div style={{ marginTop: 20, display: "flex", justifyContent: "flex-end" }}>
-              <Button className="primary" disabled={busy} type="submit" style={{ padding: "10px 24px" }}>
-                {busy ? "Recording…" : "Save Foods Collection"}
-              </Button>
-            </div>
-          </form>
-        )}
       </section>
 
       {/* Relevant register table for the active category */}
@@ -11722,9 +11912,7 @@ function OtherMoneyPage({
             ? "expense"
             : activeTab === "employee"
               ? "salary,loan,employee_receipt"
-              : activeTab === "foods"
-                ? "foods_receipt"
-                : "transfer,deposit"
+              : "transfer,deposit"
         }
       />
 
@@ -12185,8 +12373,8 @@ const specs: Partial<Record<CommandName, Spec[]>> = {
       label: "Signed opening (negative = advance)",
       type: "text",
     },
-    { key: "batchId", label: "Import / approval batch ID" },
-    { key: "rowId", label: "Unique approved row ID" },
+    { key: "batchId", label: "Import / approval batch ID", optional: true },
+    { key: "rowId", label: "Unique approved row ID", optional: true },
   ],
   reverse: [
     { key: "documentId", label: "Original record", source: "documents" },
@@ -12402,8 +12590,8 @@ function ProductIdSearchableSelect({
                       fontSize: 13,
                       cursor: isAlreadyAdded ? "not-allowed" : "pointer",
                       display: "flex",
-                      justifyContent: "space-between",
                       alignItems: "center",
+                      justifyContent: "space-between",
                       background: isSelected ? "#fed7aa" : isAlreadyAdded ? "#f8fafc" : "transparent",
                       opacity: isAlreadyAdded ? 0.5 : 1,
                     }}
@@ -13181,33 +13369,32 @@ function CommandPage({
     if (name === "receipt") p.verified = false;
     if (name === "receiptBatch") {
       const cleanCash = cleanMoney(cashPay);
-      const cleanOnline = cleanMoney(onlinePay);
-      p.receipts = [
-        ...(cleanCash
-          ? [
-            {
-              amount: cleanCash,
-              accountId: cashId,
-              method: "cash",
-              actualDate: date,
-              reference: "",
-              verified: false,
-            },
-          ]
-          : []),
-        ...(cleanOnline
-          ? [
-            {
-              amount: cleanOnline,
-              accountId: bankId,
-              method: "online",
-              actualDate: date,
-              reference: bankRef,
-              verified: false,
-            },
-          ]
-          : []),
-      ];
+      const onlineAmounts = parseMultiAmounts(onlinePay);
+      const batchReceipts: Row[] = [];
+      if (cleanCash) {
+        batchReceipts.push({
+          amount: cleanCash,
+          accountId: cashId,
+          method: "cash",
+          actualDate: date,
+          reference: "",
+          verified: false,
+        });
+      }
+      if (onlineAmounts.length > 0) {
+        onlineAmounts.forEach((amt, idx) => {
+          const suffix = onlineAmounts.length > 1 ? ` (${idx + 1}/${onlineAmounts.length})` : "";
+          batchReceipts.push({
+            amount: amt,
+            accountId: bankId,
+            method: "online",
+            actualDate: date,
+            reference: (bankRef ? `${bankRef}${suffix}` : `Online payment${suffix}`).trim(),
+            verified: false,
+          });
+        });
+      }
+      p.receipts = batchReceipts;
     }
     if (name === "bill") {
       p.salesmanId = values.salesmanId;
@@ -13243,7 +13430,7 @@ function CommandPage({
           bankId ||
           (arr(masters.accounts).find((a) => a.type === "bank")?.id ?? "");
         const cleanCash = cleanMoney(cashPay);
-        const cleanOnline = cleanMoney(onlinePay);
+        const onlineAmounts = parseMultiAmounts(onlinePay);
         const receipts: Row[] = [];
         if (cleanCash)
           receipts.push({
@@ -13254,15 +13441,19 @@ function CommandPage({
             reference: "",
             verified: false,
           });
-        if (cleanOnline)
-          receipts.push({
-            amount: cleanOnline,
-            accountId: defaultBankId,
-            method: "online",
-            actualDate: date,
-            reference: bankRef || "Online payment",
-            verified: false,
+        if (onlineAmounts.length > 0) {
+          onlineAmounts.forEach((amt, idx) => {
+            const suffix = onlineAmounts.length > 1 ? ` (${idx + 1}/${onlineAmounts.length})` : "";
+            receipts.push({
+              amount: amt,
+              accountId: defaultBankId,
+              method: "online",
+              actualDate: date,
+              reference: (bankRef ? `${bankRef}${suffix}` : `Online payment${suffix}`).trim(),
+              verified: false,
+            });
           });
+        }
         p.receipts = receipts;
       }
     }
@@ -13277,6 +13468,10 @@ function CommandPage({
           counted: cleanMoney(counts[str(a.id)] ?? ""),
           reason: reasons[str(a.id)] ?? "",
         }));
+    }
+    if (name === "opening") {
+      if (!p.batchId) p.batchId = `opening-manual-${date || new Date().toISOString().slice(0, 10)}`;
+      if (!p.rowId) p.rowId = `row-${p.targetId || "entry"}-${crypto.randomUUID().slice(0, 8)}`;
     }
     if (name === "reopen") delete p.note;
     if (name === "reconcile") {
@@ -16619,43 +16814,11 @@ function SettingsPage({
   setAction: (n: CommandName) => void;
 }) {
   return (
-    <>
-      {owner && (
-        <MasterRecordsManager
-          masters={masters}
-          date={date}
-          setAction={setAction}
-        />
-      )}
-      <section className="panel">
-        <h2>Live setup checklist</h2>
-        <p className="notice">
-          Demo is separate. Real business posting remains blocked until
-          owner-approved configuration and a reviewed release.
-        </p>
-        <ul className="setup-list">
-          {[
-            "Confirm business details, timezone and currency",
-            "Approve each product unit, conversion and effective rate",
-            "Confirm salesmen, cutover and signed opening balances",
-            "Confirm cash custody and receiving bank accounts",
-            "Review role permissions and operational printouts",
-            "Review statutory requirements with your accountant",
-            "Complete parallel trial and isolated backup restore",
-            "Approve hosting, off-server backups and recovery targets",
-          ].map((s) => (
-            <li key={s}>
-              <Clock size={16} />
-              {s}
-            </li>
-          ))}
-        </ul>
-        <p className="muted small">
-          No live bank connection. No automatic interest. Backup monitoring not
-          connected.
-        </p>
-      </section>
-    </>
+    <MasterRecordsManager
+      masters={masters}
+      date={date}
+      setAction={setAction}
+    />
   );
 }
 
@@ -16712,7 +16875,7 @@ function MasterRecordsManager({
   date: string;
   setAction: (n: CommandName) => void;
 }) {
-  const [activeTab, setActiveTab] = useState<"products" | "confectionery" | "salesmen" | "accounts" | "employees" | "foods_salesmen">("products");
+  const [activeTab, setActiveTab] = useState<"products" | "confectionery" | "salesmen" | "employees" | "foods_salesmen">("products");
   const [showAddForm, setShowAddForm] = useState(false);
   const [editingItem, setEditingItem] = useState<{ type: string; id: string } | null>(null);
   const [status, setStatus] = useState("");
@@ -16903,16 +17066,15 @@ function MasterRecordsManager({
         </div>
       </div>
 
-      {/* Sub Tabs: Products, Confectionery, Salesmen, Accounts, Employees */}
+      {/* Sub Tabs: Products, Confectionery, Salesmen, Staff, Foods Salesmen */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #e7e5e4", marginBottom: 18, flexWrap: "wrap", gap: 8 }}>
         <div style={{ display: "flex", gap: 20 }}>
           {(
             [
               ["products", "Cigarette Products", cigaretteProducts.length],
               ["confectionery", "Confectionery Master", confectioneryProducts.length],
-              ["salesmen", "Salesmen & Credit Limits", salesmen.length],
-              ["accounts", "Money & Bank Accounts", accounts.length],
-              ["employees", "Employees & Staff", employees.length],
+              ["salesmen", "Salesmen", salesmen.length],
+              ["employees", "Staff", employees.length],
               ["foods_salesmen", "Foods Salesmen", foodsSalesmen.length],
             ] as const
           ).map(([k, label, count]) => {
@@ -16969,7 +17131,7 @@ function MasterRecordsManager({
           <Plus size={15} />
           {showAddForm
             ? "Cancel Add"
-            : `Add new ${activeTab === "products" ? "cigarette product" : activeTab === "confectionery" ? "confectionery item" : activeTab === "salesmen" ? "salesman" : activeTab === "accounts" ? "account" : activeTab === "foods_salesmen" ? "foods salesman" : "employee"}`}
+            : `Add new ${activeTab === "products" ? "cigarette product" : activeTab === "confectionery" ? "confectionery item" : activeTab === "salesmen" ? "salesman" : activeTab === "foods_salesmen" ? "foods salesman" : "employee"}`}
         </Button>
       </div>
 
@@ -16984,7 +17146,7 @@ function MasterRecordsManager({
         <div style={{ background: "#fcfbf7", padding: "16px 20px", borderRadius: 12, border: "1px solid #e7e5e4", marginBottom: 20 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
             <strong style={{ fontSize: "0.95rem" }}>
-              Add new {activeTab === "products" ? "cigarette product" : activeTab === "confectionery" ? "confectionery item" : activeTab === "salesmen" ? "salesman" : activeTab === "accounts" ? "money account" : activeTab === "foods_salesmen" ? "foods salesman" : "staff employee"}
+              Add new {activeTab === "products" ? "cigarette product" : activeTab === "confectionery" ? "confectionery item" : activeTab === "salesmen" ? "salesman" : activeTab === "foods_salesmen" ? "foods salesman" : "staff employee"}
             </strong>
           </div>
           {activeTab === "confectionery" ? (
@@ -17558,70 +17720,6 @@ function MasterRecordsManager({
         </div>
       )}
 
-      {/* Tab 3: Accounts */}
-      {activeTab === "accounts" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {accounts.map((a) => (
-            <div
-              key={str(a.id)}
-              style={{
-                border: "1px solid #e7e5e4",
-                borderRadius: 12,
-                padding: "14px 18px",
-                background: a.active ? "#ffffff" : "#fafaf9",
-                opacity: a.active ? 1 : 0.75,
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
-                <div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <strong style={{ fontSize: "1rem" }}>{str(a.name)}</strong>
-                    <span
-                      style={{
-                        fontSize: "0.75rem",
-                        fontWeight: 600,
-                        padding: "2px 8px",
-                        borderRadius: 12,
-                        background: a.type === "bank" ? "#e0e7ff" : "#fef3c7",
-                        color: a.type === "bank" ? "#3730a3" : "#92400e",
-                        textTransform: "capitalize",
-                      }}
-                    >
-                      {str(a.type)}
-                    </span>
-                    <span
-                      style={{
-                        fontSize: "0.75rem",
-                        fontWeight: 600,
-                        padding: "2px 8px",
-                        borderRadius: 12,
-                        background: a.active ? "#dcfce7" : "#f1f5f9",
-                        color: a.active ? "#166534" : "#64748b",
-                      }}
-                    >
-                      {a.active ? "Active" : "Inactive"}
-                    </span>
-                  </div>
-                  <div style={{ display: "flex", gap: 16, marginTop: 4, fontSize: "0.85rem", color: "#78716c", flexWrap: "wrap" }}>
-                    <span>Holder / Custodian: <b>{str(a.holder || "—")}</b></span>
-                    <span>Overdraft allowed: <b>{a.allow_overdraft ? "Yes" : "No"}</b></span>
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <Button
-                    className="secondary"
-                    onClick={() => toggleStatus("money_accounts", str(a.id), a.active === true)}
-                    style={{ fontSize: "0.82rem", padding: "5px 12px" }}
-                  >
-                    {a.active ? "Deactivate" : "Reactivate"}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
       {/* Tab 4: Employees */}
       {activeTab === "employees" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -17753,7 +17851,7 @@ function MasterRecordsManager({
                     </div>
                     <div style={{ display: "flex", gap: 16, marginTop: 4, fontSize: "0.85rem", color: "#78716c", flexWrap: "wrap" }}>
                       {fs.phone && <span>Phone: <b>{fs.phone}</b></span>}
-                      <span>Ready for Foods Collections in Other Money</span>
+                      <span>Ready for Foods Collections in Foods tab</span>
                     </div>
                   </div>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
