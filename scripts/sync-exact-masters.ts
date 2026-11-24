@@ -76,55 +76,86 @@ await db.transaction(async (t) => {
     console.log(`✓ Synced ${data.products.length} products`);
   }
 
-  // 4. Product Configurations (Exact historical + effective rates)
+  // 4. Product Configurations: Insert missing configs
   if (Array.isArray(data.productConfigurations)) {
-    // Clean old configurations for these products to ensure exact mirror
-    await t.execute(sql`delete from product_configurations where org=${org}`);
     for (const c of data.productConfigurations) {
-      await t.execute(
-        sql`insert into product_configurations(id, org, product_id, unit, base_unit, conversion, basis, rate, fractional, confirmed, effective_date, created_at)
-            values(${c.id}, ${org}, ${c.product_id}, ${c.unit}, ${c.base_unit}, ${c.conversion}, ${c.basis}, ${c.rate}, ${c.fractional}, ${c.confirmed ?? true}, ${c.effective_date}::date, ${c.created_at}::timestamptz)`,
+      const [existing] = await rows<{ id: string }>(
+        t,
+        sql`select id from product_configurations where id=${c.id}`,
       );
+      if (!existing) {
+        await t.execute(
+          sql`insert into product_configurations(id, org, product_id, unit, base_unit, conversion, basis, rate, fractional, confirmed, effective_date, created_at)
+              values(${c.id}, ${org}, ${c.product_id}, ${c.unit}, ${c.base_unit}, ${c.conversion}, ${c.basis}, ${c.rate}, ${c.fractional}, ${c.confirmed ?? true}, ${c.effective_date}::date, ${c.created_at}::timestamptz)`,
+        );
+      }
     }
-    console.log(`✓ Synced ${data.productConfigurations.length} exact product configurations (rates & dates)`);
+    console.log(`✓ Synced ${data.productConfigurations.length} exact product configurations`);
   }
 
   // 5. Employees
   if (Array.isArray(data.employees)) {
-    await t.execute(sql`delete from employees where org=${org}`);
     for (const e of data.employees) {
-      await t.execute(
-        sql`insert into employees(id, org, name, role, phone, active)
-            values(${e.id}, ${org}, ${e.name}, ${e.role ?? ''}, ${e.phone ?? null}, ${e.active ?? true})`,
+      const [existing] = await rows<{ id: string }>(
+        t,
+        sql`select id from employees where org=${org} and id=${e.id}`,
       );
+      if (!existing) {
+        await t.execute(
+          sql`insert into employees(id, org, name, role, phone, active)
+              values(${e.id}, ${org}, ${e.name}, ${e.role ?? ''}, ${e.phone ?? null}, ${e.active ?? true})`,
+        );
+      } else {
+        await t.execute(
+          sql`update employees set name=${e.name}, role=${e.role ?? ''}, phone=${e.phone ?? null}, active=${e.active ?? true} where id=${e.id}`,
+        );
+      }
     }
     console.log(`✓ Synced ${data.employees.length} employees`);
   }
 
   // 6. Foods Salesmen
   if (Array.isArray(data.foodsSalesmen)) {
-    await t.execute(sql`delete from foods_salesmen where org=${org}`);
     for (const fs of data.foodsSalesmen) {
-      await t.execute(
-        sql`insert into foods_salesmen(id, org, name, territory, phone, active)
-            values(${fs.id}, ${org}, ${fs.name}, ${fs.territory ?? null}, ${fs.phone ?? null}, ${fs.active ?? true})`,
+      const [existing] = await rows<{ id: string }>(
+        t,
+        sql`select id from foods_salesmen where org=${org} and id=${fs.id}`,
       );
+      if (!existing) {
+        await t.execute(
+          sql`insert into foods_salesmen(id, org, name, territory, phone, active)
+              values(${fs.id}, ${org}, ${fs.name}, ${fs.territory ?? null}, ${fs.phone ?? null}, ${fs.active ?? true})`,
+        );
+      } else {
+        await t.execute(
+          sql`update foods_salesmen set name=${fs.name}, territory=${fs.territory ?? null}, phone=${fs.phone ?? null}, active=${fs.active ?? true} where id=${fs.id}`,
+        );
+      }
     }
     console.log(`✓ Synced ${data.foodsSalesmen.length} foods salesmen`);
   }
 
   // 7. ITC Customers
   if (Array.isArray(data.itcCustomers)) {
-    await t.execute(sql`delete from itc_customers where org=${org}`);
     for (const c of data.itcCustomers) {
-      await t.execute(
-        sql`insert into itc_customers(id, org, customer_id, customer_name, salesman_itc_id, salesman_name, beat_code, beat_name, salesman_id, active, is_gst)
-            values(${c.id}, ${org}, ${c.customer_id}, ${c.customer_name}, ${c.salesman_itc_id}, ${c.salesman_name}, ${c.beat_code}, ${c.beat_name}, ${c.salesman_id}, ${c.active ?? true}, ${c.is_gst ?? false})`,
+      const [existing] = await rows<{ id: string }>(
+        t,
+        sql`select id from itc_customers where org=${org} and id=${c.id}`,
       );
+      if (!existing) {
+        await t.execute(
+          sql`insert into itc_customers(id, org, customer_id, customer_name, salesman_itc_id, salesman_name, beat_code, beat_name, salesman_id, active, is_gst)
+              values(${c.id}, ${org}, ${c.customer_id}, ${c.customer_name}, ${c.salesman_itc_id}, ${c.salesman_name}, ${c.beat_code}, ${c.beat_name}, ${c.salesman_id}, ${c.active ?? true}, ${c.is_gst ?? false})`,
+        );
+      } else {
+        await t.execute(
+          sql`update itc_customers set customer_name=${c.customer_name}, beat_code=${c.beat_code}, beat_name=${c.beat_name}, salesman_id=${c.salesman_id}, active=${c.active ?? true}, is_gst=${c.is_gst ?? false} where id=${c.id}`,
+        );
+      }
     }
     console.log(`✓ Synced ${data.itcCustomers.length} ITC customers`);
   }
 });
 
-console.log("Master records exact sync completed!");
+console.log("Master records exact sync completed successfully!");
 await pool.end();
