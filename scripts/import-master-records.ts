@@ -16,7 +16,7 @@ if (!orgRow) {
   throw new Error("No organization found. Please bootstrap owner first.");
 }
 const org = orgRow.id;
-console.log(`Importing master records for Organization: ${orgRow.name} (${org})`);
+console.log(`Importing latest master records for Organization: ${orgRow.name} (${org})`);
 
 const filePath = path.resolve(process.cwd(), "exports/all_master_records.json");
 if (!fs.existsSync(filePath)) {
@@ -36,6 +36,10 @@ await db.transaction(async (t) => {
         await t.execute(
           sql`insert into money_accounts(id, org, name, type, holder, active, allow_overdraft, details)
               values(${a.id}, ${org}, ${a.name}, ${a.type}, ${a.holder ?? "Annapurna"}, ${a.active ?? true}, ${a.allow_overdraft ?? false}, ${JSON.stringify(a.details ?? {})}::jsonb)`,
+        );
+      } else {
+        await t.execute(
+          sql`update money_accounts set name=${a.name}, type=${a.type}, holder=${a.holder ?? "Annapurna"}, active=${a.active ?? true}, allow_overdraft=${a.allow_overdraft ?? false}, details=${JSON.stringify(a.details ?? {})}::jsonb where org=${org} and id=${a.id}`,
         );
       }
     }
@@ -63,7 +67,7 @@ await db.transaction(async (t) => {
     console.log(`✓ Processed ${data.salesmen.length} salesmen`);
   }
 
-  // 3. Products and configurations
+  // 3. Products and configurations (including Confectionery)
   if (Array.isArray(data.products)) {
     for (const p of data.products) {
       const [existing] = await rows<{ id: string }>(
@@ -75,6 +79,10 @@ await db.transaction(async (t) => {
         await t.execute(
           sql`insert into products(id, org, code, name, barcode, itc_multiple, is_focus_brand, category)
               values(${prodId}, ${org}, ${p.code}, ${p.name}, ${p.barcode ?? null}, ${p.itc_multiple ?? null}, ${p.is_focus_brand ?? false}, ${p.category ?? 'CG-01 CIGARETTE'})`,
+        );
+      } else {
+        await t.execute(
+          sql`update products set name=${p.name}, barcode=${p.barcode ?? null}, itc_multiple=${p.itc_multiple ?? null}, is_focus_brand=${p.is_focus_brand ?? false}, category=${p.category ?? 'CG-01 CIGARETTE'} where org=${org} and id=${prodId}`,
         );
       }
 
@@ -90,9 +98,13 @@ await db.transaction(async (t) => {
           sql`insert into product_configurations(id, org, product_id, unit, base_unit, conversion, basis, rate, fractional, confirmed, effective_date)
               values(${configId}, ${org}, ${prodId}, ${p.unit ?? 'm'}, ${p.base_unit ?? 'm'}, ${p.conversion ?? '1.00000000'}, ${p.basis ?? '1.00000000'}, ${p.rate ?? '0.00000000'}, ${p.fractional ?? true}, true, ${effDate}::date)`,
         );
+      } else {
+        await t.execute(
+          sql`update product_configurations set unit=${p.unit ?? 'm'}, base_unit=${p.base_unit ?? 'm'}, conversion=${p.conversion ?? '1.00000000'}, basis=${p.basis ?? '1.00000000'}, rate=${p.rate ?? '0.00000000'}, fractional=${p.fractional ?? true} where id=${cfg.id}`,
+        );
       }
     }
-    console.log(`✓ Processed ${data.products.length} products with configurations`);
+    console.log(`✓ Processed ${data.products.length} products (Cigarettes + Confectionery) with configurations`);
   }
 
   // 4. Employees
@@ -101,12 +113,16 @@ await db.transaction(async (t) => {
       const empId = e.id && e.id.length === 36 ? e.id : crypto.randomUUID();
       const [existing] = await rows<{ id: string }>(
         t,
-        sql`select id from employees where org=${org} and name=${e.name}`,
+        sql`select id from employees where org=${org} and (id=${empId} or name=${e.name})`,
       );
       if (!existing) {
         await t.execute(
           sql`insert into employees(id, org, name, role, phone, active)
               values(${empId}, ${org}, ${e.name}, ${e.role ?? ''}, ${e.phone ?? null}, ${e.active ?? true})`,
+        );
+      } else {
+        await t.execute(
+          sql`update employees set role=${e.role ?? ''}, phone=${e.phone ?? null}, active=${e.active ?? true} where id=${existing.id}`,
         );
       }
     }
@@ -119,16 +135,41 @@ await db.transaction(async (t) => {
       const fsId = fs.id && fs.id.length === 36 ? fs.id : crypto.randomUUID();
       const [existing] = await rows<{ id: string }>(
         t,
-        sql`select id from foods_salesmen where org=${org} and name=${fs.name}`,
+        sql`select id from foods_salesmen where org=${org} and (id=${fsId} or name=${fs.name})`,
       );
       if (!existing) {
         await t.execute(
           sql`insert into foods_salesmen(id, org, name, territory, phone, active)
               values(${fsId}, ${org}, ${fs.name}, ${fs.territory ?? null}, ${fs.phone ?? null}, ${fs.active ?? true})`,
         );
+      } else {
+        await t.execute(
+          sql`update foods_salesmen set territory=${fs.territory ?? null}, phone=${fs.phone ?? null}, active=${fs.active ?? true} where id=${existing.id}`,
+        );
       }
     }
     console.log(`✓ Processed ${data.foodsSalesmen.length} foods salesmen`);
+  }
+
+  // 6. ITC Customers
+  if (Array.isArray(data.itcCustomers)) {
+    for (const c of data.itcCustomers) {
+      const [existing] = await rows<{ id: string }>(
+        t,
+        sql`select id from itc_customers where org=${org} and (id=${c.id} or customer_id=${c.customer_id})`,
+      );
+      if (!existing) {
+        await t.execute(
+          sql`insert into itc_customers(id, org, customer_id, customer_name, salesman_itc_id, salesman_name, beat_code, beat_name, salesman_id, active, is_gst)
+              values(${c.id}, ${org}, ${c.customer_id}, ${c.customer_name}, ${c.salesman_itc_id}, ${c.salesman_name}, ${c.beat_code}, ${c.beat_name}, ${c.salesman_id}, ${c.active ?? true}, ${c.is_gst ?? false})`,
+        );
+      } else {
+        await t.execute(
+          sql`update itc_customers set customer_name=${c.customer_name}, beat_code=${c.beat_code}, beat_name=${c.beat_name}, salesman_id=${c.salesman_id}, active=${c.active ?? true}, is_gst=${c.is_gst ?? false} where id=${existing.id}`,
+        );
+      }
+    }
+    console.log(`✓ Processed ${data.itcCustomers.length} ITC customers`);
   }
 });
 
