@@ -1965,19 +1965,23 @@ nav {
 }
 
 .dashboard-actions {
-  gap: clamp(12px, 0.8vw, 18px);
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: clamp(10px, 0.7vw, 16px);
   margin-bottom: clamp(24px, 1.6vw, 33px);
 }
 
 .dashboard-actions button.dashboard-action {
-  min-height: clamp(104px, 6.35vw, 130px);
-  padding: 17px 10px;
+  min-height: clamp(88px, 5.5vw, 120px);
+  padding: 14px 8px;
   border: 1px solid var(--dashboard-line);
-  border-radius: 16px;
+  border-radius: 14px;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 7px;
+  align-items: center;
+  text-align: center;
+  gap: 5px;
   color: var(--dashboard-ink);
   background: white;
   box-shadow: 0 1px 3px #29252410;

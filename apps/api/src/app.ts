@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { secureHeaders } from "hono/secure-headers";
 import { bodyLimit } from "hono/body-limit";
+import { createHmac } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { ZodError, z } from "zod";
 import { db } from "@ledger/db";
@@ -11,6 +12,7 @@ import {
   accountSchema,
   id,
   date as dateSchema,
+  cleanIndianPhone,
 } from "@ledger/contracts";
 import { auth } from "./auth";
 import {
@@ -85,6 +87,67 @@ app.onError((e, c) => {
 app.get("/api/v1/health", async (c) => {
   await db.execute(sql`select 1`);
   return c.json({ status: "ok" });
+});
+
+// Helper: generate a 16-character HMAC token for public view links
+export function getDocumentShareToken(docId: string): string {
+  const secret = process.env.BETTER_AUTH_SECRET || "annapurna-family-ledger-share-key";
+  return createHmac("sha256", secret).update(`doc:${docId}`).digest("hex").slice(0, 16);
+}
+
+// Public view-only document endpoint (no session auth required, verified by token)
+app.get("/api/v1/public/documents/:id", async (c) => {
+  const docId = id.parse(c.req.param("id"));
+  const token = c.req.query("token") || "";
+  const expected = getDocumentShareToken(docId);
+  ensure(token === expected, "Invalid or expired document link", "FORBIDDEN", 403);
+
+  const [d] = await rows(
+    db,
+    sql`select d.*,
+      o.name business_name,
+      o.setup business_setup,
+      s.name salesman_name,
+      coalesce(s.phone, s.details->>'phone') salesman_phone,
+      fs.name foods_salesman_name,
+      fs.phone foods_salesman_phone,
+      e.name employee_name,
+      e.phone employee_phone,
+      exists(select 1 from documents r where r.reverses=d.id and r.org=d.org) reversed,
+      (select r.number from documents r where r.reverses=d.id and r.org=d.org limit 1) reversal_number,
+      (select orig.number from documents orig where orig.id=d.reverses and orig.org=d.org limit 1) original_number
+    from documents d
+    join organizations o on o.id = d.org
+    left join salesmen s on s.id = d.salesman_id and s.org = d.org
+    left join foods_salesmen fs on fs.id = case when (d.data->>'foodsSalesmanId') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (d.data->>'foodsSalesmanId')::uuid else null end and fs.org = d.org
+    left join employees e on e.id = case when (d.data->>'employeeId') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (d.data->>'employeeId')::uuid else null end and e.org = d.org
+    where d.id = ${docId}`,
+  );
+  ensure(d, "Record not found", "NOT_FOUND", 404);
+
+  const [lines, attachments, openClaims] = await Promise.all([
+    rows(
+      db,
+      sql`select l.* from bill_lines l where l.org=${d.org} and l.document_id=${docId} order by l.id`,
+    ),
+    rows(
+      db,
+      sql`select id,mime,size from attachments where org=${d.org} and document_id=${docId}`,
+    ),
+    d.salesman_id
+      ? rows(
+          db,
+          sql`select id, amount, actual_date, reference, state from receipt_claims where org=${d.org} and salesman_id=${d.salesman_id} and state = 'pending' order by actual_date desc`,
+        )
+      : ((d.data as Record<string, unknown> | null)?.foodsSalesmanId
+        ? rows(
+            db,
+            sql`select id, amount, actual_date, reference, state from receipt_claims where org=${d.org} and foods_salesman_id=${(d.data as Record<string, unknown>).foodsSalesmanId as string} and state = 'pending' order by actual_date desc`,
+          )
+        : Promise.resolve([])),
+  ]);
+
+  return c.json({ ...d, lines, attachments, openClaims });
 });
 // Public registration/reset endpoints are deliberately not exposed. Owner provisioning uses server commands.
 app.on(["GET", "POST"], "/api/v1/auth/*", async (c) => {
@@ -395,7 +458,7 @@ app.get("/api/v1/dashboard", async (c) =>
         ),
         rows(
           t,
-          sql`select p.*,s.name salesman_name,m.name account_name from receipt_claims p join salesmen s on s.id=p.salesman_id join money_accounts m on m.id=p.account_id where p.org=${a.org} and p.state='pending' order by p.created_at limit 100`,
+          sql`select p.*,coalesce(s.name,fs.name,'Foods') salesman_name,m.name account_name from receipt_claims p left join salesmen s on s.id=p.salesman_id left join foods_salesmen fs on fs.id=p.foods_salesman_id join money_accounts m on m.id=p.account_id where p.org=${a.org} and p.state='pending' order by p.created_at limit 100`,
         ),
         rows(
           t,
@@ -478,7 +541,7 @@ app.get("/api/v1/dashboard", async (c) =>
     }
     const [summary] = await rows(
       t,
-      sql`with events as (select kind,coalesce(data->>'method','') method,amount,data from documents where org=${a.org} and business_date=${date} and reverses is null union all select o.kind,coalesce(o.data->>'method','') method,-d.amount,o.data from documents d join lateral(select kind,data from documents x where x.id=d.reverses limit 1)o on true where d.org=${a.org} and d.business_date=${date} and d.reverses is not null) select coalesce(sum(amount) filter(where kind in ('receipt','identify') and coalesce(data->>'isHandoverConfirmation', 'false') != 'true' and not (data ? 'reference' and data->>'reference' like 'Cash handover confirmed%')),0)::numeric(18,2)::text collections,coalesce(sum(amount) filter(where kind='receipt' and method='cash' and coalesce(data->>'isHandoverConfirmation', 'false') != 'true' and not (data ? 'reference' and data->>'reference' like 'Cash handover confirmed%')),0)::numeric(18,2)::text cash_collections,coalesce(sum(amount) filter(where (kind='receipt' and method='online') or kind='identify'),0)::numeric(18,2)::text online_collections,coalesce(sum(amount) filter(where kind in ('expense','salary')),0)::numeric(18,2)::text expenses,coalesce(sum(amount) filter(where kind='loan'),0)::numeric(18,2)::text loans,coalesce(sum(amount) filter(where kind in ('expense','salary','loan')),0)::numeric(18,2)::text expenses_and_loans,coalesce(sum(amount) filter(where kind='return'),0)::numeric(18,2)::text returns from events`,
+      sql`with events as (select kind,coalesce(data->>'method','') method,amount,data from documents where org=${a.org} and business_date=${date} and reverses is null union all select o.kind,coalesce(o.data->>'method','') method,-d.amount,o.data from documents d join lateral(select kind,data from documents x where x.id=d.reverses limit 1)o on true where d.org=${a.org} and d.business_date=${date} and d.reverses is not null) select coalesce(sum(amount) filter(where (kind in ('receipt','identify') or kind='foods_receipt') and coalesce(data->>'isHandoverConfirmation', 'false') != 'true' and not (data ? 'reference' and data->>'reference' like 'Cash handover confirmed%')),0)::numeric(18,2)::text collections,coalesce(sum(case when kind='foods_receipt' and method='cash' then amount when kind='foods_receipt' and method='' then coalesce((data->>'cashAmount')::numeric, 0) else (case when kind='receipt' and method='cash' and coalesce(data->>'isHandoverConfirmation', 'false') != 'true' and not (data ? 'reference' and data->>'reference' like 'Cash handover confirmed%') then amount else 0 end) end),0)::numeric(18,2)::text cash_collections,coalesce(sum(case when kind='foods_receipt' and method='online' then amount when kind='foods_receipt' and method='' then coalesce((data->>'bankAmount')::numeric, 0) else (case when (kind='receipt' and method='online') or kind='identify' then amount else 0 end) end),0)::numeric(18,2)::text online_collections,coalesce(sum(amount) filter(where kind in ('expense','salary')),0)::numeric(18,2)::text expenses,coalesce(sum(amount) filter(where kind='loan'),0)::numeric(18,2)::text loans,coalesce(sum(amount) filter(where kind in ('expense','salary','loan')),0)::numeric(18,2)::text expenses_and_loans,coalesce(sum(amount) filter(where kind='return'),0)::numeric(18,2)::text returns from events`,
     );
     const cashSummary = await rows(
       t,
@@ -731,6 +794,9 @@ app.get("/api/v1/documents/:id", async (c) =>
     const [d] = await rows(
       t,
       sql`select d.*,
+        coalesce(s.phone, s.details->>'phone') salesman_phone,
+        fs.phone foods_salesman_phone,
+        e.phone employee_phone,
         exists(select 1 from documents r where r.reverses=d.id and r.org=d.org) reversed,
         (select r.id from documents r where r.reverses=d.id and r.org=d.org limit 1) reversal_id,
         (select r.number from documents r where r.reverses=d.id and r.org=d.org limit 1) reversal_number,
@@ -757,7 +823,11 @@ app.get("/api/v1/documents/:id", async (c) =>
           )
           else false 
         end returned
-      from documents d where d.org=${a.org} and d.id=${recordId}`,
+      from documents d
+      left join salesmen s on s.id = d.salesman_id and s.org = d.org
+      left join foods_salesmen fs on fs.id = case when (d.data->>'foodsSalesmanId') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (d.data->>'foodsSalesmanId')::uuid else null end and fs.org = d.org
+      left join employees e on e.id = case when (d.data->>'employeeId') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (d.data->>'employeeId')::uuid else null end and e.org = d.org
+      where d.org=${a.org} and d.id=${recordId}`,
     );
     ensure(d, "Record not found", "NOT_FOUND", 404);
     const [fetchedLines, entries, allocations, attachments] = await Promise.all([
@@ -872,7 +942,19 @@ app.get("/api/v1/documents/:id", async (c) =>
         };
       }
     }
-    return c.json({ ...d, lines, entries, allocations, attachments });
+    const shareToken = getDocumentShareToken(String(d.id));
+    const openClaims = d.salesman_id
+      ? await rows(
+          t,
+          sql`select id, amount, actual_date, reference, state from receipt_claims where org=${a.org} and salesman_id=${d.salesman_id} and state = 'pending' order by actual_date desc`,
+        )
+      : ((d.data as Record<string, unknown> | null)?.foodsSalesmanId
+        ? await rows(
+            t,
+            sql`select id, amount, actual_date, reference, state from receipt_claims where org=${a.org} and foods_salesman_id=${(d.data as Record<string, unknown>).foodsSalesmanId as string} and state = 'pending' order by actual_date desc`,
+          )
+        : []);
+    return c.json({ ...d, shareToken, lines, entries, allocations, attachments, openClaims });
   }),
 );
 app.get("/api/v1/statements/:id", async (c) =>
@@ -949,16 +1031,18 @@ app.post("/api/v1/drafts", async (c) => {
   const a = c.get("actor");
   const p = z
     .object({
-      id: id.optional(),
-      version: z.number().int().optional(),
+      id: id.nullable().optional(),
+      version: z.number().int().nullable().optional(),
       data: z.record(z.string(), z.unknown()),
     })
     .strict()
     .parse(await c.req.json());
-  const [r] = p.id
+  const draftId = p.id && p.id.trim() ? p.id.trim() : undefined;
+  const draftVersion = p.version ?? 0;
+  const [r] = draftId
     ? await rows(
       db,
-      sql`update drafts set data=${JSON.stringify(p.data)}::jsonb,version=version+1 where id=${p.id} and org=${a.org} and actor=${a.id} and version=${p.version ?? 0} returning id,version`,
+      sql`update drafts set data=${JSON.stringify(p.data)}::jsonb,version=version+1 where id=${draftId} and org=${a.org} and actor=${a.id} and version=${draftVersion} returning id,version`,
     )
     : await rows(
       db,
@@ -2505,11 +2589,9 @@ app.post("/api/v1/preview/bill", async (c) =>
     total = total.minus(rawDiscount);
     const previous = await balance(t, a.org, "trade:" + p.salesmanId, p.date),
       confirmed = p.receipts
-        .filter((r) => r.method === "cash" || r.verified)
         .reduce((s, r) => s.plus(r.amount), D(0)),
-      pending = p.receipts
-        .filter((r) => r.method === "online" && !r.verified)
-        .reduce((s, r) => s.plus(r.amount), D(0));
+      pending = D(0);
+    const openClaims: unknown[] = [];
     return c.json({
       quoteHash: quoteFingerprint(
         p.date,
@@ -2533,6 +2615,7 @@ app.post("/api/v1/preview/bill", async (c) =>
       confirmed: money(confirmed),
       pending: money(pending),
       projected: money(D(previous).plus(total).minus(confirmed)),
+      openClaims,
     });
   }),
 );
@@ -2605,6 +2688,8 @@ app.get("/api/v1/reports/:name", async (c) => {
             when d.kind = 'receipt' and coalesce(d.data->>'method', 'cash') = 'online' then 'receipt_online'
             when d.kind = 'receipt' then 'receipt_cash'
             when d.kind = 'identify' then 'receipt_online'
+            when d.kind = 'foods_receipt' and (coalesce(d.data->>'method', '') = 'online' or (coalesce((d.data->>'bankAmount')::numeric, 0) > 0 and coalesce((d.data->>'cashAmount')::numeric, 0) = 0)) then 'foods_receipt_online'
+            when d.kind = 'foods_receipt' and (coalesce(d.data->>'method', '') = 'cash' or (coalesce((d.data->>'cashAmount')::numeric, 0) > 0 and coalesce((d.data->>'bankAmount')::numeric, 0) = 0)) then 'foods_receipt_cash'
             when d.kind = 'foods_receipt' then 'foods_receipt'
             when d.kind = 'expense' then 'expense'
             when d.kind = 'salary' then 'salary'
@@ -2726,7 +2811,7 @@ app.get("/api/v1/reports/:name", async (c) => {
     case "claims":
       result = await rows(
         db,
-        sql`select p.id,s.name salesman,p.actual_date::text reported_date,p.created_at::text created_at,p.amount,p.reference,p.state,p.reason from receipt_claims p join salesmen s on s.id=p.salesman_id and s.org=p.org where p.org=${a.org} and p.actual_date between ${from} and ${to} order by p.created_at desc limit 100 offset ${offset}`,
+        sql`select p.id,coalesce(s.name,fs.name,'Foods') salesman,p.actual_date::text reported_date,p.created_at::text created_at,p.amount,p.reference,p.state,p.reason from receipt_claims p left join salesmen s on s.id=p.salesman_id and s.org=p.org left join foods_salesmen fs on fs.id=p.foods_salesman_id and fs.org=p.org where p.org=${a.org} and p.actual_date between ${from} and ${to} order by p.created_at desc limit 100 offset ${offset}`,
       );
       break;
     case "ageing":
@@ -2757,6 +2842,8 @@ app.get("/api/v1/reports/:name", async (c) => {
             when d.kind = 'receipt' and coalesce(d.data->>'method', 'cash') = 'online' then 'receipt_online'
             when d.kind = 'receipt' then 'receipt_cash'
             when d.kind = 'identify' then 'receipt_online'
+            when d.kind = 'foods_receipt' and (coalesce(d.data->>'method', '') = 'online' or (coalesce((d.data->>'bankAmount')::numeric, 0) > 0 and coalesce((d.data->>'cashAmount')::numeric, 0) = 0)) then 'foods_receipt_online'
+            when d.kind = 'foods_receipt' and (coalesce(d.data->>'method', '') = 'cash' or (coalesce((d.data->>'cashAmount')::numeric, 0) > 0 and coalesce((d.data->>'bankAmount')::numeric, 0) = 0)) then 'foods_receipt_cash'
             when d.kind = 'foods_receipt' then 'foods_receipt'
             when d.kind = 'employee_receipt' then 'employee_receipt'
             when d.kind = 'deposit' then 'bank_deposit'
@@ -3144,9 +3231,12 @@ app.patch("/api/v1/salesmen/:id", async (c) => {
   const a = c.get("actor");
   owner(a);
   const salesmanId = id.parse(c.req.param("id"));
+  const rawBody = await c.req.json();
   const p = salesmanSchema
     .pick({ name: true, creditLimit: true, details: true, active: true })
-    .parse(await c.req.json());
+    .extend({ phone: z.string().optional() })
+    .parse(rawBody);
+  const normalizedPhone = p.phone !== undefined ? cleanIndianPhone(p.phone) : undefined;
   await db.transaction(async (t) => {
     await lock(t, a.org);
     const [before] = await rows(
@@ -3164,6 +3254,7 @@ app.patch("/api/v1/salesmen/:id", async (c) => {
         beat_code = ${(p.details as Record<string, string>)?.beat_code ?? null},
         beat_name = ${(p.details as Record<string, string>)?.beat_name ?? null},
         route = ${(p.details as Record<string, string>)?.route ?? null}
+        ${normalizedPhone !== undefined ? sql`, phone = ${normalizedPhone}` : sql``}
         where org=${a.org} and id=${salesmanId}`,
     );
     // Cascade salesman name/itc changes to itc_customers (only cascade beat if non-empty and not wholesale)
@@ -3200,6 +3291,34 @@ app.patch("/api/v1/salesmen/:id", async (c) => {
   return c.json({ id: salesmanId });
 });
 
+// Quick phone-only update for salesman (used by WhatsApp Share modal)
+app.patch("/api/v1/salesmen/:id/phone", async (c) => {
+  const a = c.get("actor");
+  ownerOrManager(a);
+  const salesmanId = id.parse(c.req.param("id"));
+  const { phone } = z.object({ phone: z.string().min(1) }).parse(await c.req.json());
+  const normalized = cleanIndianPhone(phone);
+  ensure(normalized, "Invalid Indian mobile number. Please enter a 10-digit mobile number.", "VALIDATION");
+  const raw10 = normalized.startsWith("91") && normalized.length === 12 ? normalized.slice(2) : normalized;
+  await db.execute(sql`update salesmen set 
+    phone=${normalized},
+    details=jsonb_set(coalesce(details, '{}'::jsonb), '{phone}', ${JSON.stringify(raw10)}::jsonb)
+    where org=${a.org} and id=${salesmanId}`);
+  return c.json({ id: salesmanId, phone: normalized });
+});
+
+// Quick phone-only update for employee (used by WhatsApp Share modal)
+app.patch("/api/v1/employees/:id/phone", async (c) => {
+  const a = c.get("actor");
+  ownerOrManager(a);
+  const eid = id.parse(c.req.param("id"));
+  const { phone } = z.object({ phone: z.string().min(1) }).parse(await c.req.json());
+  const normalized = cleanIndianPhone(phone);
+  ensure(normalized, "Invalid Indian mobile number. Please enter a 10-digit mobile number.", "VALIDATION");
+  await db.execute(sql`update employees set phone=${normalized} where org=${a.org} and id=${eid}`);
+  return c.json({ id: eid, phone: normalized });
+});
+
 // ---- EMPLOYEES CRUD ----
 app.get("/api/v1/employees", async (c) => {
   const a = c.get("actor");
@@ -3214,7 +3333,8 @@ app.post("/api/v1/employees", async (c) => {
     role: z.string().default(""),
     phone: z.string().optional(),
   }).parse(await c.req.json());
-  const [row] = await rows(db, sql`insert into employees (org, name, role, phone) values (${a.org}, ${p.name}, ${p.role}, ${p.phone ?? null}) returning id, name, role, phone, active`);
+  const normalizedPhone = p.phone ? cleanIndianPhone(p.phone) : null;
+  const [row] = await rows(db, sql`insert into employees (org, name, role, phone) values (${a.org}, ${p.name}, ${p.role}, ${normalizedPhone}) returning id, name, role, phone, active`);
   return c.json(row, 201);
 });
 app.patch("/api/v1/employees/:id", async (c) => {
@@ -3227,10 +3347,11 @@ app.patch("/api/v1/employees/:id", async (c) => {
     phone: z.string().optional(),
     active: z.boolean().optional(),
   }).parse(await c.req.json());
+  const normalizedPhone = p.phone !== undefined ? cleanIndianPhone(p.phone) : undefined;
   await db.execute(sql`update employees set
     name = coalesce(${p.name ?? null}, name),
     role = coalesce(${p.role ?? null}, role),
-    phone = coalesce(${p.phone ?? null}, phone),
+    phone = ${normalizedPhone !== undefined ? normalizedPhone : sql`phone`},
     active = coalesce(${p.active ?? null}, active)
     where id=${eid} and org=${a.org}`);
   return c.json({ id: eid });
@@ -3250,7 +3371,8 @@ app.post("/api/v1/foods-salesmen", async (c) => {
     territory: z.string().optional(),
     phone: z.string().optional(),
   }).parse(await c.req.json());
-  const [row] = await rows(db, sql`insert into foods_salesmen (org, name, territory, phone) values (${a.org}, ${p.name}, ${p.territory ?? null}, ${p.phone ?? null}) returning id, name, territory, phone, active`);
+  const normalizedPhone = p.phone ? cleanIndianPhone(p.phone) : null;
+  const [row] = await rows(db, sql`insert into foods_salesmen (org, name, territory, phone) values (${a.org}, ${p.name}, ${p.territory ?? null}, ${normalizedPhone}) returning id, name, territory, phone, active`);
   return c.json(row, 201);
 });
 app.patch("/api/v1/foods-salesmen/:id", async (c) => {
@@ -3263,10 +3385,11 @@ app.patch("/api/v1/foods-salesmen/:id", async (c) => {
     phone: z.string().optional(),
     active: z.boolean().optional(),
   }).parse(await c.req.json());
+  const normalizedPhone = p.phone !== undefined ? cleanIndianPhone(p.phone) : undefined;
   await db.execute(sql`update foods_salesmen set
     name = coalesce(${p.name ?? null}, name),
     territory = coalesce(${p.territory ?? null}, territory),
-    phone = coalesce(${p.phone ?? null}, phone),
+    phone = ${normalizedPhone !== undefined ? normalizedPhone : sql`phone`},
     active = coalesce(${p.active ?? null}, active)
     where id=${fid} and org=${a.org}`);
   return c.json({ id: fid });

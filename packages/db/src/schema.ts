@@ -97,6 +97,7 @@ export const salesmen = pgTable(
     beatCode: text("beat_code"),
     beatName: text("beat_name"),
     route: text("route"),
+    phone: text("phone"),
   },
   (t) => [uniqueIndex("salesman_code").on(t.org, t.code)],
 );
@@ -213,8 +214,9 @@ export const receiptClaims = pgTable("receipt_claims", {
     .notNull()
     .references(() => organizations.id),
   salesmanId: uuid("salesman_id")
-    .notNull()
     .references(() => salesmen.id),
+  foodsSalesmanId: uuid("foods_salesman_id")
+    .references((): AnyPgColumn => foodsSalesmen.id),
   amount: numeric("amount", { precision: 18, scale: 2 }).notNull(),
   accountId: uuid("account_id")
     .notNull()

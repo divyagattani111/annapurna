@@ -17,6 +17,24 @@ export function cleanMoney(val: unknown): string {
   return (neg ? "-" : "") + normalizedWhole + (parts.length === 2 ? "." + frac.padEnd(2, "0") : ".00");
 }
 
+/**
+ * Normalize an Indian mobile number to E.164-without-plus format for WhatsApp (91XXXXXXXXXX).
+ * Strips all non-digit characters, then:
+ *  - 10 digits               → "91" + digits
+ *  - 11 digits starting 0    → "91" + digits[1:]
+ *  - 12 digits starting 91   → kept as-is
+ * Returns null for empty or unrecognizable input.
+ */
+export function cleanIndianPhone(val: unknown): string | null {
+  if (val === null || val === undefined) return null;
+  const digits = String(val).replace(/\D/g, "");
+  if (!digits) return null;
+  if (digits.length === 10) return `91${digits}`;
+  if (digits.length === 11 && digits.startsWith("0")) return `91${digits.slice(1)}`;
+  if (digits.length === 12 && digits.startsWith("91")) return digits;
+  return null; // reject ambiguous or invalid lengths
+}
+
 export function parseMultiAmounts(val: unknown): string[] {
   if (val === null || val === undefined) return [];
   const raw = String(val).trim();
@@ -85,7 +103,7 @@ export const receipt = z
     accountId: id,
     method: z.enum(["cash", "online"]),
     actualDate: date,
-    reference: z.string().max(200),
+    reference: z.string().max(200).default(""),
     verified: z.boolean().default(false),
   })
   .strict();
@@ -352,8 +370,11 @@ export const commands = {
       foodItems: z.string().max(500).optional(),
       cashAmount: money.default("0.00"),
       bankAmount: money.default("0.00"),
+      bankAmounts: z.array(money).optional(),
       cashAccountId: id.optional(),
       bankAccountId: id.optional(),
+      method: z.enum(["cash", "online"]).optional(),
+      verified: z.boolean().default(false),
       note: z.string().max(2000).optional(),
     })
     .strict(),

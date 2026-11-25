@@ -230,14 +230,10 @@ test("A02-A04 bill, split claim, once-only verification, later receipt and origi
       accountId: f.bank,
       method: "online",
       actualDate: date,
-      reference: "CLAIM",
+      reference: "ONLINE_AUTO",
     },
   ]);
-  expect(await due(f)).toBe("17000.00");
-  expect(await f.bal("money:" + f.bank)).toBe("0.00");
-  const claim = (b.receipts as Row[])[1];
-  await verify(f, claim);
-  await verify(f, claim);
+  // Online payment is trusted and posts immediately without verification
   expect(await due(f)).toBe("10000.00");
   expect(await f.bal("money:" + f.bank)).toBe("7000.00");
   await f.receipt("4000");
@@ -245,17 +241,13 @@ test("A02-A04 bill, split claim, once-only verification, later receipt and origi
   await ret(f, b, "10");
   expect(await due(f)).toBe("5000.00");
 });
-test("A05 pending/rejected never affect money; confirmed cannot reject", async () => {
+test("A05 online payments post directly and update balance immediately", async () => {
   const f = await fixture();
-  const p = await f.receipt("700", "online");
-  expect(await due(f)).toBe("0.00");
-  await f.run("reject", { claimId: p.id, reason: "No bank evidence" });
-  await expect(verify(f, p)).rejects.toThrow();
-  const p2 = await f.receipt("700", "online");
-  await verify(f, p2);
-  await expect(
-    f.run("reject", { claimId: p2.id, reason: "Changed mind" }),
-  ).rejects.toThrow();
+  await f.bill("10");
+  expect(await due(f)).toBe("1000.00");
+  await f.receipt("700", "online");
+  expect(await due(f)).toBe("300.00");
+  expect(await f.bal("money:" + f.bank)).toBe("700.00");
 });
 test("A06 overpayment consumed by later bill without second receipt", async () => {
   const f = await fixture();
@@ -379,8 +371,7 @@ test("A16 physical cash excludes online and subtracts handed-over deposits", asy
   const f = await fixture();
   await f.fund("5000");
   await f.receipt("8000");
-  const c = await f.receipt("7000", "online");
-  await verify(f, c);
+  await f.receipt("7000", "online");
   await f.run("expense", {
     date,
     category: "diesel",
@@ -576,13 +567,13 @@ test("A25-A26 difference stays explicit; close freeze and owner reopening", asyn
   expect(c.state).toBe("stale");
   expect(c.difference).toBe("-50.00");
 });
-test("A27 claimed actual date preserved while verification posts current date", async () => {
+test("A27 claimed actual date preserved while posting on current business date", async () => {
   const f = await fixture();
   const yesterday = new Date(Date.now() - 86400000).toLocaleDateString(
     "en-CA",
     { timeZone: "Asia/Kolkata" },
   );
-  const p = await f.run("receipt", {
+  const r = await f.run("receipt", {
     date,
     actualDate: yesterday,
     salesmanId: f.s1,
@@ -590,9 +581,7 @@ test("A27 claimed actual date preserved while verification posts current date", 
     accountId: f.bank,
     method: "online",
     reference: "OLD",
-    verified: false,
   });
-  const r = await verify(f, p);
   const [doc] = await rows(
     db,
     sql`select business_date::text,actual_date::text from documents where id=${r.id}`,
@@ -809,7 +798,7 @@ test("A42 issue-time account snapshot remains unchanged on reprint", async () =>
   expect(d.data.issueBalance).toBe("1000.00");
   expect(await due(f)).toBe("500.00");
 });
-test("A43 bill child receipts atomic and pending child has no journal", async () => {
+test("A43 bill child receipts atomic and online child posts to bank book", async () => {
   const f = await fixture();
   const b = await f.bill("10", f.s1, [
     {
@@ -828,8 +817,9 @@ test("A43 bill child receipts atomic and pending child has no journal", async ()
     },
   ]);
   expect(b.receipts as Row[]).toHaveLength(2);
-  expect(await due(f)).toBe("700.00");
-  expect(await f.bal("money:" + f.bank)).toBe("0.00");
+  expect(await due(f)).toBe("0.00");
+  expect(await f.bal("money:" + f.bank)).toBe("700.00");
+  expect(await f.bal("money:" + f.cash)).toBe("300.00");
 });
 test("A44 split expense posts each leg exactly once", async () => {
   const f = await fixture();
@@ -1041,7 +1031,7 @@ test("A55 live organization cannot receive demo financial commands", async () =>
   await expect(f.bill("1")).rejects.toThrow("Live posting is blocked");
   expect(await due(f)).toBe("0.00");
 });
-test("Split receipts post atomically with an unconfirmed online leg", async () => {
+test("Split receipts post atomically with cash and online legs", async () => {
   const f = await fixture();
   await f.bill("10");
   const p = {
@@ -1060,14 +1050,14 @@ test("Split receipts post atomically with an unconfirmed online leg", async () =
         accountId: f.bank,
         method: "online",
         actualDate: date,
-        reference: "PENDING",
+        reference: "ONLINE_PART",
       },
     ],
   };
   await f.run("receiptBatch", p);
-  expect(await due(f)).toBe("700.00");
+  expect(await due(f)).toBe("0.00");
   expect(await f.bal("money:" + f.cash)).toBe("300.00");
-  expect(await f.bal("money:" + f.bank)).toBe("0.00");
+  expect(await f.bal("money:" + f.bank)).toBe("700.00");
 });
 test("Owner correction is classified, balanced and denied to forged manager roles", async () => {
   const f = await fixture();

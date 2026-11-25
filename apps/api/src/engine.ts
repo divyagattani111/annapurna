@@ -274,10 +274,10 @@ async function bankIdentity(
   t: Tx,
   a: Actor,
   accountId: string,
-  identity: string,
+  identity: string | undefined | null,
   documentId: string,
 ) {
-  ensure(identity.trim(), "Bank transaction identity is required");
+  if (!identity || !identity.trim()) return;
   await t.execute(
     sql`insert into bank_identities(org,account_id,identity,document_id) values(${a.org},${accountId},${identity.trim()},${documentId})`,
   );
@@ -443,21 +443,6 @@ async function receive(
     p.method === "cash" ? "cash" : "bank",
   );
   positive(p.amount);
-  if (p.method === "online" && !p.verified) {
-    const id = crypto.randomUUID();
-    await t.execute(
-      sql`insert into receipt_claims(id,org,salesman_id,amount,account_id,actual_date,reference,actor) values(${id},${a.org},${p.salesmanId},${p.amount},${p.accountId},${p.actualDate},${p.reference},${a.id})`,
-    );
-    await auditEvent(t, a, "claim", id, { billId });
-    return { id, amount: money(p.amount), state: "pending" };
-  }
-  if (p.method === "online")
-    ensure(
-      a.role === "owner" || a.capabilities.verifyOnline !== false,
-      "Online verification permission revoked",
-      "FORBIDDEN",
-      403,
-    );
   let customerName: string | undefined;
   if (p.customerId) {
     const [cRow] = await rows<{ customer_name: string }>(
@@ -514,8 +499,6 @@ async function receive(
     ],
     p.salesmanId,
   );
-  if (p.method === "online")
-    await bankIdentity(t, a, p.accountId, p.reference, r.id);
   return r;
 }
 function canonical(v: unknown): string {
@@ -585,9 +568,7 @@ export async function command<K extends CommandName>(
       name === "verify" ||
       name === "reject" ||
       name === "confirmCashHandover" ||
-      name === "receiveSalesmanCash" ||
-      (name === "receipt" && payload.method === "online" && payload.verified) ||
-      payload.receipts?.some((r) => r.method === "online" && r.verified)
+      name === "receiveSalesmanCash"
     )
       ensure(
         a.role === "owner" || a.capabilities.verifyOnline !== false,
@@ -851,7 +832,6 @@ async function execute<K extends CommandName>(
           409,
         );
       const confirmed = b.receipts
-        .filter((r) => r.method === "cash" || r.verified)
         .reduce((s, r) => s.plus(r.amount), D(0));
       const projected = D(previous).plus(total).minus(confirmed);
       if (
@@ -894,11 +874,7 @@ async function execute<K extends CommandName>(
           salesmanName: salesman.name,
           businessName: business.name,
           businessProfile: business.setup,
-          pendingAtIssue: money(
-            b.receipts
-              .filter((r) => r.method === "online" && !r.verified)
-              .reduce((s, r) => s.plus(r.amount), D(0)),
-          ),
+          pendingAtIssue: "0.00",
         },
         [
           { account: trade(b.salesmanId), debit: money(total) },
@@ -1001,21 +977,62 @@ async function execute<K extends CommandName>(
         return { id: String(c.document_id), state: "confirmed" };
       }
       ensure(c.state === "pending", "Only pending claims can be verified");
-      const r = await receive(t, a, {
-        salesmanId: String(c.salesman_id),
-        amount: String(c.amount),
-        accountId: String(c.account_id),
-        method: "online",
-        actualDate: String(c.actual_date),
-        reference: v.bankIdentity,
-        verified: true,
-        date,
-        note: v.evidence,
-      });
-      await t.execute(
-        sql`update receipt_claims set state='confirmed',document_id=${r.id} where id=${v.claimId} and org=${a.org}`,
-      );
-      await allocate(t, a, String(c.salesman_id));
+
+      let r: { id: string; amount: string; state?: string };
+      if (c.foods_salesman_id) {
+        // Verification of a foods online collection claim
+        const [fsRow] = await rows<{ name: string }>(
+          t,
+          sql`select name from foods_salesmen where org=${a.org} and id=${c.foods_salesman_id}`,
+        );
+        const foodsName = fsRow?.name || "Foods";
+        positive(String(c.amount));
+        await account(t, a, String(c.account_id), "bank");
+
+        r = await post(
+          t,
+          a,
+          "foods_receipt",
+          date,
+          money(String(c.amount)),
+          {
+            foodsSalesman: foodsName,
+            foodsSalesmanId: c.foods_salesman_id,
+            billNo: c.reference || "",
+            foodItems: "",
+            method: "online",
+            cashAmount: "0.00",
+            bankAmount: money(String(c.amount)),
+            claimId: v.claimId,
+            note: v.evidence || "",
+            verified: true,
+          },
+          [
+            { account: cash(String(c.account_id)), debit: money(String(c.amount)) },
+            { account: "revenue:foods", credit: money(String(c.amount)) },
+          ],
+        );
+        await bankIdentity(t, a, String(c.account_id), v.bankIdentity, r.id);
+        await t.execute(
+          sql`update receipt_claims set state='confirmed',document_id=${r.id} where id=${v.claimId} and org=${a.org}`,
+        );
+      } else {
+        r = await receive(t, a, {
+          salesmanId: String(c.salesman_id),
+          amount: String(c.amount),
+          accountId: String(c.account_id),
+          method: "online",
+          actualDate: String(c.actual_date),
+          reference: v.bankIdentity,
+          verified: true,
+          date,
+          note: v.evidence,
+        });
+        await t.execute(
+          sql`update receipt_claims set state='confirmed',document_id=${r.id} where id=${v.claimId} and org=${a.org}`,
+        );
+        await allocate(t, a, String(c.salesman_id));
+      }
       await auditEvent(t, a, "verify", v.claimId, {
         ...v,
         verifiedAt: new Date().toISOString(),
@@ -1573,13 +1590,15 @@ async function execute<K extends CommandName>(
         original.salesman_id ? String(original.salesman_id) : undefined,
         r.documentId,
       );
-      if (original.kind === "receipt") {
+      if (original.kind === "receipt" || original.kind === "foods_receipt") {
         await t.execute(
           sql`update receipt_claims set state='reversed', reason=coalesce(reason || ' · ', '') || 'Reversed: ' || ${r.reason} where org=${a.org} and document_id=${r.documentId}`,
         );
-        await t.execute(
-          sql`update cash_handovers set status='reversed', manager_note=coalesce(manager_note || ' · ', '') || 'Reversed: ' || ${r.reason} where org=${a.org} and document_id=${r.documentId}`,
-        );
+        if (original.kind === "receipt") {
+          await t.execute(
+            sql`update cash_handovers set status='reversed', manager_note=coalesce(manager_note || ' · ', '') || 'Reversed: ' || ${r.reason} where org=${a.org} and document_id=${r.documentId}`,
+          );
+        }
       }
       const trades = entries
         .filter((l) => l.account.startsWith("trade:"))
@@ -1620,24 +1639,34 @@ async function execute<K extends CommandName>(
     }
     case "close": {
       const c = p as Inputs["close"];
-      const accounts = await rows<{ id: string }>(
+      const cashAccounts = await rows<{ id: string }>(
         t,
         sql`select id from money_accounts where org=${a.org} and type='cash' and active=true`,
       );
+      // Validate that all active cash accounts are counted
       ensure(
-        new Set(c.counts.map((x) => x.accountId)).size === c.counts.length &&
-        accounts.length === c.counts.length &&
-        accounts.every((x) => c.counts.some((y) => y.accountId === x.id)),
+        cashAccounts.every((x) => c.counts.some((y) => y.accountId === x.id)),
         "Count each active physical cash account exactly once",
       );
+      ensure(
+        new Set(c.counts.map((x) => x.accountId)).size === c.counts.length,
+        "Duplicate account in close counts",
+      );
+
       const id = crypto.randomUUID();
       for (const x of c.counts) {
-        await account(t, a, x.accountId, "cash");
+        // Validate account belongs to this org (cash or bank)
+        const [acc] = await rows<{ id: string; type: string }>(
+          t,
+          sql`select id, type from money_accounts where org=${a.org} and id=${x.accountId} and active=true`,
+        );
+        ensure(acc, `Account ${x.accountId} not found or inactive`);
+
         const expected = await balance(t, a.org, cash(x.accountId), date),
           difference = money(D(x.counted).minus(expected));
         ensure(
           D(difference).isZero() || x.reason.length >= 3,
-          "Cash difference requires an explanation",
+          `${acc.type === 'cash' ? 'Cash' : 'Bank'} difference requires an explanation (min 3 chars)`,
         );
         await t.execute(
           sql`insert into closes(org,date,account_id,expected,counted,difference,reason,state,actor) values(${a.org},${date},${x.accountId},${expected},${x.counted},${difference},${x.reason},'closed',${a.id})`,
@@ -1695,7 +1724,13 @@ async function execute<K extends CommandName>(
     case "foodsReceipt": {
       const r = p as Inputs["foodsReceipt"];
       const cashAmt = D(r.cashAmount || "0");
-      const bankAmt = D(r.bankAmount || "0");
+
+      // Handle split online amounts if provided, or single bankAmount
+      const splitBankAmounts = (r.bankAmounts && r.bankAmounts.length > 0)
+        ? r.bankAmounts.map((x) => D(x))
+        : (r.bankAmount && D(r.bankAmount).gt(0) ? [D(r.bankAmount)] : []);
+      const bankAmt = splitBankAmounts.reduce((acc, curr) => acc.plus(curr), D(0));
+
       const total = cashAmt.plus(bankAmt);
       ensure(total.gt(0), "At least one amount (cash or bank) must be greater than zero");
 
@@ -1728,32 +1763,36 @@ async function execute<K extends CommandName>(
       }
 
       const legs: Leg[] = [];
-        if (cashAmt.gt(0) && cashAccId) {
-          legs.push({ account: cash(cashAccId), debit: money(cashAmt) });
-        }
-          if (bankAmt.gt(0) && bankAccId) {
-            legs.push({ account: cash(bankAccId), debit: money(bankAmt) });
-          }
-          legs.push({ account: "revenue:foods", credit: money(total) });
+      if (cashAmt.gt(0) && cashAccId) {
+        legs.push({ account: cash(cashAccId), debit: money(cashAmt) });
+      }
+      if (bankAmt.gt(0) && bankAccId) {
+        legs.push({ account: cash(bankAccId), debit: money(bankAmt) });
+      }
+      legs.push({ account: "revenue:foods", credit: money(total) });
 
-          return post(
-            t,
-            a,
-            "foods_receipt",
-            date,
-            money(total),
-            {
-              foodsSalesman: r.foodsSalesman,
-              foodsSalesmanId: r.foodsSalesmanId,
-              billNo: r.billNo || "",
-              foodItems: r.foodItems || "",
-              cashAmount: money(cashAmt),
-              bankAmount: money(bankAmt),
-              note: r.note || "",
-            },
-            legs,
-          );
-        }
+      const doc = await post(
+        t,
+        a,
+        "foods_receipt",
+        date,
+        money(total),
+        {
+          foodsSalesman: r.foodsSalesman,
+          foodsSalesmanId: r.foodsSalesmanId,
+          billNo: r.billNo || "",
+          foodItems: r.foodItems || "",
+          method: r.method || (cashAmt.gt(0) && bankAmt.lte(0) ? "cash" : bankAmt.gt(0) && cashAmt.lte(0) ? "online" : undefined),
+          cashAmount: money(cashAmt),
+          bankAmount: money(bankAmt),
+          unverifiedOnlineAmount: "0.00",
+          note: r.note || "",
+        },
+        legs,
+      );
+
+      return doc;
+    }
     case "employeeReceipt": {
       const r = p as Inputs["employeeReceipt"];
       positive(r.amount);

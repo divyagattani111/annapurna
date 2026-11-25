@@ -31,6 +31,7 @@ import {
   cleanMoney,
   cleanDecimal,
   parseMultiAmounts,
+  cleanIndianPhone,
   type CommandName,
 } from "@ledger/contracts";
 import {
@@ -76,6 +77,7 @@ import {
   AlertTriangle,
   Eye,
   Utensils,
+  MessageCircle,
 } from "lucide-react";
 import "./style.css";
 import Decimal from "decimal.js";
@@ -1360,9 +1362,8 @@ function Dashboard({
   onOpenReport?: (tab: string) => void;
 }) {
   const qc = useQueryClient();
-  const claims = arr(d.claims),
-    cash = arr(d.accounts).filter((a) => a.type === "cash");
-  const claimCount = `${claims.length}${claims.length === 100 ? "+" : ""}`;
+  const cash = arr(d.accounts).filter((a) => a.type === "cash"),
+    banks = arr(d.accounts).filter((a) => a.type === "bank");
   const isDayClosed = d.dayClosed === true;
 
   // Inline Daily Close state for the dashboard
@@ -1374,46 +1375,6 @@ function Dashboard({
   const [closeBusy, setCloseBusy] = useState(false);
   const [closeError, setCloseError] = useState("");
   const [closeSuccess, setCloseSuccess] = useState("");
-
-  // Online Claims review state on dashboard
-  const [claimNameFilter, setClaimNameFilter] = useState("");
-  const [claimAmountFilter, setClaimAmountFilter] = useState("");
-  const [claimPage, setClaimPage] = useState(0);
-  const [reviewingClaim, setReviewingClaim] = useState<Row | null>(null);
-  const [claimNote, setClaimNote] = useState("");
-  const [claimActionBusy, setClaimActionBusy] = useState(false);
-  const [claimActionError, setClaimActionError] = useState("");
-  const [claimActionSuccess, setClaimActionSuccess] = useState("");
-
-  const filteredClaims = useMemo(() => {
-    return claims.filter((r) => {
-      if (claimNameFilter.trim()) {
-        const query = claimNameFilter.toLowerCase().trim();
-        const salesman = str(r.salesman_name).toLowerCase();
-        const account = str(r.account_name).toLowerCase();
-        const ref = str(r.reference).toLowerCase();
-        if (!salesman.includes(query) && !account.includes(query) && !ref.includes(query)) {
-          return false;
-        }
-      }
-      if (claimAmountFilter.trim()) {
-        const query = claimAmountFilter.replace(/[₹,\s]/g, "").trim();
-        const amtStr = str(r.amount).replace(/[₹,\s]/g, "");
-        if (!amtStr.includes(query)) {
-          return false;
-        }
-      }
-      return true;
-    });
-  }, [claims, claimNameFilter, claimAmountFilter]);
-
-  useEffect(() => {
-    setClaimPage(0);
-  }, [claimNameFilter, claimAmountFilter]);
-
-  const claimsPerPage = 5;
-  const totalClaimPages = Math.ceil(filteredClaims.length / claimsPerPage);
-  const visibleClaims = filteredClaims.slice(claimPage * claimsPerPage, (claimPage + 1) * claimsPerPage);
 
   // Inbound Cash Handovers state on Dashboard
   const pendingHandovers = arr(d.pendingHandovers);
@@ -1512,70 +1473,6 @@ function Dashboard({
     }
   };
 
-  const handleVerifyClaim = async () => {
-    if (!reviewingClaim) return;
-    setClaimActionBusy(true);
-    setClaimActionError("");
-    setClaimActionSuccess("");
-    try {
-      const trimmed = claimNote.trim();
-      const claimId = str(reviewingClaim.id);
-      await api(
-        "commands/verify",
-        commandResult,
-        {
-          claimId,
-          date: str(d.date),
-          note: trimmed,
-          bankIdentity: trimmed || `VERIFIED-${claimId.slice(0, 8)}`,
-          evidence: trimmed
-            ? `Verified transaction ID: ${trimmed}`
-            : "Verified online payment",
-        },
-        "POST",
-        crypto.randomUUID(),
-      );
-      await qc.invalidateQueries();
-      setClaimActionSuccess("Payment verified into bank book successfully!");
-      setReviewingClaim(null);
-      setClaimNote("");
-    } catch (err: unknown) {
-      setClaimActionError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setClaimActionBusy(false);
-    }
-  };
-
-  const handleRejectClaim = async () => {
-    if (!reviewingClaim) return;
-    const trimmed = claimNote.trim();
-    if (!trimmed || trimmed.length < 3) {
-      setClaimActionError("Please enter a reason for rejection (at least 3 characters) in the field below.");
-      return;
-    }
-    setClaimActionBusy(true);
-    setClaimActionError("");
-    setClaimActionSuccess("");
-    try {
-      const claimId = str(reviewingClaim.id);
-      await api(
-        "commands/reject",
-        commandResult,
-        { claimId, reason: trimmed },
-        "POST",
-        crypto.randomUUID(),
-      );
-      await qc.invalidateQueries();
-      setClaimActionSuccess("Claim rejected.");
-      setReviewingClaim(null);
-      setClaimNote("");
-    } catch (err: unknown) {
-      setClaimActionError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setClaimActionBusy(false);
-    }
-  };
-
   const handleCloseDay = async (e: React.FormEvent) => {
     e.preventDefault();
     setCloseBusy(true);
@@ -1583,22 +1480,25 @@ function Dashboard({
     setCloseSuccess("");
     try {
       const activeCashAccounts = cash.filter((a) => a.active !== false);
-      for (const a of activeCashAccounts) {
+      const activeBankAccounts = banks.filter((a) => a.active !== false);
+      const allAccountsToClose = [...activeCashAccounts, ...activeBankAccounts];
+
+      for (const a of allAccountsToClose) {
         const id = str(a.id);
         const countedStr = (counts[id] ?? "").trim();
         if (!countedStr) {
-          throw new Error(`Please enter the physically counted cash for ${str(a.name)}.`);
+          throw new Error(`Please enter the counted/verified balance for ${str(a.name)}.`);
         }
         const expectedCents = parseCents(a.balance);
         const countedCents = parseCents(countedStr);
         const diffCents = countedCents - expectedCents;
         if (diffCents !== 0n && (reasons[id] ?? "").trim().length < 3) {
-          throw new Error(`Explanation is required (at least 3 characters) for cash difference in ${str(a.name)}.`);
+          throw new Error(`Explanation is required (at least 3 characters) for difference in ${str(a.name)}.`);
         }
       }
       const payload = {
         date: str(d.date),
-        counts: activeCashAccounts.map((a) => {
+        counts: allAccountsToClose.map((a) => {
           const id = str(a.id);
           const countedCents = parseCents(counts[id] ?? "");
           return {
@@ -1609,7 +1509,7 @@ function Dashboard({
         }),
       };
       await api("commands/close", commandResult, payload, "POST", crypto.randomUUID());
-      setCloseSuccess("Business date closed and locked successfully.");
+      setCloseSuccess("Business date closed and locked successfully for both physical cash and bank.");
       setIsClosingOpen(false);
       await qc.invalidateQueries();
     } catch (err: unknown) {
@@ -1752,27 +1652,35 @@ function Dashboard({
               </div>
             )}
             {cash.length ? (
-              cash.map((a) => (
-                <div
-                  className="drawer-card compact-drawer-card"
-                  key={str(a.id)}
-                  style={{
-                    padding: "10px 14px",
-                    borderRadius: 10,
-                    marginBottom: 8,
-                    gap: 12,
-                  }}
-                >
-                  <div>
-                    <strong style={{ fontSize: 14, marginBottom: 2 }}>{str(a.name)}</strong>
-                    <small style={{ fontSize: 12 }}>Custody: {str(a.holder) || "Not configured"}</small>
+              (() => {
+                const primaryCash = cash[0];
+                const primaryBank = banks[0];
+                return (
+                  <div
+                    className="drawer-card compact-drawer-card"
+                    key={str(primaryCash.id)}
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 10,
+                      marginBottom: 8,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <div>
+                      <strong style={{ fontSize: 14, marginBottom: 2, display: "block" }}>{str(primaryCash.name)}</strong>
+                      <b style={{ fontSize: 18, display: "block" }}>{rupees(primaryCash.balance)}</b>
+                    </div>
+                    {primaryBank && (
+                      <div style={{ textAlign: "right" }}>
+                        <strong style={{ fontSize: 14, marginBottom: 2, display: "block" }}>{str(primaryBank.name)}</strong>
+                        <b style={{ fontSize: 18, display: "block" }}>{rupees(primaryBank.balance)}</b>
+                      </div>
+                    )}
                   </div>
-                  <div className="drawer-balance" style={{ textAlign: "right" }}>
-                    <b style={{ fontSize: 18, display: "block" }}>{rupees(a.balance)}</b>
-                    <small style={{ fontSize: 11 }}>Book expected balance</small>
-                  </div>
-                </div>
-              ))
+                );
+              })()
             ) : (
               <Empty text="No physical cash account configured." />
             )}
@@ -1829,7 +1737,7 @@ function Dashboard({
               <div className="drawer-footer" style={{ flexDirection: "column", alignItems: "stretch", gap: 8, marginTop: 8, paddingTop: 10, borderTop: "1px solid #f1f5f9" }}>
                 {!isClosingOpen ? (
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-                    <p style={{ margin: 0, fontSize: 12, color: "#64748b" }}>Online receipts do NOT increase physical drawer cash.</p>
+                    <p style={{ margin: 0, fontSize: 12, color: "#64748b" }}>Close and lock business day for both physical cash drawer and bank accounts.</p>
                     <Button
                       className="primary"
                       style={{ padding: "6px 14px", fontSize: 12 }}
@@ -1839,7 +1747,7 @@ function Dashboard({
                         setCloseSuccess("");
                         // Pre-populate count with current expected balance for convenience
                         const initialCounts: Record<string, string> = {};
-                        cash.forEach((a) => {
+                        [...cash, ...banks].forEach((a) => {
                           const id = str(a.id);
                           if (!counts[id]) {
                             initialCounts[id] = formatCents(parseCents(a.balance));
@@ -1850,13 +1758,13 @@ function Dashboard({
                         }
                       }}
                     >
-                      <LockKeyhole size={14} /> Close Today / Count Drawer
+                      <LockKeyhole size={14} /> Close Today (Cash & Bank)
                     </Button>
                   </div>
                 ) : (
                   <form onSubmit={handleCloseDay} style={{ borderTop: "1px solid #e2e8f0", paddingTop: 10 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                      <strong style={{ fontSize: 13 }}>Daily Cash Count & Reconciliation</strong>
+                      <strong style={{ fontSize: 13 }}>Daily Cash & Bank Reconciliation</strong>
                       <Button
                         type="button"
                         className="text-link"
@@ -1868,8 +1776,9 @@ function Dashboard({
                       </Button>
                     </div>
 
-                    {cash.map((a) => {
+                    {[...cash, ...banks].map((a) => {
                       const id = str(a.id);
+                      const isBank = a.type === "bank";
                       const expectedCents = parseCents(a.balance);
                       const countedStr = counts[id] ?? "";
                       const countedCents = parseCents(countedStr);
@@ -1888,11 +1797,11 @@ function Dashboard({
                           }}
                         >
                           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 13 }}>
-                            <span><b>{str(a.name)}</b> ({str(a.holder)})</span>
+                            <span><b>{str(a.name)}</b> {isBank ? "(Bank Account)" : `(${str(a.holder)})`}</span>
                             <span>Expected: <b>{rupees(a.balance)}</b></span>
                           </div>
                           <div className="form-grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                            <Field label="Physically Counted Cash (₹) *">
+                            <Field label={isBank ? "Verified Closing Bank Balance (₹) *" : "Physically Counted Cash (₹) *"}>
                               <input
                                 type="text"
                                 inputMode="decimal"
@@ -1931,7 +1840,7 @@ function Dashboard({
                               }}
                             >
                               {diffCents === 0n
-                                ? "✓ Drawer matches expected book cash exactly."
+                                ? `✓ ${isBank ? "Bank balance" : "Drawer"} matches expected book balance exactly.`
                                 : `Diff: ${diffCents > 0n ? "+" : ""}${diffFormatted} (Counted: ${formatCents(countedCents)} vs Expected: ${formatCents(expectedCents)})`}
                             </div>
                           )}
@@ -2241,377 +2150,7 @@ function Dashboard({
             </div>
           </section>
         </div>
-
-        {/* Row 2: Online Claims Queue */}
-        <section className="panel online-queue-panel" style={{ minHeight: "auto", width: "100%", padding: "18px 20px" }}>
-          <div className="section-title" style={{ marginBottom: 14 }}>
-            <div>
-              <h2 style={{ fontSize: 17, margin: 0 }}>Online Claims Queue</h2>
-              <p className="cash-subtitle" style={{ fontSize: 12, margin: "2px 0 0" }}>Online payments awaiting bank credit verification</p>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span className="badge" style={{ background: claims.length > 0 ? "#fef3c7" : "#e2e8f0", color: claims.length > 0 ? "#92400e" : "#475569", fontWeight: 700, fontSize: 11, padding: "3px 8px" }}>
-                {claimCount} Pending
-              </span>
-              <Clock size={18} aria-hidden="true" />
-            </div>
-          </div>
-
-          {claimActionSuccess && (
-            <div style={{ background: "#dcfce7", color: "#166534", padding: "8px 12px", borderRadius: 8, fontSize: 13, marginBottom: 12 }}>
-              ✓ {claimActionSuccess}
-            </div>
-          )}
-
-          {claims.length === 0 ? (
-            <div style={{ padding: "24px 0", textAlign: "center", color: "#64748b" }}>
-              <p style={{ margin: 0, fontSize: 14 }}>✓ All online payment claims have been reviewed.</p>
-              <small style={{ color: "#94a3b8" }}>No pending transfers in queue.</small>
-            </div>
-          ) : (
-            <>
-              {/* Filter Toolbar */}
-              <div
-                style={{
-                  display: "flex",
-                  flexWrap: "wrap",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: "8px 12px",
-                  background: "#f8fafc",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: 8,
-                  marginBottom: 12,
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, minWidth: 200 }}>
-                  <Search size={14} style={{ color: "#64748b", flexShrink: 0 }} />
-                  <input
-                    type="text"
-                    placeholder="Filter by salesman, customer, account, or ref…"
-                    value={claimNameFilter}
-                    onChange={(e) => setClaimNameFilter(e.target.value)}
-                    style={{
-                      border: "none",
-                      background: "transparent",
-                      outline: "none",
-                      fontSize: 13,
-                      width: "100%",
-                      color: "#0f172a",
-                    }}
-                  />
-                </div>
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    minWidth: 160,
-                    borderLeft: "1px solid #e2e8f0",
-                    paddingLeft: 10,
-                  }}
-                >
-                  <IndianRupee size={14} style={{ color: "#64748b", flexShrink: 0 }} />
-                  <input
-                    type="text"
-                    placeholder="Filter by amount…"
-                    value={claimAmountFilter}
-                    onChange={(e) => setClaimAmountFilter(e.target.value)}
-                    style={{
-                      border: "none",
-                      background: "transparent",
-                      outline: "none",
-                      fontSize: 13,
-                      width: "100%",
-                      color: "#0f172a",
-                    }}
-                  />
-                </div>
-                {(claimNameFilter.trim() || claimAmountFilter.trim()) && (
-                  <Button
-                    type="button"
-                    className="secondary"
-                    style={{ padding: "4px 8px", fontSize: 11, height: "auto" }}
-                    onClick={() => {
-                      setClaimNameFilter("");
-                      setClaimAmountFilter("");
-                    }}
-                  >
-                    Clear
-                  </Button>
-                )}
-              </div>
-
-              {filteredClaims.length === 0 ? (
-                <div style={{ padding: "18px 0", textAlign: "center", color: "#64748b" }}>
-                  <p style={{ margin: 0, fontSize: 13 }}>No claims match your filter criteria.</p>
-                  <Button
-                    className="text-link"
-                    style={{ fontSize: 12, marginTop: 4 }}
-                    onClick={() => {
-                      setClaimNameFilter("");
-                      setClaimAmountFilter("");
-                    }}
-                  >
-                    Clear filters
-                  </Button>
-                </div>
-              ) : (
-                <div style={{ overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: 10, marginBottom: 12, background: "#ffffff" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, textAlign: "left" }}>
-                    <thead>
-                      <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#64748b", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                        <th style={{ padding: "10px 14px", width: "110px" }}>Date</th>
-                        <th style={{ padding: "10px 14px" }}>Salesman / Route</th>
-                        <th style={{ padding: "10px 14px" }}>Receiving Account</th>
-                        <th style={{ padding: "10px 14px" }}>Reference / UTR</th>
-                        <th style={{ padding: "10px 14px", textAlign: "right", width: "130px" }}>Amount</th>
-                        <th style={{ padding: "10px 14px", textAlign: "center", width: "100px" }}>Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {visibleClaims.map((r, idx) => {
-                        const refStr = str(r.reference || "");
-                        return (
-                          <tr
-                            key={str(r.id)}
-                            style={{
-                              borderBottom: idx < visibleClaims.length - 1 ? "1px solid #f1f5f9" : "none",
-                              background: idx % 2 === 1 ? "#fafaf9" : "#ffffff",
-                              transition: "background 0.15s ease",
-                            }}
-                            onMouseEnter={(e) => (e.currentTarget.style.background = "#f1f5f9")}
-                            onMouseLeave={(e) => (e.currentTarget.style.background = idx % 2 === 1 ? "#fafaf9" : "#ffffff")}
-                          >
-                            <td style={{ padding: "10px 14px", whiteSpace: "nowrap", color: "#64748b", fontSize: 12 }}>
-                              <div>{dateLabel(r.actual_date)}</div>
-                              {r.created_at ? (
-                                <div style={{ fontSize: 11, color: "#94a3b8" }}>{timeOnlyLabel(r.created_at)}</div>
-                              ) : null}
-                            </td>
-                            <td style={{ padding: "10px 14px", fontWeight: 600, color: "#0f172a" }}>
-                              {str(r.salesman_name)}
-                            </td>
-                            <td style={{ padding: "10px 14px", color: "#475569" }}>
-                              {str(r.account_name)}
-                            </td>
-                            <td style={{ padding: "10px 14px", color: "#64748b", fontSize: 12, fontFamily: refStr ? "monospace" : "inherit" }}>
-                              {refStr || <span style={{ color: "#94a3b8", fontStyle: "italic" }}>—</span>}
-                            </td>
-                            <td style={{ padding: "10px 14px", textAlign: "right", fontWeight: 700, color: "#0f172a", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
-                              {rupees(r.amount)}
-                            </td>
-                            <td style={{ padding: "10px 14px", textAlign: "center", whiteSpace: "nowrap" }}>
-                              <Button
-                                className="primary"
-                                style={{ padding: "5px 12px", fontSize: 12 }}
-                                onClick={() => {
-                                  setReviewingClaim(r);
-                                  setClaimNote(refStr);
-                                  setClaimActionError("");
-                                }}
-                              >
-                                Review
-                              </Button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              {/* Pagination (5 per page) */}
-              {totalClaimPages > 1 && (
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid #e2e8f0", paddingTop: 10, fontSize: 13, color: "#64748b" }}>
-                  <span>
-                    Showing {claimPage * claimsPerPage + 1}–{Math.min((claimPage + 1) * claimsPerPage, filteredClaims.length)} of {filteredClaims.length}
-                    {(claimNameFilter.trim() || claimAmountFilter.trim()) && ` (filtered from ${claims.length})`}
-                  </span>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    <Button
-                      className="secondary"
-                      disabled={claimPage === 0}
-                      onClick={() => setClaimPage((p) => Math.max(0, p - 1))}
-                      style={{ padding: "4px 10px", fontSize: 12 }}
-                    >
-                      ← Prev
-                    </Button>
-                    <Button
-                      className="secondary"
-                      disabled={claimPage >= totalClaimPages - 1}
-                      onClick={() => setClaimPage((p) => Math.min(totalClaimPages - 1, p + 1))}
-                      style={{ padding: "4px 10px", fontSize: 12 }}
-                    >
-                      Next →
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-
-          <p className="queue-rule" style={{ marginTop: 12, marginBottom: 0 }}>
-            <b>Accounting Rule:</b> Pending claims do not reduce salesman dues or affect bank books until verified against real bank credits.
-          </p>
-        </section>
       </div>
-
-      {/* Review Online Claim Modal */}
-      {reviewingClaim && (
-        <div
-          className="no-print"
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(15, 23, 42, 0.6)",
-            backdropFilter: "blur(2px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 1000,
-            padding: 16,
-          }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget && !claimActionBusy) {
-              setReviewingClaim(null);
-            }
-          }}
-        >
-          <div
-            style={{
-              background: "#ffffff",
-              borderRadius: 12,
-              padding: "24px 28px",
-              maxWidth: 520,
-              width: "100%",
-              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.2)",
-              border: "1px solid #e2e8f0",
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-              <h3 style={{ margin: 0, fontSize: "1.2rem", color: "#0f172a" }}>
-                Verify Online Payment
-              </h3>
-              <Button
-                type="button"
-                className="text-link"
-                disabled={claimActionBusy}
-                onClick={() => setReviewingClaim(null)}
-                style={{ fontSize: 18, padding: 0 }}
-              >
-                ✕
-              </Button>
-            </div>
-
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(3, 1fr)",
-                gap: 10,
-                background: "#f8fafc",
-                padding: "12px 14px",
-                borderRadius: 8,
-                border: "1px solid #e2e8f0",
-                marginBottom: 16,
-              }}
-            >
-              <div>
-                <span className="muted" style={{ fontSize: 11, display: "block" }}>Salesman</span>
-                <strong style={{ fontSize: 13, color: "#0f172a" }}>{str(reviewingClaim.salesman_name)}</strong>
-              </div>
-              <div>
-                <span className="muted" style={{ fontSize: 11, display: "block" }}>Reported Date & Time</span>
-                <span style={{ fontSize: 13, display: "block", color: "#0f172a" }}>{dateLabel(reviewingClaim.actual_date)}</span>
-                {reviewingClaim.created_at ? (
-                  <span style={{ fontSize: 11, color: "#64748b" }}>{timeOnlyLabel(reviewingClaim.created_at)}</span>
-                ) : null}
-              </div>
-              <div>
-                <span className="muted" style={{ fontSize: 11, display: "block" }}>Amount</span>
-                <strong style={{ fontSize: 15, color: "#16a34a" }}>{rupees(reviewingClaim.amount)}</strong>
-              </div>
-            </div>
-
-            <div style={{ fontSize: 12, color: "#475569", marginBottom: 14 }}>
-              <b>Account:</b> {str(reviewingClaim.account_name)}
-              {reviewingClaim.reference ? (
-                <> · <b>Reported Ref:</b> {str(reviewingClaim.reference)}</>
-              ) : null}
-            </div>
-
-            {claimActionError && (
-              <div style={{ background: "#fee2e2", color: "#b91c1c", padding: "8px 12px", borderRadius: 6, marginBottom: 14, fontSize: 13 }}>
-                {claimActionError}
-              </div>
-            )}
-
-            <div style={{ marginBottom: 18 }}>
-              <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#334155", marginBottom: 6 }}>
-                Transaction ID / Verification Reference (Optional)
-              </label>
-              <input
-                type="text"
-                placeholder="Bank UTR / UPI reference ID / Remarks"
-                value={claimNote}
-                onChange={(e) => setClaimNote(e.target.value)}
-                disabled={claimActionBusy}
-                style={{
-                  width: "100%",
-                  borderRadius: 6,
-                  border: "1px solid #cbd5e1",
-                  padding: "8px 10px",
-                  fontSize: 14,
-                }}
-              />
-              <span style={{ fontSize: 11, color: "#64748b", marginTop: 4, display: "block" }}>
-                Confirming adds the funds to the bank book and reduces {str(reviewingClaim.salesman_name)}'s dues. (If rejecting, specify the reason above).
-              </span>
-            </div>
-
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-              <Button
-                type="button"
-                className="secondary"
-                disabled={claimActionBusy}
-                onClick={handleRejectClaim}
-                style={{ color: "#b91c1c", borderColor: "#fca5a5" }}
-              >
-                {claimActionBusy ? "…" : "Reject Claim"}
-              </Button>
-
-              <div style={{ display: "flex", gap: 10 }}>
-                <Button
-                  type="button"
-                  className="secondary"
-                  disabled={claimActionBusy}
-                  onClick={() => setReviewingClaim(null)}
-                >
-                  Cancel
-                </Button>
-                <button
-                  type="button"
-                  className="primary"
-                  disabled={claimActionBusy}
-                  onClick={handleVerifyClaim}
-                  style={{
-                    padding: "8px 16px",
-                    borderRadius: 6,
-                    fontWeight: 600,
-                    background: "#16a34a",
-                    borderColor: "#15803d",
-                    color: "#ffffff",
-                    cursor: claimActionBusy ? "not-allowed" : "pointer",
-                  }}
-                >
-                  {claimActionBusy ? "Confirming…" : "Confirm & Verify"}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -3000,6 +2539,16 @@ function Documents({
       r.note ||
       ""
     );
+    const methodStr = str(rowData.method || "");
+    const displayKind =
+      r.kind === "foods_receipt"
+        ? methodStr === "cash"
+          ? "foods_receipt_cash"
+          : methodStr === "online"
+            ? "foods_receipt_online"
+            : "foods_receipt"
+        : str(r.kind || "");
+
     return {
       ...r,
       person_name: personName,
@@ -3007,6 +2556,7 @@ function Documents({
       raw_date: str(r.business_date || ""),
       status: statusStr,
       note_text: noteText,
+      display_kind: displayKind,
     };
   });
 
@@ -3029,7 +2579,10 @@ function Documents({
     if (colType.trim()) {
       if (colType === "reversed") {
         if (!r.reversed) return false;
-      } else if (str(r.kind).toLowerCase() !== colType.toLowerCase()) {
+      } else if (
+        str(r.display_kind).toLowerCase() !== colType.toLowerCase() &&
+        str(r.kind).toLowerCase() !== colType.toLowerCase()
+      ) {
         return false;
       }
     }
@@ -3051,6 +2604,8 @@ function Documents({
     const defaultTypes = [
       "bill",
       "receipt",
+      "foods_receipt_cash",
+      "foods_receipt_online",
       "foods_receipt",
       "expense",
       "salary",
@@ -3063,7 +2618,8 @@ function Documents({
     ];
     const set = new Set<string>(defaultTypes);
     for (const r of rawRows) {
-      if (r.kind) set.add(str(r.kind));
+      if (r.display_kind) set.add(str(r.display_kind));
+      else if (r.kind) set.add(str(r.kind));
     }
     return Array.from(set);
   }, [rawRows]);
@@ -3242,13 +2798,17 @@ function Documents({
                     <option value="">All Types</option>
                     {availableTypes.map((t: string) => (
                       <option key={t} value={t}>
-                        {t === "foods_receipt"
-                          ? "Foods Collection"
-                          : t === "employee_receipt"
-                            ? "Employee Receipt"
-                            : t === "reversal"
-                              ? "Reversal Entry"
-                              : t.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase())}
+                        {t === "foods_receipt_cash"
+                          ? "Foods Receipt Cash"
+                          : t === "foods_receipt_online"
+                            ? "Foods Receipt Online"
+                            : t === "foods_receipt"
+                              ? "Foods Collection"
+                              : t === "employee_receipt"
+                                ? "Employee Receipt"
+                                : t === "reversal"
+                                  ? "Reversal Entry"
+                                  : t.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase())}
                       </option>
                     ))}
                     <option value="reversed">Reversed</option>
@@ -3361,34 +2921,38 @@ function Documents({
                           background:
                             r.kind === "bill"
                               ? "#eff6ff"
-                              : r.kind === "receipt" || r.kind === "foods_receipt" || r.kind === "employee_receipt"
-                                ? "#f0fdf4"
-                                : r.kind === "expense"
-                                  ? "#fff1f2"
-                                  : r.kind === "salary" || r.kind === "loan"
-                                    ? "#f5f3ff"
-                                    : r.kind === "transfer" || r.kind === "deposit"
-                                      ? "#f0f9ff"
-                                      : r.kind === "return"
-                                        ? "#fef3c7"
-                                        : "#f1f5f9",
+                              : r.display_kind === "foods_receipt_online"
+                                ? "#f0f9ff"
+                                : r.kind === "receipt" || r.kind === "foods_receipt" || r.kind === "employee_receipt"
+                                  ? "#f0fdf4"
+                                  : r.kind === "expense"
+                                    ? "#fff1f2"
+                                    : r.kind === "salary" || r.kind === "loan"
+                                      ? "#f5f3ff"
+                                      : r.kind === "transfer" || r.kind === "deposit"
+                                        ? "#f0f9ff"
+                                        : r.kind === "return"
+                                          ? "#fef3c7"
+                                          : "#f1f5f9",
                           color:
                             r.kind === "bill"
                               ? "#1d4ed8"
-                              : r.kind === "receipt" || r.kind === "foods_receipt" || r.kind === "employee_receipt"
-                                ? "#15803d"
-                                : r.kind === "expense"
-                                  ? "#be123c"
-                                  : r.kind === "salary" || r.kind === "loan"
-                                    ? "#6d28d9"
-                                    : r.kind === "transfer" || r.kind === "deposit"
-                                      ? "#0369a1"
-                                      : r.kind === "return"
-                                        ? "#b45309"
-                                        : "#475569",
+                              : r.display_kind === "foods_receipt_online"
+                                ? "#0369a1"
+                                : r.kind === "receipt" || r.kind === "foods_receipt" || r.kind === "employee_receipt"
+                                  ? "#15803d"
+                                  : r.kind === "expense"
+                                    ? "#be123c"
+                                    : r.kind === "salary" || r.kind === "loan"
+                                      ? "#6d28d9"
+                                      : r.kind === "transfer" || r.kind === "deposit"
+                                        ? "#0369a1"
+                                        : r.kind === "return"
+                                          ? "#b45309"
+                                          : "#475569",
                         }}
                       >
-                        {str(r.kind).replace(/_/g, " ")}
+                        {str(r.display_kind || r.kind).replace(/_/g, " ")}
                       </span>
                     </td>
                     <td className="money-cell" style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700 }}>
@@ -4315,13 +3879,13 @@ function DraftReviewModal({
 
   const onlineAmountsList = parseMultiAmounts(onlinePay);
   const totalOnlinePaid = onlineAmountsList.reduce((acc, curr) => acc.plus(curr), D(0));
-  const totalPaid = withPayments
-    ? D(cleanMoney(cashPay) || "0").plus(totalOnlinePaid).toFixed(2)
+  const totalConfirmedPaid = withPayments
+    ? (cleanMoney(cashPay) || "0.00")
     : "0.00";
   const billTotalNum = quote?.total
     ? Number(quote.total)
     : displayItems.reduce((acc, it) => acc + Number(it.amount || 0), 0) - Number(cleanBillDisc || 0);
-  const balanceRemaining = (billTotalNum - Number(totalPaid)).toFixed(2);
+  const balanceRemaining = (billTotalNum - Number(totalConfirmedPaid)).toFixed(2);
 
   const totalQuantityNum = displayItems.reduce((acc, it) => acc + (Number(it.quantity) || 0), 0);
   const totalQuantityFormatted = Number.isInteger(totalQuantityNum)
@@ -4620,58 +4184,116 @@ function DraftReviewModal({
                 {quote?.total ? rupees(quote.total) : rupees(billTotalNum)}
               </span>
             </div>
+          </div>
 
-            {/* Payment Details if withPayments */}
-            {withPayments && (
+          {/* Account Outstanding & Ledger Impact Card */}
+          {quote && (
+            <div
+              style={{
+                background: "#f8fafc",
+                border: "1px solid #cbd5e1",
+                borderRadius: 12,
+                padding: "14px 16px",
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+              }}
+            >
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#334155", textTransform: "uppercase", letterSpacing: "0.03em", marginBottom: 2 }}>
+                Ledger Outstanding & Settlement Impact:
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "#475569" }}>
+                <span>Previous Outstanding Balance:</span>
+                <span style={{ fontWeight: 600 }}>{rupees(quote.previous)}</span>
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "#0f172a" }}>
+                <span>+ This Bill Amount:</span>
+                <span style={{ fontWeight: 600 }}>+{rupees(quote.total)}</span>
+              </div>
+
+              {Boolean(Number(quote.confirmed) > 0) && (
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "#166534" }}>
+                  <span>− Confirmed Cash Received:</span>
+                  <span style={{ fontWeight: 600 }}>−{rupees(quote.confirmed)}</span>
+                </div>
+              )}
+
               <div
                 style={{
-                  marginTop: 6,
-                  paddingTop: 8,
-                  borderTop: "1px dashed #cbd5e1",
                   display: "flex",
-                  flexDirection: "column",
-                  gap: 6,
+                  justifyContent: "space-between",
+                  fontSize: 15,
+                  fontWeight: 800,
+                  color: "#0f172a",
+                  borderTop: "1.5px solid #cbd5e1",
+                  paddingTop: 8,
+                  marginTop: 2,
                 }}
               >
-                <div style={{ fontSize: 12, fontWeight: 700, color: "#334155", textTransform: "uppercase", letterSpacing: "0.03em" }}>
-                  Associated Payments Recorded:
-                </div>
-                {Boolean(cleanMoney(cashPay) && parseMoneyNumber(cleanMoney(cashPay)) > 0) && (
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#166534" }}>
-                    <span>💵 Cash Payment ({cashAccName}):</span>
-                    <span style={{ fontWeight: 600 }}>{rupees(cashPay)}</span>
-                  </div>
-                )}
-                {onlineAmountsList.length > 0 && (
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#1e40af" }}>
-                    <span>
-                      🏦 Online Bank ({bankAccName})
-                      {onlineAmountsList.length > 1 ? ` (${onlineAmountsList.length} txns: ${onlineAmountsList.map((a) => `₹${a}`).join(", ")})` : ""}:
-                    </span>
-                    <span style={{ fontWeight: 600 }}>{rupees(totalOnlinePaid.toFixed(2))}</span>
-                  </div>
-                )}
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    fontSize: 13,
-                    fontWeight: 700,
-                    color: "#0f172a",
-                    background: "#f1f5f9",
-                    padding: "6px 8px",
-                    borderRadius: 6,
-                    marginTop: 2,
-                  }}
-                >
-                  <span>Balance Owed to Ledger:</span>
-                  <span style={{ color: Number(balanceRemaining) > 0 ? "#b45309" : "#166534" }}>
-                    {rupees(balanceRemaining)}
-                  </span>
-                </div>
+                <span>Projected Ledger Outstanding:</span>
+                <span style={{ color: Number(quote.projected) > 0 ? "#b45309" : "#166534" }}>
+                  {rupees(quote.projected)}
+                </span>
               </div>
-            )}
-          </div>
+
+              {/* Open / Pending Online Claims */}
+              {(() => {
+                const openList = arr((quote as Row).openClaims);
+                const hasPendingOnThisBill = Boolean(Number(quote.pending) > 0);
+                if (openList.length === 0 && !hasPendingOnThisBill) return null;
+                return (
+                  <div
+                    style={{
+                      background: "#fffbeb",
+                      border: "1px solid #fde68a",
+                      borderRadius: 8,
+                      padding: "10px 14px",
+                      marginTop: 4,
+                      fontSize: 12,
+                      color: "#92400e",
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontWeight: 700, marginBottom: openList.length > 0 ? 6 : 0 }}>
+                      <span style={{ textTransform: "uppercase", fontSize: 11, letterSpacing: "0.03em" }}>
+                        ⏳ Pending Online Claims (Awaiting Bank Verification):
+                      </span>
+                      {hasPendingOnThisBill && (
+                        <span style={{ color: "#b45309" }}>This Bill: {rupees(quote.pending)}</span>
+                      )}
+                    </div>
+                    {openList.length > 0 && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 6 }}>
+                        {openList.map((oc) => (
+                          <div
+                            key={str(oc.id)}
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              fontSize: 12,
+                              color: "#78350f",
+                              background: "#fef3c7",
+                              padding: "5px 8px",
+                              borderRadius: 4,
+                            }}
+                          >
+                            <span>
+                              • {str(oc.actual_date)} — Ref: <b>{str(oc.reference || "Online Transfer")}</b>
+                            </span>
+                            <b>{rupees(oc.amount)}</b>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div style={{ fontSize: 11, color: "#a16207", marginTop: 6 }}>
+                      * Online payments will credit to the salesman's ledger balance once bank verification is completed.
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
 
           {/* Warnings / Errors */}
           {quoteError && (
@@ -5228,7 +4850,7 @@ function RetailCigSalesPage({
     try {
       const sObj = salesmenList.find((s) => str(s.id) === billSalesmanId);
       const r = await api("drafts", rowSchema, {
-        ...(billDraft ?? {}),
+        ...(billDraft?.id ? { id: billDraft.id, version: billDraft.version ?? 0 } : {}),
         data: {
           name: "bill",
           salesmanId: billSalesmanId,
@@ -7677,7 +7299,7 @@ function DirectCigSalesPage({
     try {
       const custObj = customers.find((c) => str(c.id) === billCustomerId);
       const r = await api("drafts", rowSchema, {
-        ...(billDraft ?? {}),
+        ...(billDraft?.id ? { id: billDraft.id, version: billDraft.version ?? 0 } : {}),
         data: {
           name: "direct_cig_bill",
           salesmanId: selectedSalesmanId,
@@ -11050,7 +10672,7 @@ function DirectCigSalesPage({
 
 function FoodsPage({
   date,
-  masters: _masters,
+  masters,
   owner: _owner,
   onSelect,
 }: {
@@ -11064,6 +10686,12 @@ function FoodsPage({
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [success, setSuccess] = useState("");
+
+  const accounts = arr(masters.accounts);
+  const cashAccounts = accounts.filter((a) => a.type === "cash");
+  const bankAccounts = accounts.filter((a) => a.type === "bank");
+  const defaultCash = str(cashAccounts[0]?.id ?? "");
+  const defaultBank = str(bankAccounts[0]?.id ?? "");
 
   // Load registered foods salesmen list from API
   const foodsSalesmenQuery = useQuery({
@@ -11081,8 +10709,13 @@ function FoodsPage({
     [foodsBillNo, setFoodsBillNo] = useState(""),
     [foodsItems, setFoodsItems] = useState(""),
     [foodsCashAmount, setFoodsCashAmount] = useState(""),
+    [foodsCashAccountId, setFoodsCashAccountId] = useState(defaultCash),
     [foodsBankAmount, setFoodsBankAmount] = useState(""),
+    [foodsBankAccountId, setFoodsBankAccountId] = useState(defaultBank),
     [foodsNotes, setFoodsNotes] = useState("");
+
+  const parsedBankAmounts = parseMultiAmounts(foodsBankAmount);
+  const totalBankParsed = parsedBankAmounts.reduce((acc, curr) => acc.plus(curr), D(0));
 
   const handleFoodsSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -11093,11 +10726,11 @@ function FoodsPage({
       return;
     }
     const cleanCash = cleanMoney(foodsCashAmount);
-    const cleanBank = cleanMoney(foodsBankAmount);
     const cashVal = cleanCash ? parseMoneyNumber(cleanCash) : 0;
-    const bankVal = cleanBank ? parseMoneyNumber(cleanBank) : 0;
+    const bankVal = totalBankParsed.toNumber();
+
     if (cashVal <= 0 && bankVal <= 0) {
-      setError("Please enter at least one amount (cash or bank).");
+      setError("Please enter at least one amount (cash or bank/online).");
       return;
     }
 
@@ -11107,23 +10740,62 @@ function FoodsPage({
       const foodsSalesmanId = foodsObj?.id;
       const foodsDisplayName = foodsObj?.name || foodsSalesman;
 
-      await api(
-        "commands/foodsReceipt",
-        commandResult,
-        {
-          date: foodsDate,
-          foodsSalesman: foodsDisplayName,
-          foodsSalesmanId,
-          billNo: foodsBillNo.trim(),
-          foodItems: foodsItems.trim(),
-          cashAmount: cashVal > 0 ? cleanCash : "0.00",
-          bankAmount: bankVal > 0 ? cleanBank : "0.00",
-          note: foodsNotes.trim(),
-        },
-        "POST",
-        crypto.randomUUID(),
-      );
-      setSuccess("Foods collection recorded successfully as FOODS-RECEIPT.");
+      // If both cash and bank are present, or separate transactions:
+      // Post cash receipt separately from online receipt so each event is independently
+      // reversible, verifiable, and tracked to its exact cash drawer vs bank account.
+      const messages: string[] = [];
+
+      if (cashVal > 0) {
+        await api(
+          "commands/foodsReceipt",
+          commandResult,
+          {
+            date: foodsDate,
+            foodsSalesman: foodsDisplayName,
+            foodsSalesmanId,
+            billNo: foodsBillNo.trim(),
+            foodItems: foodsItems.trim(),
+            method: "cash",
+            cashAmount: cleanCash,
+            bankAmount: "0.00",
+            cashAccountId: foodsCashAccountId || defaultCash || undefined,
+            note: foodsNotes.trim(),
+          },
+          "POST",
+          crypto.randomUUID(),
+        );
+        messages.push(`Cash (₹${cleanCash}) posted to Cash Drawer`);
+      }
+
+      if (bankVal > 0) {
+        await api(
+          "commands/foodsReceipt",
+          commandResult,
+          {
+            date: foodsDate,
+            foodsSalesman: foodsDisplayName,
+            foodsSalesmanId,
+            billNo: foodsBillNo.trim(),
+            foodItems: foodsItems.trim(),
+            method: "online",
+            cashAmount: "0.00",
+            bankAmount: totalBankParsed.toFixed(2),
+            bankAmounts: parsedBankAmounts.length > 0 ? parsedBankAmounts : undefined,
+            bankAccountId: foodsBankAccountId || defaultBank || undefined,
+            verified: false,
+            note: foodsNotes.trim(),
+          },
+          "POST",
+          crypto.randomUUID(),
+        );
+        messages.push(
+          `Online (₹${totalBankParsed.toFixed(2)}${
+            parsedBankAmounts.length > 1 ? ` across ${parsedBankAmounts.length} split claims` : ""
+          }) queued for bank verification`
+        );
+      }
+
+      setSuccess(`Foods collection recorded successfully: ${messages.join(" and ")}.`);
       setFoodsBillNo("");
       setFoodsItems("");
       setFoodsCashAmount("");
@@ -11227,14 +10899,64 @@ function FoodsPage({
                 />
               </Field>
 
-              <Field label="Bank Amount (₹)">
+              {cashAccounts.length > 0 && (
+                <Field label="Cash Drawer / Account">
+                  <select
+                    value={foodsCashAccountId || defaultCash}
+                    onChange={(e) => setFoodsCashAccountId(e.target.value)}
+                  >
+                    {cashAccounts.map((a) => (
+                      <option key={str(a.id)} value={str(a.id)}>
+                        {str(a.name)} {a.holder ? `(${str(a.holder)})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              )}
+
+              <Field label="Bank / Online Amount(s) (₹)">
                 <input
-                  inputMode="decimal"
-                  placeholder="0.00"
+                  placeholder="e.g. 500, 1200 or 500 1200"
                   value={foodsBankAmount}
                   onChange={(e) => setFoodsBankAmount(e.target.value)}
                 />
+                {(() => {
+                  const parsed = parsedBankAmounts;
+                  if (parsed.length > 1) {
+                    return (
+                      <div style={{ marginTop: 4, fontSize: 11, color: "#0369a1", display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
+                        <span>{parsed.length} split online records:</span>
+                        {parsed.map((p, i) => (
+                          <span key={i} style={{ background: "#e0f2fe", padding: "1px 6px", borderRadius: 4, fontWeight: 600 }}>
+                            ₹{p}
+                          </span>
+                        ))}
+                        <strong style={{ color: "#0c4a6e" }}>(Total ₹{totalBankParsed.toFixed(2)})</strong>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div style={{ marginTop: 2, fontSize: 11, color: "#64748b" }}>
+                      Separate multiple amounts by comma or space (adds to Online Queue)
+                    </div>
+                  );
+                })()}
               </Field>
+
+              {bankAccounts.length > 0 && (
+                <Field label="Bank Account">
+                  <select
+                    value={foodsBankAccountId || defaultBank}
+                    onChange={(e) => setFoodsBankAccountId(e.target.value)}
+                  >
+                    {bankAccounts.map((a) => (
+                      <option key={str(a.id)} value={str(a.id)}>
+                        {str(a.name)}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              )}
 
               <Field label="Notes (optional)">
                 <input
@@ -11296,6 +11018,15 @@ function OtherMoneyPage({
     },
   });
   const employeeOptions = (employeesQuery.data ?? []).filter((e) => e.active);
+
+  const foodsSalesmenQuery = useQuery({
+    queryKey: ["foods-salesmen"],
+    queryFn: async () => {
+      const r = await fetch("/api/v1/foods-salesmen");
+      return (await r.json()) as Array<{ id: string; name: string; territory?: string; phone?: string; active: boolean }>;
+    },
+  });
+  const foodsSalesmenOptions = (foodsSalesmenQuery.data ?? []).filter((f) => f.active);
 
   // 1. Operating expense state
   const [expenseCategory, setExpenseCategory] = useState("Diesel / Vehicle Fuel"),
@@ -12373,8 +12104,8 @@ const specs: Partial<Record<CommandName, Spec[]>> = {
       label: "Signed opening (negative = advance)",
       type: "text",
     },
-    { key: "batchId", label: "Import / approval batch ID", optional: true },
-    { key: "rowId", label: "Unique approved row ID", optional: true },
+    { key: "batchId", label: "Import / approval batch ID" },
+    { key: "rowId", label: "Unique approved row ID" },
   ],
   reverse: [
     { key: "documentId", label: "Original record", source: "documents" },
@@ -14464,7 +14195,7 @@ function CommandPage({
                     setNotice("");
                     try {
                       const r = await api("drafts", rowSchema, {
-                        ...(draft ?? {}),
+                        ...(draft?.id ? { id: draft.id, version: draft.version ?? 0 } : {}),
                         data: {
                           name,
                           values,
@@ -15568,6 +15299,426 @@ function AuditView({ onBack, onSelect }: { onBack: () => void; onSelect?: (id: s
   );
 }
 
+// ─── WhatsApp Share ───────────────────────────────────────────────────────────
+
+/** Build the plain-text WhatsApp message body from a loaded document. */
+function buildWhatsAppMessage(d: Row, businessName: string): string {
+  const data = (d.data ?? {}) as Row;
+  const lines: string[] = [];
+
+  // ── Header ──
+  lines.push(`*${businessName}*`);
+
+  if (d.reversed) {
+    lines.push(`⚠️ *[CANCELLED / REVERSED RECORD]*`);
+    if (data.reason) lines.push(`Reason: ${str(data.reason)}`);
+    lines.push("");
+  }
+
+  const kind = str(d.kind);
+  const number = str(d.number);
+  const dateStr = str(d.business_date).split("T")[0];
+
+  const kindLabel: Record<string, string> = {
+    bill: "📋 Bill / Invoice",
+    receipt: "✅ Payment Receipt",
+    return: "🔄 Return / Credit Note",
+    expense: "🧾 Expense Voucher",
+    salary: "💼 Salary Payment",
+    employee_receipt: "💼 Employee Receipt",
+    loan: "🤝 Loan / Advance",
+    transfer: "🏦 Cash / Bank Transfer",
+    deposit: "🏦 Bank Deposit",
+    opening: "📂 Opening Balance",
+    identify: "🏦 Bank Credit Identified",
+  };
+  lines.push(`*${kindLabel[kind] ?? kind.toUpperCase()} — ${number}*`);
+  lines.push(`Date: ${dateStr}`);
+
+  const partyName = str(
+    data.salesmanName ?? data.employeeName ?? data.payee ?? data.counterparty ?? ""
+  );
+  if (partyName) lines.push(`Party: ${partyName}`);
+  if (data.customerName) lines.push(`Customer: ${str(data.customerName)}`);
+  lines.push("");
+
+  // ── Bill / Return line items ──
+  const rawLines = arr((d as Row).lines);
+  const displayLines =
+    rawLines.length > 0
+      ? rawLines
+      : kind === "return" && data.snapshot
+      ? [
+          {
+            id: data.lineId || d.id,
+            quantity: str(data.quantity || "1"),
+            snapshot: data.snapshot,
+            amount: d.amount,
+          },
+        ]
+      : [];
+
+  if (displayLines.length > 0) {
+    lines.push(kind === "return" ? "*Returned Items:*" : "*Items:*");
+    for (const l of displayLines) {
+      const snap = (l.snapshot as Row) || {};
+      const name = str(snap.name || "Item");
+      const qty = str(l.quantity || "0").replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+      const unit = str(snap.unit || "unit");
+      const rate = str(snap.rate || snap.masterRate || "0.00");
+      const amt = str(l.amount || "0.00");
+      lines.push(`  • ${name}: ${qty} ${unit} × ₹${rate} = ₹${amt}`);
+      if (snap.discountAmount && Number(snap.discountAmount) > 0) {
+        lines.push(`    (Disc: -₹${str(snap.discountAmount)})`);
+      }
+    }
+    if (data.billDiscount && Number(data.billDiscount) > 0) {
+      lines.push(`  Bill Discount: -₹${str(data.billDiscount)}`);
+    }
+    lines.push(`*Total: ₹${str(d.amount)}*`);
+    lines.push("");
+  } else {
+    lines.push(`*Amount: ₹${str(d.amount)}*`);
+    lines.push("");
+  }
+
+  // ── Bill summary ──
+  if (kind === "bill") {
+    if (data.previousBalance !== undefined) {
+      lines.push(`Previous balance: ₹${str(data.previousBalance)}`);
+    }
+    if (data.confirmed && Number(data.confirmed) > 0) {
+      lines.push(`On-spot payment: ₹${str(data.confirmed)}`);
+    }
+    if (data.issueBalance !== undefined) {
+      lines.push(`*Balance at issue: ₹${str(data.issueBalance)}*`);
+    }
+    if (data.pendingAtIssue && Number(data.pendingAtIssue) > 0) {
+      lines.push(`Pending online claims at issue: ₹${str(data.pendingAtIssue)} (Awaiting verification)`);
+    }
+    const openClaims = arr(d.openClaims);
+    if (openClaims.length > 0) {
+      lines.push(`*Open Online Claims:*`);
+      for (const oc of openClaims) {
+        lines.push(`  • ${str(oc.actual_date)}: ₹${str(oc.amount)} (${str(oc.reference || "Online")})`);
+      }
+    }
+    if (d.settlement) lines.push(`Settlement status: ${str(d.settlement)}`);
+    lines.push("");
+  }
+
+  // ── Receipt summary ──
+  if (kind === "receipt") {
+    const method = str(data.method || "cash");
+    const ref = str(data.reference || "");
+    const methodLabel = method === "cash" ? "Cash" : method === "online" ? "Online / UPI" : method;
+    lines.push(`Mode: ${methodLabel}${ref ? ` (Ref: ${ref})` : ""}`);
+
+    // Distinguish verified vs pending online
+    if (method === "online") {
+      const verified = Boolean(data.verified ?? data.acceptedAmount);
+      if (verified) {
+        lines.push(`Status: ✅ Verified & Credited`);
+      } else {
+        lines.push(`Status: ⏳ Pending Verification`);
+        lines.push(`(Dues will update once bank verification is complete)`);
+      }
+    }
+
+    if (data.previousBalance !== undefined) {
+      lines.push(`Balance before: ₹${str(data.previousBalance)}`);
+    }
+    lines.push(`Amount received: ₹${str(data.currentAmountReceived ?? d.amount)}`);
+    if (data.overallOutstanding !== undefined) {
+      lines.push(`*Updated outstanding: ₹${str(data.overallOutstanding)}*`);
+    }
+    lines.push("");
+  }
+
+  // ── Return summary ──
+  if (kind === "return") {
+    if (data.originalBillNumber) lines.push(`Original Bill: ${str(data.originalBillNumber)}`);
+    if (data.reason) lines.push(`Reason: ${str(data.reason)}`);
+    lines.push(`Credit: +₹${str(d.amount)}`);
+    lines.push("");
+  }
+
+  // ── Employee / salary / expense ──
+  if (["salary", "employee_receipt", "expense"].includes(kind) || (kind === "loan" && data.direction === "staff")) {
+    if (data.period) lines.push(`Period: ${str(data.period)}`);
+    if (data.category) lines.push(`Category: ${str(data.category)}`);
+    if (data.note) lines.push(`Note: ${str(data.note)}`);
+    lines.push("");
+  }
+
+  // ── Generic note ──
+  if (!["salary", "employee_receipt", "expense"].includes(kind)) {
+    if (data.note) lines.push(`Note: ${str(data.note)}`);
+  }
+
+  // ── Instant PDF View / Download Link ──
+  if (d.id && d.shareToken) {
+    const origin = window.location.origin;
+    const viewUrl = `${origin}/?view=${str(d.id)}&token=${str(d.shareToken)}`;
+    lines.push("");
+    lines.push(`📄 *View / Download Official PDF:*`);
+    lines.push(viewUrl);
+  }
+
+  // ── Footer ──
+  if (d.reversed) {
+    lines.push("");
+    lines.push("⚠️ This record has been CANCELLED and is not valid for payment.");
+  }
+  lines.push(`_${businessName}_`);
+
+  return lines.join("\n").trim();
+}
+
+function WhatsAppShareModal({
+  doc,
+  businessName,
+  ownerPhone,
+  onClose,
+}: {
+  doc: Row;
+  businessName: string;
+  ownerPhone?: string;
+  onClose: () => void;
+}) {
+  const data = (doc.data ?? {}) as Row;
+  const kind = str(doc.kind);
+
+  // Determine initial recipient
+  const isEmployeeKind =
+    kind === "salary" ||
+    kind === "employee_receipt" ||
+    (kind === "loan" && data.direction === "staff") ||
+    (kind === "expense" && str(data.category).startsWith("Employee"));
+
+  const isFoodsKind =
+    kind === "foods_receipt" ||
+    Boolean(data.foodsSalesmanId || data.foodsSalesman);
+
+  const rawPhone = isEmployeeKind
+    ? str(doc.employee_phone || data.employeePhone || "")
+    : isFoodsKind
+    ? str(doc.foods_salesman_phone || data.foodsSalesmanPhone || "")
+    : doc.salesman_id
+    ? str(doc.salesman_phone || (data.salesmanDetails as Row | undefined)?.phone || data.salesmanPhone || "")
+    : str(ownerPhone || "");
+
+  const initialPhone = rawPhone;
+
+  const recipientLabel = isEmployeeKind
+    ? str(data.employeeName ?? data.payee ?? "Employee")
+    : isFoodsKind
+    ? str(data.foodsSalesman ?? doc.foods_salesman_name ?? "Foods Salesman")
+    : doc.salesman_id
+    ? str(data.salesmanName ?? "Salesman")
+    : "Owner (Business Record)";
+
+  // If no party at all (pure internal), route to owner
+  const entityType: "salesman" | "employee" | "foods_salesman" | "owner" = isEmployeeKind
+    ? "employee"
+    : isFoodsKind
+    ? "foods_salesman"
+    : doc.salesman_id
+    ? "salesman"
+    : "owner";
+
+  const entityId = isEmployeeKind
+    ? str((data.employeeId as string) || "")
+    : isFoodsKind
+    ? str((data.foodsSalesmanId as string) || "")
+    : str(doc.salesman_id || "");
+
+  const qc = useQueryClient();
+  const [phone, setPhone] = useState(initialPhone);
+  const [savePhone, setSavePhone] = useState(!initialPhone);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const message = buildWhatsAppMessage(doc, businessName);
+
+  async function handleSend() {
+    const digits = phone.replace(/\D/g, "");
+    if (digits.length < 10) {
+      setError("Please enter a valid 10-digit mobile number.");
+      return;
+    }
+    setError("");
+
+    // Save phone to DB if checkbox ticked and there's a known entity
+    if (savePhone && entityId && entityType !== "owner") {
+      setSaving(true);
+      try {
+        const endpoint =
+          entityType === "employee"
+            ? `employees/${entityId}/phone`
+            : entityType === "foods_salesman"
+            ? `foods-salesmen/${entityId}`
+            : `salesmen/${entityId}/phone`;
+        await api(endpoint, undefined, { phone }, "PATCH");
+        // Invalidate masters and document queries so Master Records screen updates immediately
+        qc.invalidateQueries({ queryKey: ["masters"] });
+        qc.invalidateQueries({ queryKey: ["document"] });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Could not save phone number.");
+        setSaving(false);
+        return;
+      }
+      setSaving(false);
+    }
+
+    // Build wa.me URL and open — synchronous, never blocked by browser
+    const normalized = cleanIndianPhone(phone) ?? digits;
+    const encoded = encodeURIComponent(message);
+    window.open(`https://wa.me/${normalized}?text=${encoded}`, "_blank", "noopener,noreferrer");
+    onClose();
+  }
+
+  return (
+    <div
+      className="no-print"
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(15, 23, 42, 0.6)",
+        backdropFilter: "blur(2px)",
+        zIndex: 1000,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16,
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: 12,
+          padding: "28px 32px",
+          maxWidth: 480,
+          width: "100%",
+          boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+        }}
+      >
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
+          <div style={{
+            background: "#25D366",
+            borderRadius: 8,
+            padding: "6px 10px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}>
+            <MessageCircle size={20} color="#fff" />
+          </div>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: "#0f172a" }}>
+              Share on WhatsApp
+            </h3>
+            <p style={{ margin: 0, fontSize: 12, color: "#64748b" }}>
+              {doc.reversed ? "⚠️ Cancelled record" : `${str(doc.kind).toUpperCase()} — ${str(doc.number)}`}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", padding: 4 }}
+            aria-label="Close"
+          >
+            <X size={18} color="#64748b" />
+          </button>
+        </div>
+
+        {/* Recipient */}
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 4, textTransform: "uppercase" }}>
+            Recipient — {recipientLabel}
+          </label>
+          <input
+            type="tel"
+            value={phone}
+            onChange={(e) => { setPhone(e.target.value); setError(""); }}
+            placeholder="Enter 10-digit mobile number"
+            style={{
+              width: "100%",
+              padding: "10px 12px",
+              border: `1.5px solid ${error ? "#ef4444" : "#cbd5e1"}`,
+              borderRadius: 8,
+              fontSize: 15,
+              fontFamily: "monospace",
+              outline: "none",
+              boxSizing: "border-box",
+            }}
+          />
+          {error && <p style={{ margin: "4px 0 0", fontSize: 12, color: "#dc2626" }}>{error}</p>}
+        </div>
+
+        {/* Save checkbox — only show when entity exists and no phone was pre-filled */}
+        {entityId && entityType !== "owner" && (
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, cursor: "pointer", fontSize: 13, color: "#334155" }}>
+            <input
+              type="checkbox"
+              checked={savePhone}
+              onChange={(e) => setSavePhone(e.target.checked)}
+              style={{ width: 15, height: 15 }}
+            />
+            Save this number to {entityType === "employee" ? "employee" : "salesman"} profile for future use
+          </label>
+        )}
+
+        {/* Message preview */}
+        <div style={{ marginBottom: 20 }}>
+          <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 6, textTransform: "uppercase" }}>
+            Message Preview
+          </label>
+          <pre
+            style={{
+              background: "#f1f5f9",
+              border: "1px solid #e2e8f0",
+              borderRadius: 8,
+              padding: "12px 14px",
+              fontSize: 12,
+              lineHeight: 1.6,
+              maxHeight: 220,
+              overflowY: "auto",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+              color: "#0f172a",
+              margin: 0,
+            }}
+          >
+            {message}
+          </pre>
+        </div>
+
+        {/* Actions */}
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+          <Button className="secondary" onClick={onClose}>Cancel</Button>
+          <Button
+            onClick={handleSend}
+            disabled={saving}
+            style={{
+              background: saving ? "#86efac" : "#25D366",
+              color: "#fff",
+              border: "none",
+              display: "flex",
+              alignItems: "center",
+              gap: 7,
+              fontWeight: 700,
+            }}
+          >
+            <MessageCircle size={15} />
+            {saving ? "Saving…" : "Open WhatsApp"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DocumentDetail({
   id,
   currentDate,
@@ -15593,6 +15744,7 @@ function DocumentDetail({
 
   // Local state for bill-specific Reverse and Linked Return dialogs
   const [showReverseModal, setShowReverseModal] = useState(false);
+  const [showWAModal, setShowWAModal] = useState(false);
   const [reverseReason, setReverseReason] = useState("");
   const [reverseBusy, setReverseBusy] = useState(false);
   const [reverseError, setReverseError] = useState("");
@@ -15719,6 +15871,15 @@ function DocumentDetail({
           <Button className="secondary" onClick={() => window.print()}>
             <Printer size={16} /> Print {isEmployeeVoucher ? "Voucher" : "Record"}
           </Button>
+          {d && (
+            <Button
+              className="secondary"
+              onClick={() => setShowWAModal(true)}
+              style={{ color: "#15803d", borderColor: "#86efac", display: "flex", alignItems: "center", gap: 6 }}
+            >
+              <MessageCircle size={16} /> Share on WhatsApp
+            </Button>
+          )}
           {!isEmployeeVoucher && !isReversed && (
             <Button
               className="secondary"
@@ -16250,12 +16411,40 @@ function DocumentDetail({
                 </p>
               </div>
             )}
-            {isBill && data?.pendingAtIssue !== undefined && (
-              <p>
-                Pending online claims at issue (not confirmed):{" "}
-                {rupees(data.pendingAtIssue)}
-              </p>
-            )}
+            {/* Pending Online Claims list */}
+            {(() => {
+              const claims = arr(d.openClaims);
+              if (claims.length === 0 && (!data?.pendingAtIssue || Number(data.pendingAtIssue) === 0)) return null;
+              return (
+                <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 6, padding: "12px 16px", margin: "14px 0" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: claims.length > 0 ? 8 : 0 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: "#92400e", textTransform: "uppercase" }}>
+                      ⏳ Pending Online Claims (Awaiting Bank Verification)
+                    </span>
+                    {data?.pendingAtIssue !== undefined && (
+                      <strong style={{ fontSize: 13, color: "#b45309" }}>
+                        At Issue: {rupees(data.pendingAtIssue)}
+                      </strong>
+                    )}
+                  </div>
+                  {claims.length > 0 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+                      {claims.map((c) => (
+                        <div key={str(c.id)} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#78350f", background: "#fef3c7", padding: "6px 10px", borderRadius: 4 }}>
+                          <span>
+                            • {str(c.actual_date)} — Ref: <b>{str(c.reference || "Online Transfer")}</b>
+                          </span>
+                          <b>{rupees(c.amount)}</b>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <small style={{ display: "block", marginTop: 6, fontSize: 11, color: "#a16207" }}>
+                    * Dues will update on salesman ledger once bank verification is completed.
+                  </small>
+                </div>
+              );
+            })()}
             <p>Note: {str(data?.note)}</p>
             <p className="small muted">
               {str((data?.businessProfile as Row | undefined)?.footer)}
@@ -16346,6 +16535,14 @@ function DocumentDetail({
       )}
 
       {/* Bill-Specific Reverse Record Modal */}
+      {showWAModal && d && (
+        <WhatsAppShareModal
+          doc={d as Row}
+          businessName={str(d.businessName ?? (d.data as Row | undefined)?.businessName ?? "Annapurna Sales Corporation")}
+          onClose={() => setShowWAModal(false)}
+        />
+      )}
+
       {showReverseModal && d && (
         <div
           className="no-print"
@@ -17641,7 +17838,7 @@ function MasterRecordsManager({
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {salesmen.map((s) => {
             const isEditing = editingItem?.type === "salesmen" && editingItem?.id === str(s.id);
-            const phone = str((s.details as Row | undefined)?.phone);
+            const phone = str(s.phone || (s.details as Row | undefined)?.phone);
             const route = str((s.details as Row | undefined)?.route);
             const limit = s.credit_limit !== null && s.credit_limit !== undefined
               ? `₹${str(s.credit_limit)}`
@@ -18332,7 +18529,9 @@ function SalesmanPolicyEditor({
   const [enabled, setEnabled] = useState(
     salesman.credit_limit !== null && salesman.credit_limit !== undefined,
   );
-  const [phone, setPhone] = useState(str((salesman.details as Row | undefined)?.phone));
+  const [phone, setPhone] = useState(
+    str(salesman.phone || (salesman.details as Row | undefined)?.phone),
+  );
   const [route, setRoute] = useState(str((salesman.details as Row | undefined)?.route));
   const [itcId, setItcId] = useState(str((salesman.details as Row | undefined)?.itc_id));
   const [beatCode, setBeatCode] = useState(str((salesman.details as Row | undefined)?.beat_code));
@@ -20454,7 +20653,11 @@ function ReportExplorer({
       }
       if (txColType) {
         const typeVal = String(r.type ?? "").toLowerCase();
-        if (typeVal !== txColType.toLowerCase()) return false;
+        if (txColType === "foods_receipt") {
+          if (!typeVal.startsWith("foods_receipt")) return false;
+        } else if (typeVal !== txColType.toLowerCase()) {
+          return false;
+        }
       }
       if (txColCategory.trim()) {
         const catVal = String(r.category ?? "").toLowerCase();
@@ -20860,7 +21063,9 @@ function ReportExplorer({
                         <option value="bill">Bill</option>
                         <option value="receipt_cash">Cash Receipt</option>
                         <option value="receipt_online">Online Receipt</option>
-                        <option value="foods_receipt">Foods Receipt</option>
+                        <option value="foods_receipt_cash">Foods Receipt Cash</option>
+                        <option value="foods_receipt_online">Foods Receipt Online</option>
+                        <option value="foods_receipt">Foods Receipt (All)</option>
                         <option value="sales_return">Sales Return</option>
                         <option value="expense">Expense</option>
                         <option value="salary">Salary</option>
@@ -21498,8 +21703,329 @@ function ItcExportPage({
   );
 }
 
-createRoot(document.getElementById("root")!).render(
-  <QueryClientProvider client={client}>
-    <App />
-  </QueryClientProvider>,
-);
+// ─── Public Receipt / Document Viewer (for WhatsApp links) ───────────────────
+function PublicDocumentView({ docId, token }: { docId: string; token: string }) {
+  const [data, setData] = useState<Row | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const res = await fetch(`/api/v1/public/documents/${docId}?token=${token}`);
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.message || "Invalid or expired document link");
+        }
+        const json = await res.json();
+        setData(json);
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : "Failed to load document");
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, [docId, token]);
+
+  if (loading) {
+    return (
+      <div style={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "100vh", fontFamily: "sans-serif", color: "#64748b" }}>
+        Loading document…
+      </div>
+    );
+  }
+
+  if (error || !data) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", minHeight: "100vh", fontFamily: "sans-serif", padding: 20, textAlign: "center" }}>
+        <h2 style={{ color: "#ef4444", marginBottom: 8 }}>Unable to View Document</h2>
+        <p style={{ color: "#64748b", maxWidth: 400 }}>{error || "This document link is not recognized or may have expired."}</p>
+      </div>
+    );
+  }
+
+  const d = data;
+  const docData = (d.data ?? {}) as Row;
+  const isEmployeeVoucher =
+    d.kind === "salary" ||
+    d.kind === "employee_receipt" ||
+    (d.kind === "loan" && docData.direction === "staff") ||
+    (d.kind === "expense" && str(docData.category).startsWith("Employee"));
+
+  const lines = arr(d.lines);
+  const businessName = str(d.business_name ?? docData.businessName ?? "Annapurna Sales Corporation");
+  const businessAddress = str((docData.businessProfile as Row | undefined)?.address ?? "");
+
+  return (
+    <div style={{ maxWidth: 800, margin: "0 auto", padding: "20px 16px", fontFamily: "system-ui, -apple-system, sans-serif" }}>
+      {/* Top Action Bar */}
+      <div className="no-print" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, paddingBottom: 14, borderBottom: "1px solid #e2e8f0" }}>
+        <div>
+          <span style={{ fontSize: 13, fontWeight: 700, color: "#16a34a", background: "#f0fdf4", padding: "4px 10px", borderRadius: 6 }}>
+            ✓ Official Digital Record
+          </span>
+        </div>
+        <button
+          onClick={() => window.print()}
+          style={{
+            background: "#0f172a",
+            color: "#fff",
+            border: "none",
+            borderRadius: 6,
+            padding: "8px 16px",
+            fontSize: 13,
+            fontWeight: 600,
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          <Printer size={15} /> Print / Save PDF
+        </button>
+      </div>
+
+      {/* Main Document Box */}
+      <div
+        className="print-document"
+        style={{
+          background: "#fff",
+          border: "2px solid #0f172a",
+          borderRadius: 8,
+          padding: "24px 28px",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+        }}
+      >
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", borderBottom: "2px solid #0f172a", paddingBottom: 16, marginBottom: 20 }}>
+          <div>
+            <h1 style={{ margin: "0 0 4px", fontSize: 22, fontWeight: 800, color: "#0f172a" }}>
+              {businessName}
+            </h1>
+            {Boolean(businessAddress) && <p style={{ margin: 0, fontSize: 12, color: "#475569" }}>{businessAddress}</p>}
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <span style={{ background: "#0f172a", color: "#fff", padding: "4px 12px", borderRadius: 4, fontSize: 13, fontWeight: 700, textTransform: "uppercase" }}>
+              {str(d.kind)} #{str(d.number)}
+            </span>
+            <p style={{ margin: "6px 0 0", fontSize: 13, color: "#475569", fontWeight: 600 }}>
+              Date: {str(d.business_date).split("T")[0]}
+            </p>
+          </div>
+        </div>
+
+        {/* Reversal Banner if cancelled */}
+        {Boolean(d.reversed) && (
+          <div style={{ background: "#fee2e2", border: "1px solid #f87171", borderRadius: 6, padding: "10px 14px", marginBottom: 18, color: "#b91c1c", fontWeight: 700, fontSize: 13 }}>
+            ⚠️ CANCELLED / REVERSED RECORD
+            {Boolean(docData.reason) && <div style={{ fontWeight: 400, marginTop: 4 }}>Reason: {str(docData.reason)}</div>}
+          </div>
+        )}
+
+        {/* Party Particulars */}
+        <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 6, padding: "14px 18px", marginBottom: 20 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px 20px" }}>
+            <div>
+              <span style={{ fontSize: 11, textTransform: "uppercase", color: "#64748b", fontWeight: 700, display: "block" }}>
+                {isEmployeeVoucher ? "Employee" : "Salesman / Party"}
+              </span>
+              <strong style={{ fontSize: 15, color: "#0f172a" }}>
+                {str(d.salesman_name || d.employee_name || docData.salesmanName || docData.employeeName || "-")}
+              </strong>
+            </div>
+            {Boolean(docData.customerName) && (
+              <div>
+                <span style={{ fontSize: 11, textTransform: "uppercase", color: "#64748b", fontWeight: 700, display: "block" }}>
+                  Customer
+                </span>
+                <strong style={{ fontSize: 15, color: "#0f172a" }}>
+                  {str(docData.customerName)}
+                </strong>
+              </div>
+            )}
+            <div>
+              <span style={{ fontSize: 11, textTransform: "uppercase", color: "#64748b", fontWeight: 700, display: "block" }}>
+                Total Amount
+              </span>
+              <strong style={{ fontSize: 18, color: "#047857" }}>
+                {rupees(d.amount)}
+              </strong>
+            </div>
+            {d.kind === "receipt" && (
+              <div>
+                <span style={{ fontSize: 11, textTransform: "uppercase", color: "#64748b", fontWeight: 700, display: "block" }}>
+                  Payment Mode
+                </span>
+                <span style={{ fontSize: 14, color: "#1e293b", fontWeight: 600 }}>
+                  {str(docData.method || "Cash").toUpperCase()} {docData.reference ? `(Ref: ${str(docData.reference)})` : ""}
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Line Items Table (if any) */}
+        {lines.length > 0 && (
+          <div style={{ marginBottom: 20 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: "#f1f5f9", borderBottom: "2px solid #cbd5e1" }}>
+                  <th style={{ padding: "8px 10px", textAlign: "left" }}>Product</th>
+                  <th style={{ padding: "8px 10px", textAlign: "right" }}>Qty</th>
+                  <th style={{ padding: "8px 10px", textAlign: "left" }}>Unit</th>
+                  <th style={{ padding: "8px 10px", textAlign: "right" }}>Rate</th>
+                  <th style={{ padding: "8px 10px", textAlign: "right" }}>Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lines.map((l) => {
+                  const snap = (l.snapshot as Row) || {};
+                  return (
+                    <tr key={str(l.id)} style={{ borderBottom: "1px solid #e2e8f0" }}>
+                      <td style={{ padding: "8px 10px", fontWeight: 500 }}>{str(snap.name || "Item")}</td>
+                      <td style={{ padding: "8px 10px", textAlign: "right" }}>{str(l.quantity)}</td>
+                      <td style={{ padding: "8px 10px" }}>{str(snap.unit || "unit")}</td>
+                      <td style={{ padding: "8px 10px", textAlign: "right" }}>{rupees(snap.rate || snap.masterRate || "0")}</td>
+                      <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 600 }}>{rupees(l.amount)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr style={{ borderTop: "2px solid #cbd5e1", background: "#f8fafc" }}>
+                  <td colSpan={4} style={{ padding: "10px", fontWeight: 700, textAlign: "right" }}>Total:</td>
+                  <td style={{ padding: "10px", fontWeight: 800, textAlign: "right", color: "#0f172a", fontSize: 15 }}>
+                    {rupees(d.amount)}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        )}
+
+        {/* Balance & Account Summary (Bills & Receipts) */}
+        {d.kind === "bill" && (
+          <div style={{ background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: 6, padding: "14px 18px", margin: "18px 0" }}>
+            <h4 style={{ margin: "0 0 10px", fontSize: 13, textTransform: "uppercase", color: "#334155", letterSpacing: 0.5 }}>
+              Account Summary at Issue
+            </h4>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12 }}>
+              {docData.previousBalance !== undefined && (
+                <div>
+                  <span style={{ fontSize: 11, color: "#64748b", display: "block" }}>Previous Balance</span>
+                  <strong style={{ fontSize: 14, color: "#0f172a" }}>{rupees(docData.previousBalance)}</strong>
+                </div>
+              )}
+              <div>
+                <span style={{ fontSize: 11, color: "#64748b", display: "block" }}>Current Bill Value</span>
+                <strong style={{ fontSize: 14, color: "#0f172a" }}>{rupees(d.amount)}</strong>
+              </div>
+              {docData.confirmed !== undefined && Number(docData.confirmed) > 0 && (
+                <div>
+                  <span style={{ fontSize: 11, color: "#15803d", display: "block" }}>On-spot Paid</span>
+                  <strong style={{ fontSize: 14, color: "#15803d" }}>{rupees(docData.confirmed)}</strong>
+                </div>
+              )}
+              {docData.issueBalance !== undefined && (
+                <div>
+                  <span style={{ fontSize: 11, color: "#0f172a", fontWeight: 700, display: "block" }}>Balance at Issue</span>
+                  <strong style={{ fontSize: 15, color: "#0f172a" }}>{rupees(docData.issueBalance)}</strong>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {d.kind === "receipt" && (
+          <div style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 6, padding: "14px 18px", margin: "18px 0" }}>
+            <h4 style={{ margin: "0 0 10px", fontSize: 13, textTransform: "uppercase", color: "#166534", letterSpacing: 0.5 }}>
+              Payment & Dues Impact
+            </h4>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12 }}>
+              {docData.previousBalance !== undefined && (
+                <div>
+                  <span style={{ fontSize: 11, color: "#475569", display: "block" }}>Balance Before</span>
+                  <strong style={{ fontSize: 14, color: "#0f172a" }}>{rupees(docData.previousBalance)}</strong>
+                </div>
+              )}
+              <div>
+                <span style={{ fontSize: 11, color: "#166534", display: "block" }}>Amount Received</span>
+                <strong style={{ fontSize: 14, color: "#16a34a" }}>{rupees(docData.currentAmountReceived ?? d.amount)}</strong>
+              </div>
+              {docData.overallOutstanding !== undefined && (
+                <div>
+                  <span style={{ fontSize: 11, color: "#0f172a", fontWeight: 700, display: "block" }}>Updated Outstanding</span>
+                  <strong style={{ fontSize: 16, color: "#0f172a" }}>{rupees(docData.overallOutstanding)}</strong>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Pending Online Claims at Issue / Open Claims */}
+        {(() => {
+          const claims = arr(d.openClaims);
+          if (claims.length === 0 && (!docData.pendingAtIssue || Number(docData.pendingAtIssue) === 0)) return null;
+          return (
+            <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 6, padding: "12px 16px", margin: "14px 0" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: claims.length > 0 ? 8 : 0 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#92400e", textTransform: "uppercase" }}>
+                  ⏳ Pending Online Claims (Awaiting Bank Verification)
+                </span>
+                {docData.pendingAtIssue !== undefined && (
+                  <strong style={{ fontSize: 13, color: "#b45309" }}>
+                    Total: {rupees(docData.pendingAtIssue)}
+                  </strong>
+                )}
+              </div>
+              {claims.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+                  {claims.map((c) => (
+                    <div key={str(c.id)} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#78350f", background: "#fef3c7", padding: "6px 10px", borderRadius: 4 }}>
+                      <span>
+                        • {str(c.actual_date)} — Ref: <b>{str(c.reference || "Online Transfer")}</b>
+                      </span>
+                      <b>{rupees(c.amount)}</b>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <small style={{ display: "block", marginTop: 6, fontSize: 11, color: "#a16207" }}>
+                * Dues will be credited to salesman's ledger upon bank statement verification.
+              </small>
+            </div>
+          );
+        })()}
+
+        {/* Balance & Notes */}
+        {Boolean(docData.note) && (
+          <p style={{ fontSize: 13, color: "#475569", margin: "14px 0 0" }}>
+            <b>Note:</b> {str(docData.note)}
+          </p>
+        )}
+
+        <div style={{ marginTop: 28, paddingTop: 14, borderTop: "1px dashed #cbd5e1", textAlign: "center", fontSize: 11, color: "#94a3b8" }}>
+          Generated by Annapurna Sales Corporation · Official operational record
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Root Mount with URL routing for Public View Links ──────────────────────
+const urlParams = new URLSearchParams(window.location.search);
+const publicViewDocId = urlParams.get("view");
+const publicViewToken = urlParams.get("token");
+
+if (publicViewDocId && publicViewToken) {
+  createRoot(document.getElementById("root")!).render(
+    <PublicDocumentView docId={publicViewDocId} token={publicViewToken} />
+  );
+} else {
+  createRoot(document.getElementById("root")!).render(
+    <QueryClientProvider client={client}>
+      <App />
+    </QueryClientProvider>,
+  );
+}

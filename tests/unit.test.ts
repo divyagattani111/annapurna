@@ -176,13 +176,15 @@ describe("H5 canonical fingerprinting & C4 UUID safety", () => {
     expect(filteredBad.length).toBe(0);
   });
 
-  test("H4 foodsReceipt schema supports optional explicit cash/bank account IDs", () => {
+  test("H4 foodsReceipt schema supports optional explicit cash/bank account IDs and split bankAmounts", () => {
     const validWithAccounts = commands.foodsReceipt.safeParse({
       foodsSalesman: "Ramesh Foods",
       cashAmount: "1500.00",
       bankAmount: "2500.00",
+      bankAmounts: ["1000.00", "1500.00"],
       cashAccountId: "550e8400-e29b-41d4-a716-446655440000",
       bankAccountId: "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+      verified: false,
       date: "2026-11-18",
     });
     expect(validWithAccounts.success).toBe(true);
