@@ -426,4 +426,38 @@ describe("H5 canonical fingerprinting & C4 UUID safety", () => {
     expect(bharathApplications[1].creditId).toBe("receipt-bharath-2");
     expect(bharathApplications[0].amount + bharathApplications[1].amount).toBe(40151.00);
   });
+
+  test("H6 confirmCashHandover supports online route collection transfers", () => {
+    // Valid cash handover
+    const cashHandover = commands.confirmCashHandover.safeParse({
+      date: "2026-11-26",
+      acceptedAmount: "5000.00",
+      accountId: "f1062f14-7a18-4c20-bdc5-efec91539522",
+      salesmanId: "fc4930bb-9775-4156-ad91-a161a981ed2d",
+      method: "cash",
+      note: "Cash count into till",
+    });
+    expect(cashHandover.success).toBe(true);
+
+    // Valid online route collection transfer
+    const onlineHandover = commands.confirmCashHandover.safeParse({
+      date: "2026-11-26",
+      acceptedAmount: "2500.00",
+      accountId: "56f8d9c1-4689-44ae-8a38-65af8e2755aa",
+      sourceAccountId: "bcaffe2b-efcc-4a7e-a75e-212d836dfae6",
+      salesmanId: "fc4930bb-9775-4156-ad91-a161a981ed2d",
+      method: "online",
+      managerNote: "Verified UPI transfer from Mudhasir online account to manager bank",
+      note: "Online route collection",
+    });
+    expect(onlineHandover.success).toBe(true);
+
+    // Rejects invalid amount or non-UUID accounts
+    const invalidHandover = commands.confirmCashHandover.safeParse({
+      date: "2026-11-26",
+      acceptedAmount: "-100.00",
+      accountId: "invalid-id",
+    });
+    expect(invalidHandover.success).toBe(false);
+  });
 });

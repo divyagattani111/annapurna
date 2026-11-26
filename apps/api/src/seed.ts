@@ -57,6 +57,8 @@ export async function seedDemo(mode: "demo" | "test" = "demo") {
     for (const [label, type, holder] of [
       ["Demo manager cash", "cash", "Demo manager"],
       ["Demo receiving bank", "bank", "Demo business"],
+      ["Mudhasir online account", "bank", "Mudhasir"],
+      ["Mudhasir cash account", "cash", "Mudhasir"],
     ]) {
       const [r] = await rows<{ id: string }>(
         db,

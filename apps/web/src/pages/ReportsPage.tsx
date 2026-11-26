@@ -27,10 +27,12 @@ import {
 } from "@ledger/contracts";
 import { api } from "../api";
 import { Button, Field, Empty, Table, DocLink, NoteTooltip } from "../components/ui";
-import { D, str, arr, rupees, formatCents, parseCents, parseMoneyNumber,
+import {
+  D, str, arr, rupees, formatCents, parseCents, parseMoneyNumber,
   formatBilledCaption, dateLabel, timeOnlyLabel, formatDateTime, resolveTransactionType, type Row,
 } from "../utils/helpers";
-import { getProductBarcodes, matchProductsByScanOrCode, matchProductByScanOrCode,
+import {
+  getProductBarcodes, matchProductsByScanOrCode, matchProductByScanOrCode,
   useGlobalBarcodeScanner,
 } from "../utils/barcodeScanner";
 import {
@@ -1001,7 +1003,16 @@ export function StockVerificationReport({
                 className="secondary"
                 type="button"
                 disabled={aggregatedProducts.length === 0}
-                onClick={() => window.print()}
+                onClick={() => {
+                  let styleEl = document.getElementById("dynamic-print-page-style") as HTMLStyleElement | null;
+                  if (!styleEl) {
+                    styleEl = document.createElement("style");
+                    styleEl.id = "dynamic-print-page-style";
+                    document.head.appendChild(styleEl);
+                  }
+                  styleEl.innerHTML = `@media print { @page { size: A4 portrait; margin: 6mm 8mm; } }`;
+                  window.print();
+                }}
                 style={{ fontSize: 12, padding: "6px 12px", display: "flex", alignItems: "center", gap: 6 }}
               >
                 <Printer size={14} />
@@ -1447,6 +1458,7 @@ export function ReportExplorer({
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       {/* Header with Title & Export Button */}
       <div
+        className="no-print"
         style={{
           display: "flex",
           justifyContent: "space-between",
@@ -1491,6 +1503,7 @@ export function ReportExplorer({
 
       {/* Modern Horizontal Tabs Bar */}
       <div
+        className="no-print"
         style={{
           display: "flex",
           gap: 22,
@@ -2464,7 +2477,16 @@ export function PublicDocumentView({ docId, token }: { docId: string; token: str
           </span>
         </div>
         <button
-          onClick={() => window.print()}
+          onClick={() => {
+            let styleEl = document.getElementById("dynamic-print-page-style") as HTMLStyleElement | null;
+            if (!styleEl) {
+              styleEl = document.createElement("style");
+              styleEl.id = "dynamic-print-page-style";
+              document.head.appendChild(styleEl);
+            }
+            styleEl.innerHTML = `@media print { @page { size: A4 portrait; margin: 6mm 8mm; } }`;
+            window.print();
+          }}
           style={{
             background: "#0f172a",
             color: "#fff",

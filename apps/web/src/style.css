@@ -1104,7 +1104,7 @@ footer {
   .app-shell .main-wrap,
   .app-shell.sidebar-collapsed .main-wrap,
   .home-shell .main-wrap,
-  .home-shell > .main-wrap {
+  .home-shell>.main-wrap {
     margin: 0 !important;
     margin-left: 0 !important;
     padding: 0 !important;
@@ -3195,11 +3195,11 @@ main.workflow-main {
   gap: 16px;
 }
 
-/* Master Print Stylesheet - Authoritative Reset Across All Views */
+/* Master Print Stylesheet - Authoritative Reset & Compact Formatting Across All Views */
 @media print {
   @page {
     size: A4 portrait;
-    margin: 10mm 12mm;
+    margin: 6mm 8mm;
   }
 
   html,
@@ -3212,6 +3212,10 @@ main.workflow-main {
     min-width: 0 !important;
     margin: 0 !important;
     padding: 0 !important;
+    font-size: 7.5pt !important;
+    line-height: 1.25 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
   }
 
   .app-shell,
@@ -3241,7 +3245,15 @@ main.workflow-main {
   .workspace-profile,
   .nav-item,
   .field,
-  .notice {
+  .notice,
+  .pagination,
+  .pagination-mobile,
+  .direct-cig-tabs-line,
+  .direct-cig-header,
+  .direct-cig-search-input,
+  input[type="search"],
+  input[type="date"],
+  select {
     display: none !important;
     width: 0 !important;
     height: 0 !important;
@@ -3258,7 +3270,7 @@ main.workflow-main {
   .app-shell .main-wrap,
   .app-shell.sidebar-collapsed .main-wrap,
   .home-shell .main-wrap,
-  .home-shell > .main-wrap {
+  .home-shell>.main-wrap {
     margin: 0 !important;
     margin-left: 0 !important;
     padding: 0 !important;
@@ -3298,6 +3310,38 @@ main.workflow-main {
     background: transparent !important;
   }
 
+  /* Compact headings for all printed pages */
+  h1 {
+    font-size: 13pt !important;
+    margin: 0 0 4px !important;
+    color: #0f172a !important;
+  }
+
+  h2 {
+    font-size: 11pt !important;
+    margin: 0 0 3px !important;
+    color: #0f172a !important;
+  }
+
+  h3 {
+    font-size: 9.5pt !important;
+    margin: 0 0 2px !important;
+    color: #0f172a !important;
+  }
+
+  p,
+  div,
+  span,
+  td,
+  th {
+    font-size: 7.5pt !important;
+  }
+
+  .small,
+  small {
+    font-size: 7pt !important;
+  }
+
   .loading-sheet-grid {
     display: block !important;
     width: 100% !important;
@@ -3326,24 +3370,31 @@ main.workflow-main {
     margin: 0 !important;
     border-collapse: collapse !important;
     table-layout: auto !important;
-    font-size: 10pt !important;
+    font-size: 7.5pt !important;
     white-space: normal !important;
   }
 
   .loading-sheet-table th,
-  .loading-sheet-table td {
-    border: 1px solid #64748b !important;
-    padding: 6px 10px !important;
+  .loading-sheet-table td,
+  .ledger-table th,
+  .ledger-table td,
+  table th,
+  table td {
+    border: 1px solid #cbd5e1 !important;
+    padding: 2.5px 4.5px !important;
+    font-size: 7.5pt !important;
     color: #000000 !important;
   }
 
-  .loading-sheet-table thead tr {
+  .loading-sheet-table thead tr,
+  table thead tr {
     background-color: #f1f5f9 !important;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
 
-  .loading-sheet-table tfoot tr {
+  .loading-sheet-table tfoot tr,
+  table tfoot tr {
     background-color: #f8fafc !important;
     font-weight: 800 !important;
     -webkit-print-color-adjust: exact;
@@ -3359,8 +3410,150 @@ main.workflow-main {
     page-break-inside: avoid;
   }
 
-  th,
-  td {
-    padding: 7px;
+  /* Compact balance summary cards */
+  .review-balances {
+    margin: 6px 0 !important;
+    padding: 5px 8px !important;
+    font-size: 7.5pt !important;
+    gap: 8px !important;
+  }
+
+  .review-balances p {
+    font-size: 7.5pt !important;
+    margin: 0 !important;
+  }
+
+  /* -------------------------------------------------------------
+     DEDICATED PRINT TEMPLATE STYLES
+     ------------------------------------------------------------- */
+
+  /* 1. Vertical A5 Bill Container (148mm x 210mm) */
+  .print-template-a5-vertical {
+    width: 100% !important;
+    max-width: 138mm !important;
+    margin: 0 auto !important;
+    padding: 4mm 6mm !important;
+    box-sizing: border-box !important;
+    font-size: 7.5pt !important;
+    color: #000000 !important;
+    background: #ffffff !important;
+  }
+
+  .print-template-a5-vertical table {
+    font-size: 7.5pt !important;
+  }
+
+  .print-template-a5-vertical th,
+  .print-template-a5-vertical td {
+    padding: 2.5px 4px !important;
+  }
+
+  /* 2. Thermal POS Slip (80mm Roll) */
+  .print-template-thermal {
+    width: 72mm !important;
+    max-width: 72mm !important;
+    margin: 0 auto !important;
+    padding: 2mm 3mm !important;
+    box-sizing: border-box !important;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace !important;
+    font-size: 7.5pt !important;
+    line-height: 1.25 !important;
+    color: #000000 !important;
+    background: #ffffff !important;
+  }
+
+  .print-template-thermal table {
+    width: 100% !important;
+    font-size: 7pt !important;
+    border: none !important;
+  }
+
+  .print-template-thermal th,
+  .print-template-thermal td {
+    border: none !important;
+    padding: 1.5px 2px !important;
+  }
+
+  .print-template-thermal hr,
+  .print-template-thermal .dotted-line {
+    border-top: 1px dashed #000000 !important;
+    margin: 3px 0 !important;
+  }
+
+  /* 3. A4 Dual Vertical A5 Bills (Side-by-Side Landscape) */
+  .print-template-a4-dual {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 8mm !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+  }
+
+  .print-template-a4-dual .dual-col-left {
+    border-right: 1.5px dashed #94a3b8 !important;
+    padding-right: 6mm !important;
+  }
+
+  .print-template-a4-dual .dual-col-right {
+    padding-left: 2mm !important;
+  }
+
+  /* 4. Horizontal A5 Voucher (210mm x 148mm Landscape) */
+  .print-template-voucher-horizontal {
+    width: 100% !important;
+    max-width: 198mm !important;
+    margin: 0 auto !important;
+    padding: 5mm 8mm !important;
+    box-sizing: border-box !important;
+    font-size: 8pt !important;
+    color: #000000 !important;
+    background: #ffffff !important;
+    border: 1.5px solid #0f172a !important;
+    border-radius: 6px !important;
+  }
+
+  /* 5. A4 Dual Horizontal Vouchers (Stacked Top & Bottom Portrait) */
+  .print-template-voucher-dual-a4 {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 10mm !important;
+    width: 100% !important;
+  }
+
+  .print-template-voucher-dual-a4 .voucher-copy-wrap {
+    border: 1.5px solid #0f172a !important;
+    border-radius: 6px !important;
+    padding: 5mm 8mm !important;
+    box-sizing: border-box !important;
+  }
+
+  .print-template-voucher-dual-a4 .cut-divider {
+    border-top: 1.5px dashed #94a3b8 !important;
+    text-align: center !important;
+    font-size: 7.5pt !important;
+    color: #64748b !important;
+    margin: 0 !important;
+    padding-top: 2px !important;
+  }
+
+  /* 6. Single-Page A4 Van Loading Sheet */
+  .print-template-loading-sheet {
+    width: 100% !important;
+    font-size: 7.5pt !important;
+  }
+
+  .print-template-loading-sheet table {
+    font-size: 7.5pt !important;
+  }
+
+  .print-template-loading-sheet th,
+  .print-template-loading-sheet td {
+    padding: 2px 4px !important;
+    font-size: 7.5pt !important;
+  }
+
+  .print-template-loading-sheet small,
+  .print-template-loading-sheet span {
+    font-size: 7pt !important;
   }
 }

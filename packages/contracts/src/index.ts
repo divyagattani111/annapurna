@@ -409,10 +409,12 @@ export const commands = {
   confirmCashHandover: z
     .object({
       ...base,
-      handoverId: id.optional(),
+      handoverId: z.string().max(200).optional(),
       salesmanId: id.optional(),
       acceptedAmount: money,
       accountId: id,
+      sourceAccountId: id.optional(),
+      method: z.enum(["cash", "online"]).optional(),
       managerNote: z.string().max(2000).optional(),
     })
     .strict(),
@@ -493,6 +495,9 @@ export const dashboardResponse = z
         collections: signedMoney,
         cash_collections: signedMoney,
         online_collections: signedMoney,
+        total_inflows: signedMoney.optional(),
+        cash_inflows: signedMoney.optional(),
+        bank_inflows: signedMoney.optional(),
         expenses: signedMoney,
         loans: signedMoney.optional(),
         expenses_and_loans: signedMoney.optional(),

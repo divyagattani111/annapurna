@@ -44,10 +44,12 @@ import { api } from "../api";
 import { Button, Field, Empty, DocLink, Metric } from "../components/ui";
 import { DraftReviewModal } from "../components/DraftReviewModal";
 import { Documents } from "../components/Documents";
-import { D, str, arr, rupees, formatCents, parseCents, parseMoneyNumber,
+import {
+  D, str, arr, rupees, formatCents, parseCents, parseMoneyNumber,
   formatBilledCaption, dateLabel, timeOnlyLabel, formatDateTime, type Row,
 } from "../utils/helpers";
-import { getProductBarcodes, matchProductsByScanOrCode, matchProductByScanOrCode,
+import {
+  getProductBarcodes, matchProductsByScanOrCode, matchProductByScanOrCode,
   useGlobalBarcodeScanner,
 } from "../utils/barcodeScanner";
 import {
@@ -407,9 +409,25 @@ export function DirectCigSalesPage({
   }, [billPayOnlineList]);
   const billPayTotalVal = useMemo(() => billPayCashVal.plus(billPayOnlineVal), [billPayCashVal, billPayOnlineVal]);
 
-  const accounts = arr(masters.accounts);
-  const defaultCash = str(accounts.find((a) => a.type === "cash")?.id ?? accounts[0]?.id ?? "");
-  const defaultBank = str(accounts.find((a) => a.type === "bank")?.id ?? accounts[0]?.id ?? "");
+  const accounts = arr(masters.accounts) as Array<{ id: string; name?: string; holder?: string; type?: string; [key: string]: unknown }>;
+  const mudhasirBankAcc = accounts.find(
+    (a) =>
+      a.type === "bank" &&
+      (String(a.name ?? "").toLowerCase().includes("mudhasir") ||
+        String(a.name ?? "").toLowerCase().includes("mubashir") ||
+        String(a.holder ?? "").toLowerCase().includes("mudhasir") ||
+        String(a.holder ?? "").toLowerCase().includes("mubashir")),
+  );
+  const mudhasirCashAcc = accounts.find(
+    (a) =>
+      a.type === "cash" &&
+      (String(a.name ?? "").toLowerCase().includes("mudhasir") ||
+        String(a.name ?? "").toLowerCase().includes("mubashir") ||
+        String(a.holder ?? "").toLowerCase().includes("mudhasir") ||
+        String(a.holder ?? "").toLowerCase().includes("mubashir")),
+  );
+  const defaultCash = str(mudhasirCashAcc?.id ?? accounts.find((a) => a.type === "cash")?.id ?? accounts[0]?.id ?? "");
+  const defaultBank = str(mudhasirBankAcc?.id ?? accounts.find((a) => a.type === "bank")?.id ?? accounts[0]?.id ?? "");
   const activeCashAccountId = selectedCashAccountId || defaultCash;
   const activeBankAccountId = selectedBankAccountId || defaultBank;
 
@@ -705,6 +723,7 @@ export function DirectCigSalesPage({
   const [handoverSuccess, setHandoverSuccess] = useState("");
 
   const cashInHand = str(stats.cashInHand ?? "0.00");
+  const onlineInAccount = str(stats.onlineInAccount ?? "0.00");
   const handoversHistory = arr(summaryQuery.data?.handovers);
 
   const handleInitiateHandover = async (e: React.FormEvent) => {
@@ -994,7 +1013,7 @@ export function DirectCigSalesPage({
         </div>
       </div>
 
-      {/* 2. 5 Metric Stats Boxes Directly Below including Cash in Hand */}
+      {/* 2. Metric Stats Boxes Directly Below including Cash in Hand */}
       <div className="stats no-print" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
         <Metric
           label="Customers Dues"
@@ -1005,8 +1024,15 @@ export function DirectCigSalesPage({
         <Metric
           label="Cash in Hand (Mudhasir)"
           value={cashInHand}
-          caption="Cash held with salesman · manager receives directly on dashboard"
+          caption="Current route cash balance"
           icon={Wallet}
+          tone="cash"
+        />
+        <Metric
+          label="Online Account (Mudhasir)"
+          value={onlineInAccount}
+          caption="Verified route bank collections"
+          icon={CreditCard}
           tone="cash"
         />
         <Metric
@@ -1026,13 +1052,6 @@ export function DirectCigSalesPage({
             stats.todayReturned,
           )}
           tone="bills"
-        />
-        <Metric
-          label="Today's Received"
-          value={stats.todayReceived ?? "0.00"}
-          caption={`Cash: ${rupees(stats.todayCashReceived ?? "0.00")} · Online: ${rupees(stats.todayOnlineReceived ?? "0.00")}`}
-          icon={IndianRupee}
-          tone="cash"
         />
       </div>
 
@@ -2729,20 +2748,6 @@ export function DirectCigSalesPage({
                   onChange={(e) => setCashAmount(e.target.value)}
                   style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1.5px solid #cbd5e1", fontSize: 16, fontWeight: 700 }}
                 />
-                {accounts.filter((a) => a.type === "cash").length > 1 && (
-                  <div style={{ marginTop: 8 }}>
-                    <label style={{ fontSize: 11, color: "#64748b" }}>Deposited into Cash Drawer:</label>
-                    <select
-                      value={activeCashAccountId}
-                      onChange={(e) => setSelectedCashAccountId(e.target.value)}
-                      style={{ marginTop: 4, width: "100%", padding: "8px 10px", fontSize: 12, borderRadius: 6, border: "1px solid #cbd5e1" }}
-                    >
-                      {accounts.filter((a) => a.type === "cash").map((a) => (
-                        <option key={str(a.id)} value={str(a.id)}>{str(a.name)}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
               </div>
 
               <div style={{ background: "#ffffff", border: "1.5px solid #e2e8f0", borderRadius: 12, padding: "16px 16px" }}>
@@ -2779,20 +2784,6 @@ export function DirectCigSalesPage({
                     </div>
                   );
                 })()}
-                {accounts.filter((a) => a.type === "bank").length > 1 && (
-                  <div style={{ marginTop: 8 }}>
-                    <label style={{ fontSize: 11, color: "#64748b" }}>Received into Bank Account:</label>
-                    <select
-                      value={activeBankAccountId}
-                      onChange={(e) => setSelectedBankAccountId(e.target.value)}
-                      style={{ marginTop: 4, width: "100%", padding: "8px 10px", fontSize: 12, borderRadius: 6, border: "1px solid #cbd5e1" }}
-                    >
-                      {accounts.filter((a) => a.type === "bank").map((a) => (
-                        <option key={str(a.id)} value={str(a.id)}>{str(a.name)}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
               </div>
 
               <div
@@ -3588,7 +3579,16 @@ export function DirectCigSalesPage({
                     className="secondary"
                     type="button"
                     disabled={aggregatedProducts.length === 0}
-                    onClick={() => window.print()}
+                    onClick={() => {
+                      let styleEl = document.getElementById("dynamic-print-page-style") as HTMLStyleElement | null;
+                      if (!styleEl) {
+                        styleEl = document.createElement("style");
+                        styleEl.id = "dynamic-print-page-style";
+                        document.head.appendChild(styleEl);
+                      }
+                      styleEl.innerHTML = `@media print { @page { size: A4 portrait; margin: 5mm 6mm; } }`;
+                      window.print();
+                    }}
                     style={{ fontSize: 12, padding: "6px 12px", display: "flex", alignItems: "center", gap: 6 }}
                   >
                     <Printer size={14} />
@@ -3640,33 +3640,36 @@ export function DirectCigSalesPage({
                 </div>
               ) : (
                 <>
-                  {/* PRINT-ONLY CLEAN HEADER */}
-                  <div className="print-only" style={{ marginBottom: 14 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", borderBottom: "2px solid #0f172a", paddingBottom: 8, marginBottom: 8 }}>
+                  {/* PRINT-ONLY CLEAN COMPACT HEADER */}
+                  <div className="print-only" style={{ marginBottom: 10 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", borderBottom: "2px solid #0f172a", paddingBottom: 6, marginBottom: 6 }}>
                       <div>
-                        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: "#0f172a" }}>Product Loading Sheet</h2>
-                        <div style={{ fontSize: 13, color: "#334155", marginTop: 3 }}>
+                        <h2 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: "#0f172a", textTransform: "uppercase" }}>
+                          Van Loading Sheet (Packing Checklist)
+                        </h2>
+                        <div style={{ fontSize: 10, color: "#334155", marginTop: 2 }}>
                           Route / Salesman: <strong>{loadingSheetScope === "all" ? "All Routes / Salesmen" : str(salesmenList.find((s) => str(s.id) === selectedSalesmanId)?.name || "Mudhashir")}</strong>
                         </div>
                       </div>
-                      <div style={{ textAlign: "right", fontSize: 12, color: "#334155" }}>
+                      <div style={{ textAlign: "right", fontSize: 9.5, color: "#334155", lineHeight: 1.3 }}>
                         <div>Date: <strong>{!loadingSheetFrom && !loadingSheetTo ? "All Dates" : loadingSheetFrom === loadingSheetTo ? loadingSheetFrom : `${loadingSheetFrom || "Start"} to ${loadingSheetTo || "End"}`}</strong></div>
-                        <div>Bills Included: <strong>{selectedBillIds.length}</strong></div>
+                        <div>Bills: <strong>{selectedBillIds.length}</strong> · SKUs: <strong>{aggregatedProducts.length}</strong></div>
                       </div>
                     </div>
                   </div>
 
                   {/* STRUCTURED ITEMIZED BREAKDOWN TABLE */}
                   <div className="loading-sheet-table-wrap" style={{ overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: 8 }}>
-                    <table className="ledger-table loading-sheet-table" style={{ width: "100%", fontSize: 13 }}>
+                    <table className="ledger-table loading-sheet-table print-template-loading-sheet" style={{ width: "100%", fontSize: 12 }}>
                       <thead>
                         <tr style={{ background: "#f1f5f9", textAlign: "left" }}>
-                          <th style={{ padding: "8px 10px", width: 40 }}>#</th>
-                          <th style={{ padding: "8px 10px" }}>Product Name</th>
-                          <th style={{ padding: "8px 10px", textAlign: "right" }}>Total Qty</th>
-                          <th style={{ padding: "8px 10px", textAlign: "right" }}>MRP / Rate</th>
-                          <th style={{ padding: "8px 10px", textAlign: "right" }}>Total Value</th>
-                          <th style={{ padding: "8px 10px", textAlign: "center" }}>In Bills</th>
+                          <th className="print-only" style={{ padding: "4px 6px", width: 26, textAlign: "center" }}>✓</th>
+                          <th style={{ padding: "6px 8px", width: 32 }}>#</th>
+                          <th style={{ padding: "6px 8px" }}>PRODUCT NAME</th>
+                          <th style={{ padding: "6px 8px", textAlign: "right" }}>BILLED QTY</th>
+                          <th style={{ padding: "6px 8px", textAlign: "right" }}>RATE</th>
+                          <th style={{ padding: "6px 8px", textAlign: "right" }}>TOTAL VALUE</th>
+                          <th style={{ padding: "6px 8px", textAlign: "center" }}>IN BILLS</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -3678,18 +3681,21 @@ export function DirectCigSalesPage({
                               background: idx % 2 === 0 ? "#ffffff" : "#fbfcfe",
                             }}
                           >
-                            <td style={{ padding: "8px 10px", color: "#94a3b8", fontSize: 11 }}>
+                            <td className="print-only" style={{ padding: "3px 4px", textAlign: "center", fontSize: 11, color: "#94a3b8" }}>
+                              ☐
+                            </td>
+                            <td style={{ padding: "4px 8px", color: "#94a3b8", fontSize: 10 }}>
                               {idx + 1}
                             </td>
-                            <td style={{ padding: "8px 10px", fontWeight: 600, color: "#0f172a" }}>
+                            <td style={{ padding: "4px 8px", fontWeight: 600, color: "#0f172a" }}>
                               {p.name}
                               {p.code ? (
-                                <small style={{ color: "#64748b", marginLeft: 6 }}>({p.code})</small>
+                                <small style={{ color: "#64748b", marginLeft: 4 }}>({p.code})</small>
                               ) : null}
                             </td>
                             <td
                               style={{
-                                padding: "8px 10px",
+                                padding: "4px 8px",
                                 textAlign: "right",
                                 fontWeight: 800,
                                 color: p.quantity.isZero() ? "#94a3b8" : "#0369a1",
@@ -3697,17 +3703,17 @@ export function DirectCigSalesPage({
                             >
                               <div>{p.quantity.toString()} {p.unit}</div>
                               {p.returnedQuantity.gt(0) ? (
-                                <div style={{ fontSize: 10, fontWeight: 600, color: "#d97706" }}>
+                                <div style={{ fontSize: 9, fontWeight: 600, color: "#d97706" }}>
                                   ({p.grossQuantity.toString()} billed - {p.returnedQuantity.toString()} ret)
                                 </div>
                               ) : null}
                             </td>
-                            <td style={{ padding: "8px 10px", textAlign: "right" }}>
+                            <td style={{ padding: "4px 8px", textAlign: "right" }}>
                               {rupees(p.rate)}
                             </td>
                             <td
                               style={{
-                                padding: "8px 10px",
+                                padding: "4px 8px",
                                 textAlign: "right",
                                 fontWeight: 700,
                                 color: "#166534",
@@ -3715,14 +3721,14 @@ export function DirectCigSalesPage({
                             >
                               {rupees(p.amount.toString())}
                             </td>
-                            <td style={{ padding: "8px 10px", textAlign: "center" }}>
+                            <td style={{ padding: "4px 8px", textAlign: "center" }}>
                               <span
                                 style={{
-                                  fontSize: 11,
+                                  fontSize: 10,
                                   color: "#475569",
                                   background: "#e2e8f0",
-                                  padding: "2px 7px",
-                                  borderRadius: 10,
+                                  padding: "2px 6px",
+                                  borderRadius: 8,
                                 }}
                                 title={`Present in: ${p.billNumbers.join(", ")}`}
                               >
@@ -3734,22 +3740,37 @@ export function DirectCigSalesPage({
                       </tbody>
                       <tfoot>
                         <tr style={{ background: "#f8fafc", fontWeight: 800, borderTop: "2px solid #cbd5e1" }}>
-                          <td colSpan={2} style={{ padding: "10px", textAlign: "right", textTransform: "uppercase", fontSize: 12, color: "#475569" }}>
+                          <td className="print-only" style={{ padding: "6px" }}></td>
+                          <td colSpan={2} style={{ padding: "6px 8px", textAlign: "right", textTransform: "uppercase", fontSize: 11, color: "#475569" }}>
                             Grand Total:
                           </td>
-                          <td style={{ padding: "10px", textAlign: "right", color: "#0369a1", fontSize: 15 }}>
+                          <td style={{ padding: "6px 8px", textAlign: "right", color: "#0369a1", fontSize: 13 }}>
                             {totalLoadedQty.toString()}
                           </td>
-                          <td style={{ padding: "10px", textAlign: "right" }}></td>
-                          <td style={{ padding: "10px", textAlign: "right", color: "#166534", fontSize: 15 }}>
+                          <td style={{ padding: "6px 8px", textAlign: "right" }}></td>
+                          <td style={{ padding: "6px 8px", textAlign: "right", color: "#166534", fontSize: 13 }}>
                             {rupees(totalLoadedAmount.toString())}
                           </td>
-                          <td style={{ padding: "10px", textAlign: "center", fontSize: 11, color: "#64748b" }}>
+                          <td style={{ padding: "6px 8px", textAlign: "center", fontSize: 10, color: "#64748b" }}>
                             {selectedBillIds.length} bills
                           </td>
                         </tr>
                       </tfoot>
                     </table>
+                  </div>
+
+                  {/* PRINT-ONLY SIGNATURE FOOTER */}
+                  <div className="print-only" style={{ marginTop: 20, paddingTop: 10, borderTop: "1px dashed #cbd5e1", fontSize: 9 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 30 }}>
+                      <div>
+                        <div style={{ height: 35, borderBottom: "1px solid #0f172a", marginBottom: 4 }} />
+                        <strong>Loaded By (Warehouse Dispatch Sign):</strong>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ height: 35, borderBottom: "1px solid #0f172a", marginBottom: 4 }} />
+                        <strong>Received / Checked By (Driver / Salesman Sign):</strong>
+                      </div>
+                    </div>
                   </div>
                 </>
               )}
@@ -3814,7 +3835,16 @@ export function DirectCigSalesPage({
               <div style={{ fontSize: 20, fontWeight: 800, color: "#0f172a", marginTop: 2 }}>
                 {rupees(cashInHand)}
               </div>
-              <small style={{ color: "#64748b", fontSize: 11 }}>Awaiting physical receipt by manager</small>
+              <small style={{ color: "#64748b", fontSize: 11 }}>Awaiting physical receipt by manager into till</small>
+            </div>
+            <div>
+              <small style={{ color: "#64748b", textTransform: "uppercase", fontSize: 11, fontWeight: 700 }}>
+                Online Account (UPI)
+              </small>
+              <div style={{ fontSize: 20, fontWeight: 800, color: "#0369a1", marginTop: 2 }}>
+                {rupees(onlineInAccount)}
+              </div>
+              <small style={{ color: "#64748b", fontSize: 11 }}>Awaiting transfer by manager to receiving bank</small>
             </div>
           </div>
 

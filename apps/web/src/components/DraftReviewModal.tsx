@@ -142,8 +142,24 @@ export function DraftReviewModal({
       const onlineAmounts = parseMultiAmounts(onlinePay);
       const hasCash = Boolean(cleanCash && parseMoneyNumber(cleanCash) > 0);
 
-      const defaultCash = arr(masters.accounts).find((a) => a.type === "cash")?.id || "";
-      const defaultBank = arr(masters.accounts).find((a) => a.type === "bank")?.id || "";
+      const mudhasirBankAcc = arr(masters.accounts).find(
+        (a) =>
+          a.type === "bank" &&
+          (str(a.name).toLowerCase().includes("mudhasir") ||
+            str(a.name).toLowerCase().includes("mubashir") ||
+            str(a.holder).toLowerCase().includes("mudhasir") ||
+            str(a.holder).toLowerCase().includes("mubashir")),
+      );
+      const mudhasirCashAcc = arr(masters.accounts).find(
+        (a) =>
+          a.type === "cash" &&
+          (str(a.name).toLowerCase().includes("mudhasir") ||
+            str(a.name).toLowerCase().includes("mubashir") ||
+            str(a.holder).toLowerCase().includes("mudhasir") ||
+            str(a.holder).toLowerCase().includes("mubashir")),
+      );
+      const defaultCash = (mudhasirCashAcc?.id || arr(masters.accounts).find((a) => a.type === "cash")?.id) || "";
+      const defaultBank = (mudhasirBankAcc?.id || arr(masters.accounts).find((a) => a.type === "bank")?.id) || "";
       const activeCashId = cashAccountId || defaultCash;
       const activeBankId = bankAccountId || defaultBank;
 

@@ -153,8 +153,19 @@ export async function scoped(
   ensure(r, "Record not found", "NOT_FOUND", 404);
   return r;
 }
-async function account(t: Tx, a: Actor, id: string, type?: string) {
-  const r = await scoped(t, a, "money_accounts", id);
+export type MoneyAccount = {
+  id: string;
+  org: string;
+  name: string;
+  type: string;
+  holder: string;
+  active: boolean;
+  allow_overdraft?: boolean;
+  details?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+async function account(t: Tx, a: Actor, id: string, type?: string): Promise<MoneyAccount> {
+  const r = (await scoped(t, a, "money_accounts", id)) as unknown as MoneyAccount;
   ensure(r.active, "Account is inactive");
   if (type) ensure(r.type === type, `Select a ${type} account`);
   return r;
@@ -476,10 +487,47 @@ async function receive(
     if (cRow) customerName = cRow.customer_name;
   }
   const isDirect = isDirectRouteSalesman(salesman as { name?: string | null; details?: unknown });
-  const debitAccount =
-    isDirect && p.method === "cash"
-      ? `transit:salesman:${p.salesmanId}`
-      : cash(p.accountId);
+  let targetAccountId = p.accountId;
+  let targetAccount = acc;
+
+  if (isDirect && p.method === "cash") {
+    const isMudhasirCashAcc =
+      acc.type === "cash" &&
+      (acc.name.toLowerCase().includes("mudhasir") ||
+        acc.name.toLowerCase().includes("mubashir") ||
+        acc.holder.toLowerCase().includes("mudhasir") ||
+        acc.holder.toLowerCase().includes("mubashir"));
+
+    if (!isMudhasirCashAcc) {
+      const [mudhasirCash] = await rows<{ id: string; name: string; type: string; holder: string }>(
+        t,
+        sql`select id, name, type, holder from money_accounts where org=${a.org} and active=true and type='cash' and (name ilike '%mudhasir%' or name ilike '%mubashir%' or holder ilike '%mudhasir%' or holder ilike '%mubashir%') limit 1`,
+      );
+      if (mudhasirCash) {
+        targetAccountId = mudhasirCash.id;
+        targetAccount = { ...acc, id: mudhasirCash.id, name: mudhasirCash.name, holder: mudhasirCash.holder };
+      }
+    }
+  } else if (isDirect && p.method === "online") {
+    const isMudhasirAcc =
+      acc.name.toLowerCase().includes("mudhasir") ||
+      acc.name.toLowerCase().includes("mubashir") ||
+      acc.holder.toLowerCase().includes("mudhasir") ||
+      acc.holder.toLowerCase().includes("mubashir");
+
+    if (!isMudhasirAcc) {
+      const [mudhasirBank] = await rows<{ id: string; name: string; type: string; holder: string }>(
+        t,
+        sql`select id, name, type, holder from money_accounts where org=${a.org} and active=true and type='bank' and (name ilike '%mudhasir%' or name ilike '%mubashir%' or holder ilike '%mudhasir%' or holder ilike '%mubashir%') limit 1`,
+      );
+      if (mudhasirBank) {
+        targetAccountId = mudhasirBank.id;
+        targetAccount = { ...acc, id: mudhasirBank.id, name: mudhasirBank.name, holder: mudhasirBank.holder };
+      }
+    }
+  }
+
+  const debitAccount = cash(targetAccountId);
 
   let prevBal = D(0);
   if (p.customerId) {
@@ -502,10 +550,11 @@ async function receive(
     money(p.amount),
     {
       ...p,
+      accountId: targetAccountId,
       billId,
       batchId,
       customerName,
-      accountName: isDirect && p.method === "cash" ? `${salesman.name} (In Hand)` : acc.name,
+      accountName: isDirect && p.method === "cash" ? `${salesman.name} (In Hand)` : targetAccount.name,
       salesmanName: salesman.name,
       previousBalance: money(prevBal),
       currentAmountReceived: money(p.amount),
@@ -1884,17 +1933,20 @@ async function execute<K extends CommandName>(
       positive(c.acceptedAmount);
       ensure(
         a.role === "owner" || a.capabilities.verifyOnline !== false,
-        "Manager or Owner permission required to confirm cash handovers",
+        "Manager or Owner permission required to confirm handovers",
         "FORBIDDEN",
         403,
       );
+
+      const isOnline = c.method === "online";
+      const acc = await account(t, a, c.accountId, isOnline ? "bank" : "cash");
 
       // Support direct salesmanId acceptance as well as handoverId acceptance
       let salesmanId = c.salesmanId;
       let handoverRecordId = c.handoverId;
       let originalHandoverAmount = c.acceptedAmount;
 
-      if (c.handoverId) {
+      if (c.handoverId && !c.handoverId.startsWith("online-")) {
         const [existingHandover] = await rows(
           t,
           sql`select * from cash_handovers where org=${a.org} and id=${c.handoverId} limit 1`,
@@ -1926,23 +1978,74 @@ async function execute<K extends CommandName>(
         }
       }
 
-      if (!handoverRecordId) {
+      if (!handoverRecordId || handoverRecordId.startsWith("online-")) {
         handoverRecordId = crypto.randomUUID();
       }
 
-      ensure(salesmanId, "Salesman ID is required to accept cash handover");
+      ensure(salesmanId, "Salesman ID is required to accept handover");
       const salesman = await scoped(t, a, "salesmen", salesmanId);
-      const acc = await account(t, a, c.accountId, "cash");
 
-      const isDirect = isDirectRouteSalesman(salesman as { name?: string | null; details?: unknown });
-      const creditAccount = isDirect
-        ? `transit:salesman:${salesmanId}`
-        : trade(salesmanId);
+      let creditAccount: string;
+      let debitAccount = cash(c.accountId);
+      let sourceAccName = "";
 
+      let resolvedSourceId = c.sourceAccountId;
+      if (isOnline) {
+        if (!resolvedSourceId) {
+          const [mudhasirBank] = await rows<{ id: string; name: string }>(
+            t,
+            sql`select id, name from money_accounts where org=${a.org} and active=true and type='bank' and (name ilike '%mudhasir%' or name ilike '%mubashir%' or holder ilike '%mudhasir%' or holder ilike '%mubashir%') limit 1`,
+          );
+          if (mudhasirBank) resolvedSourceId = mudhasirBank.id;
+        }
+        ensure(resolvedSourceId, "Source bank account is required for online handover");
+        const srcAcc = await account(t, a, resolvedSourceId, "bank");
+        sourceAccName = srcAcc.name;
+        creditAccount = cash(resolvedSourceId);
+      } else {
+        const isDirect = isDirectRouteSalesman(salesman as { name?: string | null; details?: unknown });
+        if (isDirect) {
+          if (!resolvedSourceId) {
+            const [mudhasirCash] = await rows<{ id: string; name: string }>(
+              t,
+              sql`select id, name from money_accounts where org=${a.org} and active=true and type='cash' and (name ilike '%mudhasir%' or name ilike '%mubashir%' or holder ilike '%mudhasir%' or holder ilike '%mubashir%') limit 1`,
+            );
+            if (mudhasirCash) {
+              const [cashBal] = await rows<{ bal: string }>(
+                t,
+                sql`select coalesce(sum(debit - credit), 0)::text as bal from journal where org=${a.org} and account=${'money:' + mudhasirCash.id}`,
+              );
+              if (D(cashBal?.bal ?? "0").gt(0)) {
+                resolvedSourceId = mudhasirCash.id;
+              }
+            }
+          }
+          if (resolvedSourceId) {
+            const [cashBal] = await rows<{ bal: string }>(
+              t,
+              sql`select coalesce(sum(debit - credit), 0)::text as bal from journal where org=${a.org} and account=${'money:' + resolvedSourceId}`,
+            );
+            if (D(cashBal?.bal ?? "0").gte(D(c.acceptedAmount))) {
+              const srcAcc = await account(t, a, resolvedSourceId, "cash");
+              sourceAccName = srcAcc.name;
+              creditAccount = cash(resolvedSourceId);
+            } else {
+              creditAccount = `transit:salesman:${salesmanId}`;
+              resolvedSourceId = undefined;
+            }
+          } else {
+            creditAccount = `transit:salesman:${salesmanId}`;
+          }
+        } else {
+          creditAccount = trade(salesmanId);
+        }
+      }
+
+      const isTransfer = isOnline || Boolean(sourceAccName);
       const r = await post(
         t,
         a,
-        "receipt",
+        isTransfer ? "transfer" : "receipt",
         date,
         money(c.acceptedAmount),
         {
@@ -1950,36 +2053,44 @@ async function execute<K extends CommandName>(
           isHandoverConfirmation: true,
           salesmanId,
           accountId: c.accountId,
-          method: "cash",
+          sourceAccountId: resolvedSourceId || undefined,
+          sourceId: resolvedSourceId || undefined,
+          destinationId: isTransfer ? c.accountId : undefined,
+          method: isOnline ? "online" : "cash",
           actualDate: date,
-          reference: `Cash handover confirmed (₹${money(c.acceptedAmount)})`,
+          reference: isOnline
+            ? `Route online collection transfer confirmed (₹${money(c.acceptedAmount)})`
+            : `Cash handover confirmed (₹${money(c.acceptedAmount)})`,
           accountName: acc.name,
+          sourceAccountName: sourceAccName || undefined,
           salesmanName: salesman.name,
           managerNote: c.managerNote,
           originalHandoverAmount,
           isPartial: D(c.acceptedAmount).lt(D(originalHandoverAmount)),
         },
         [
-          { account: cash(c.accountId), debit: c.acceptedAmount },
+          { account: debitAccount, debit: c.acceptedAmount },
           { account: creditAccount, credit: c.acceptedAmount },
         ],
         salesmanId,
       );
 
-      const [existingRecord] = await rows(
-        t,
-        sql`select id from cash_handovers where id=${handoverRecordId} and org=${a.org} limit 1`,
-      );
+      if (!isOnline) {
+        const [existingRecord] = await rows(
+          t,
+          sql`select id from cash_handovers where id=${handoverRecordId} and org=${a.org} limit 1`,
+        );
 
-      if (existingRecord) {
-        await t.execute(
-          sql`update cash_handovers set status='confirmed', accepted_amount=${c.acceptedAmount}, document_id=${r.id}, manager_note=${c.managerNote ?? null}, verified_by=${a.id}, verified_at=now() where id=${handoverRecordId} and org=${a.org}`,
-        );
-      } else {
-        await t.execute(
-          sql`insert into cash_handovers(id, org, salesman_id, amount, accepted_amount, date, status, manager_note, document_id, actor, verified_by, verified_at)
-              values(${handoverRecordId}, ${a.org}, ${salesmanId}, ${c.acceptedAmount}, ${c.acceptedAmount}, ${date}, 'confirmed', ${c.managerNote ?? null}, ${r.id}, ${a.id}, ${a.id}, now())`,
-        );
+        if (existingRecord) {
+          await t.execute(
+            sql`update cash_handovers set status='confirmed', accepted_amount=${c.acceptedAmount}, document_id=${r.id}, manager_note=${c.managerNote ?? null}, verified_by=${a.id}, verified_at=now() where id=${handoverRecordId} and org=${a.org}`,
+          );
+        } else {
+          await t.execute(
+            sql`insert into cash_handovers(id, org, salesman_id, amount, accepted_amount, date, status, manager_note, document_id, actor, verified_by, verified_at)
+                values(${handoverRecordId}, ${a.org}, ${salesmanId}, ${c.acceptedAmount}, ${c.acceptedAmount}, ${date}, 'confirmed', ${c.managerNote ?? null}, ${r.id}, ${a.id}, ${a.id}, now())`,
+          );
+        }
       }
 
       await allocate(t, a, salesmanId);

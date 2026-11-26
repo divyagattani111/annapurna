@@ -137,14 +137,14 @@ app.get("/api/v1/public/documents/:id", async (c) => {
     ),
     d.salesman_id
       ? rows(
-          db,
-          sql`select id, amount, actual_date, reference, state from receipt_claims where org=${d.org} and salesman_id=${d.salesman_id} and state = 'pending' order by actual_date desc`,
-        )
+        db,
+        sql`select id, amount, actual_date, reference, state from receipt_claims where org=${d.org} and salesman_id=${d.salesman_id} and state = 'pending' order by actual_date desc`,
+      )
       : ((d.data as Record<string, unknown> | null)?.foodsSalesmanId
         ? rows(
-            db,
-            sql`select id, amount, actual_date, reference, state from receipt_claims where org=${d.org} and foods_salesman_id=${(d.data as Record<string, unknown>).foodsSalesmanId as string} and state = 'pending' order by actual_date desc`,
-          )
+          db,
+          sql`select id, amount, actual_date, reference, state from receipt_claims where org=${d.org} and foods_salesman_id=${(d.data as Record<string, unknown>).foodsSalesmanId as string} and state = 'pending' order by actual_date desc`,
+        )
         : Promise.resolve([])),
   ]);
 
@@ -492,6 +492,24 @@ app.get("/api/v1/dashboard", async (c) =>
                 ) 
               limit 1
             ),
+            mudhasir_cash_account as (
+              select id, name, holder from money_accounts
+              where org = ${a.org}
+                and active = true
+                and type = 'cash'
+                and (name ilike '%mudhasir%' or name ilike '%mubashir%' or holder ilike '%mudhasir%' or holder ilike '%mubashir%')
+              limit 1
+            ),
+            cash_account_balance as (
+              select 
+                coalesce(sum(j.debit - j.credit), 0) as bal,
+                max(d.created_at) as last_transacted_at
+              from journal j
+              join documents d on d.id = j.document_id
+              where j.org = ${a.org}
+                and j.account = 'money:' || (select id from mudhasir_cash_account)
+                and not exists(select 1 from documents rev where rev.org = ${a.org} and rev.reverses = d.id)
+            ),
             collections as (
               select 
                 d.salesman_id,
@@ -518,22 +536,60 @@ app.get("/api/v1/dashboard", async (c) =>
               group by salesman_id
             )
             select 
-              s.id as id,
+              s.id::text as id,
               s.id as salesman_id,
               s.name as salesman_name,
               s.code as salesman_code,
-              (coalesce(c.amt, 0) - coalesce(h.amt, 0))::numeric(18,2)::text as amount,
+              greatest((coalesce(c.amt, 0) - coalesce(h.amt, 0)), coalesce((select bal from cash_account_balance), 0))::numeric(18,2)::text as amount,
               'pending' as status,
+              'cash' as collection_type,
+              (select id from mudhasir_cash_account) as source_account_id,
+              (select name from mudhasir_cash_account) as source_account_name,
               'Route cash collected by Mudhasir awaiting manager confirmation into till' as salesman_note,
-              c.last_collected_at::text as created_at,
+              coalesce((select last_transacted_at::text from cash_account_balance), c.last_collected_at::text, now()::text) as created_at,
               ${date}::text as date
             from salesmen s
             join mudashir_salesman m on m.id = s.id
             left join collections c on c.salesman_id = s.id
             left join confirmed h on h.salesman_id = s.id
             where s.org = ${a.org} and s.active = true
-              and (coalesce(c.amt, 0) - coalesce(h.amt, 0)) > 0
-            order by (coalesce(c.amt, 0) - coalesce(h.amt, 0)) desc limit 100
+              and greatest((coalesce(c.amt, 0) - coalesce(h.amt, 0)), coalesce((select bal from cash_account_balance), 0)) > 0
+            union all
+            select 
+              ('online-' || macc.id)::text as id,
+              s.id as salesman_id,
+              s.name as salesman_name,
+              s.code as salesman_code,
+              ob.bal::numeric(18,2)::text as amount,
+              'pending' as status,
+              'online' as collection_type,
+              macc.id as source_account_id,
+              macc.name as source_account_name,
+              ('Route online collections in ' || macc.name || ' awaiting transfer to manager bank') as salesman_note,
+              coalesce(ob.last_transacted_at, now())::text as created_at,
+              ${date}::text as date
+            from salesmen s
+            join mudashir_salesman ms on ms.id = s.id
+            cross join lateral (
+              select id, name, holder from money_accounts
+              where org = ${a.org}
+                and active = true
+                and type = 'bank'
+                and (name ilike '%mudhasir%' or name ilike '%mubashir%' or holder ilike '%mudhasir%' or holder ilike '%mubashir%')
+              limit 1
+            ) macc
+            cross join lateral (
+              select 
+                coalesce(sum(j.debit - j.credit), 0) as bal,
+                max(d.created_at) as last_transacted_at
+              from journal j
+              join documents d on d.id = j.document_id
+              where j.org = ${a.org}
+                and j.account = 'money:' || macc.id
+                and not exists(select 1 from documents rev where rev.org = ${a.org} and rev.reverses = d.id)
+            ) ob
+            where s.org = ${a.org} and s.active = true and ob.bal > 0
+            order by amount desc limit 100
           `,
         ),
       ]);
@@ -546,7 +602,110 @@ app.get("/api/v1/dashboard", async (c) =>
     }
     const [summary] = await rows(
       t,
-      sql`with events as (select kind,coalesce(data->>'method','') method,amount,data from documents where org=${a.org} and business_date=${date} and reverses is null union all select o.kind,coalesce(o.data->>'method','') method,-d.amount,o.data from documents d join lateral(select kind,data from documents x where x.id=d.reverses limit 1)o on true where d.org=${a.org} and d.business_date=${date} and d.reverses is not null) select coalesce(sum(amount) filter(where (kind in ('receipt','identify') or kind='foods_receipt') and coalesce(data->>'isHandoverConfirmation', 'false') != 'true' and not (data ? 'reference' and data->>'reference' like 'Cash handover confirmed%')),0)::numeric(18,2)::text collections,coalesce(sum(case when kind='foods_receipt' and method='cash' then amount when kind='foods_receipt' and method='' then coalesce((data->>'cashAmount')::numeric, 0) else (case when kind='receipt' and method='cash' and coalesce(data->>'isHandoverConfirmation', 'false') != 'true' and not (data ? 'reference' and data->>'reference' like 'Cash handover confirmed%') then amount else 0 end) end),0)::numeric(18,2)::text cash_collections,coalesce(sum(case when kind='foods_receipt' and method='online' then amount when kind='foods_receipt' and method='' then coalesce((data->>'bankAmount')::numeric, 0) else (case when (kind='receipt' and method='online') or kind='identify' then amount else 0 end) end),0)::numeric(18,2)::text online_collections,coalesce(sum(amount) filter(where kind in ('expense','salary')),0)::numeric(18,2)::text expenses,coalesce(sum(amount) filter(where kind='loan'),0)::numeric(18,2)::text loans,coalesce(sum(amount) filter(where kind in ('expense','salary','loan')),0)::numeric(18,2)::text expenses_and_loans,coalesce(sum(amount) filter(where kind='return'),0)::numeric(18,2)::text returns from events`,
+      sql`
+        with primary_accounts as (
+          select 
+            coalesce(
+              (select id from money_accounts where org = ${a.org} and active = true and type = 'cash' and (name ilike '%demo manager cash%' or (name not ilike '%mudhasir%' and name not ilike '%mubashir%')) order by case when name ilike '%demo manager cash%' then 0 else 1 end limit 1),
+              (select id from money_accounts where org = ${a.org} and active = true and type = 'cash' limit 1)
+            ) as manager_cash_id,
+            coalesce(
+              (select id from money_accounts where org = ${a.org} and active = true and type = 'bank' and (name ilike '%demo receiving bank%' or (name not ilike '%mudhasir%' and name not ilike '%mubashir%')) order by case when name ilike '%demo receiving bank%' then 0 else 1 end limit 1),
+              (select id from money_accounts where org = ${a.org} and active = true and type = 'bank' limit 1)
+            ) as receiving_bank_id
+        ),
+        inflows_calc as (
+          select
+            coalesce(sum(case 
+              when j.account = 'money:' || pa.manager_cash_id::text then
+                case 
+                  when d.kind = 'reversal' then
+                    case when exists(
+                      select 1 from journal oj 
+                      join documents od on od.id = oj.document_id 
+                      where oj.document_id = d.reverses 
+                        and oj.org = ${a.org} 
+                        and oj.account = j.account 
+                        and oj.debit > 0
+                        and not (
+                          od.kind in ('transfer', 'deposit') 
+                          and coalesce(od.data->>'sourceId','') in (pa.manager_cash_id::text, pa.receiving_bank_id::text)
+                          and coalesce(od.data->>'destinationId','') in (pa.manager_cash_id::text, pa.receiving_bank_id::text)
+                        )
+                    ) then -j.credit else 0 end
+                  when d.kind in ('transfer', 'deposit') and (
+                    coalesce(d.data->>'sourceId','') in (pa.manager_cash_id::text, pa.receiving_bank_id::text)
+                    and coalesce(d.data->>'destinationId','') in (pa.manager_cash_id::text, pa.receiving_bank_id::text)
+                  ) then 0
+                  else j.debit
+                end
+              else 0
+            end), 0) as cash_inflows,
+            coalesce(sum(case 
+              when j.account = 'money:' || pa.receiving_bank_id::text then
+                case 
+                  when d.kind = 'reversal' then
+                    case when exists(
+                      select 1 from journal oj 
+                      join documents od on od.id = oj.document_id 
+                      where oj.document_id = d.reverses 
+                        and oj.org = ${a.org} 
+                        and oj.account = j.account 
+                        and oj.debit > 0
+                        and not (
+                          od.kind in ('transfer', 'deposit') 
+                          and coalesce(od.data->>'sourceId','') in (pa.manager_cash_id::text, pa.receiving_bank_id::text)
+                          and coalesce(od.data->>'destinationId','') in (pa.manager_cash_id::text, pa.receiving_bank_id::text)
+                        )
+                        and not (
+                          od.kind = 'resolveDeposit'
+                          and exists(select 1 from documents dep where dep.id = (od.data->>'depositId')::uuid and coalesce(dep.data->>'sourceId','') = pa.manager_cash_id::text)
+                        )
+                    ) then -j.credit else 0 end
+                  when d.kind in ('transfer', 'deposit') and (
+                    coalesce(d.data->>'sourceId','') in (pa.manager_cash_id::text, pa.receiving_bank_id::text)
+                    and coalesce(d.data->>'destinationId','') in (pa.manager_cash_id::text, pa.receiving_bank_id::text)
+                  ) then 0
+                  when d.kind = 'resolveDeposit' and exists(
+                    select 1 from documents dep where dep.id = (d.data->>'depositId')::uuid and coalesce(dep.data->>'sourceId','') = pa.manager_cash_id::text
+                  ) then 0
+                  else j.debit
+                end
+              else 0
+            end), 0) as bank_inflows
+          from journal j
+          join documents d on d.id = j.document_id
+          cross join primary_accounts pa
+          where j.org = ${a.org}
+            and d.business_date = ${date}::date
+            and (
+              (pa.manager_cash_id is not null and j.account = 'money:' || pa.manager_cash_id::text)
+              or (pa.receiving_bank_id is not null and j.account = 'money:' || pa.receiving_bank_id::text)
+            )
+        ),
+        events as (
+          select kind, coalesce(data->>'method','') method, amount, data 
+          from documents 
+          where org=${a.org} and business_date=${date} and reverses is null 
+          union all 
+          select o.kind, coalesce(o.data->>'method','') method, -d.amount, o.data 
+          from documents d 
+          join lateral(select kind, data from documents x where x.id=d.reverses limit 1) o on true 
+          where d.org=${a.org} and d.business_date=${date} and d.reverses is not null
+        ) 
+        select 
+          (select (cash_inflows + bank_inflows)::numeric(18,2)::text from inflows_calc) as collections,
+          (select cash_inflows::numeric(18,2)::text from inflows_calc) as cash_collections,
+          (select bank_inflows::numeric(18,2)::text from inflows_calc) as online_collections,
+          (select (cash_inflows + bank_inflows)::numeric(18,2)::text from inflows_calc) as total_inflows,
+          (select cash_inflows::numeric(18,2)::text from inflows_calc) as cash_inflows,
+          (select bank_inflows::numeric(18,2)::text from inflows_calc) as bank_inflows,
+          coalesce(sum(amount) filter(where kind in ('expense','salary')),0)::numeric(18,2)::text expenses,
+          coalesce(sum(amount) filter(where kind='loan'),0)::numeric(18,2)::text loans,
+          coalesce(sum(amount) filter(where kind in ('expense','salary','loan')),0)::numeric(18,2)::text expenses_and_loans,
+          coalesce(sum(amount) filter(where kind='return'),0)::numeric(18,2)::text returns 
+        from events
+      `,
     );
     const cashSummary = await rows(
       t,
@@ -950,19 +1109,19 @@ app.get("/api/v1/documents/:id", async (c) =>
     const shareToken = getDocumentShareToken(String(d.id));
     const childReceipts = d.kind === "bill"
       ? await rows<{
-          id: string;
-          number: string;
-          kind: string;
-          amount: string;
-          method: string;
-          is_reversed: boolean;
-          reversal_id: string | null;
-          reversal_number: string | null;
-          business_date: string;
-          created_at: string;
-        }>(
-          t,
-          sql`
+        id: string;
+        number: string;
+        kind: string;
+        amount: string;
+        method: string;
+        is_reversed: boolean;
+        reversal_id: string | null;
+        reversal_number: string | null;
+        business_date: string;
+        created_at: string;
+      }>(
+        t,
+        sql`
             select 
               r.id,
               r.number,
@@ -980,18 +1139,18 @@ app.get("/api/v1/documents/:id", async (c) =>
               and r.data->>'billId' = ${recordId}
             order by r.created_at asc, r.number asc
           `,
-        )
+      )
       : [];
     const openClaims = d.salesman_id
       ? await rows(
-          t,
-          sql`select id, amount, actual_date, reference, state from receipt_claims where org=${a.org} and salesman_id=${d.salesman_id} and state = 'pending' order by actual_date desc`,
-        )
+        t,
+        sql`select id, amount, actual_date, reference, state from receipt_claims where org=${a.org} and salesman_id=${d.salesman_id} and state = 'pending' order by actual_date desc`,
+      )
       : ((d.data as Record<string, unknown> | null)?.foodsSalesmanId
         ? await rows(
-            t,
-            sql`select id, amount, actual_date, reference, state from receipt_claims where org=${a.org} and foods_salesman_id=${(d.data as Record<string, unknown>).foodsSalesmanId as string} and state = 'pending' order by actual_date desc`,
-          )
+          t,
+          sql`select id, amount, actual_date, reference, state from receipt_claims where org=${a.org} and foods_salesman_id=${(d.data as Record<string, unknown>).foodsSalesmanId as string} and state = 'pending' order by actual_date desc`,
+        )
         : []);
     return c.json({ ...d, shareToken, lines, entries, allocations, attachments, openClaims, childReceipts });
   }),
@@ -1082,13 +1241,13 @@ app.post("/api/v1/drafts", async (c) => {
   if (draftId) {
     const [updated] = draftVersion
       ? await rows<{ id: string; version: number }>(
-          db,
-          sql`update drafts set data=${JSON.stringify(p.data)}::jsonb,version=version+1,actor=${a.id} where id=${draftId} and org=${a.org} and version=${draftVersion} returning id,version`,
-        )
+        db,
+        sql`update drafts set data=${JSON.stringify(p.data)}::jsonb,version=version+1,actor=${a.id} where id=${draftId} and org=${a.org} and version=${draftVersion} returning id,version`,
+      )
       : await rows<{ id: string; version: number }>(
-          db,
-          sql`update drafts set data=${JSON.stringify(p.data)}::jsonb,version=version+1,actor=${a.id} where id=${draftId} and org=${a.org} returning id,version`,
-        );
+        db,
+        sql`update drafts set data=${JSON.stringify(p.data)}::jsonb,version=version+1,actor=${a.id} where id=${draftId} and org=${a.org} returning id,version`,
+      );
     if (updated) {
       r = updated;
     } else {
@@ -2297,6 +2456,7 @@ app.get("/api/v1/direct-cig/summary", async (c) => {
   // Calculate cash currently in hand with this salesman:
   // Total cash collected from customers minus total cash handed over & confirmed to manager
   let cashInHand = "0.00";
+  let onlineInAccount = "0.00";
   let pendingHandoverAmount = "0.00";
   let handoversList: Array<{
     id: string;
@@ -2345,7 +2505,35 @@ app.get("/api/v1/direct-cig/summary", async (c) => {
     const collected = D(cashSummary?.total_cash_collected ?? "0");
     const confirmed = D(cashSummary?.total_cash_confirmed ?? "0");
     const netInHand = collected.minus(confirmed);
-    cashInHand = netInHand.gte(0) ? money(netInHand) : "0.00";
+    let finalCashInHand = netInHand.gte(0) ? netInHand : D(0);
+    const [mudhasirCashAcc] = await rows<{ id: string }>(
+      db,
+      sql`select id from money_accounts where org=${a.org} and active=true and type='cash' and (name ilike '%mudhasir%' or name ilike '%mubashir%' or holder ilike '%mudhasir%' or holder ilike '%mubashir%') limit 1`,
+    );
+    if (mudhasirCashAcc) {
+      const [mcb] = await rows<{ bal: string }>(
+        db,
+        sql`select coalesce(sum(debit - credit), 0)::text as bal from journal j join documents d on d.id = j.document_id where j.org=${a.org} and j.account=${'money:' + mudhasirCashAcc.id} and not exists(select 1 from documents rev where rev.org=${a.org} and rev.reverses=d.id)`,
+      );
+      if (mcb && D(mcb.bal).gt(finalCashInHand)) {
+        finalCashInHand = D(mcb.bal);
+      }
+    }
+    cashInHand = money(finalCashInHand);
+    onlineInAccount = "0.00";
+    const [mudhasirBankAcc] = await rows<{ id: string }>(
+      db,
+      sql`select id from money_accounts where org=${a.org} and active=true and type='bank' and (name ilike '%mudhasir%' or name ilike '%mubashir%' or holder ilike '%mudhasir%' or holder ilike '%mubashir%') limit 1`,
+    );
+    if (mudhasirBankAcc) {
+      const [mob] = await rows<{ bal: string }>(
+        db,
+        sql`select coalesce(sum(debit - credit), 0)::text as bal from journal j join documents d on d.id = j.document_id where j.org=${a.org} and j.account=${'money:' + mudhasirBankAcc.id} and not exists(select 1 from documents rev where rev.org=${a.org} and rev.reverses=d.id)`,
+      );
+      if (mob && D(mob.bal).gt(0)) {
+        onlineInAccount = money(mob.bal);
+      }
+    }
     pendingHandoverAmount = "0.00";
 
     handoversList = await rows(
@@ -2379,6 +2567,7 @@ app.get("/api/v1/direct-cig/summary", async (c) => {
       totalQty: docStats?.total_qty ?? "0",
       todayQty: docStats?.today_qty ?? "0",
       cashInHand,
+      onlineInAccount,
       pendingHandoverAmount,
     },
     handovers: handoversList,

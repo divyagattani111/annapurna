@@ -921,95 +921,125 @@ function Dashboard({
   const [closeError, setCloseError] = useState("");
   const [closeSuccess, setCloseSuccess] = useState("");
 
-  // Inbound Cash Handovers state on Dashboard
+  // Inbound Route Collections state on Dashboard
   const pendingHandovers = arr(d.pendingHandovers);
-  const [reviewingHandover, setReviewingHandover] = useState<Row | null>(null);
-  const [handoverActionType, setHandoverActionType] = useState<"accept" | "reject">("accept");
-  const [handoverAcceptedAmount, setHandoverAcceptedAmount] = useState("");
-  const [handoverAccountId, setHandoverAccountId] = useState("");
-  const [handoverNote, setHandoverNote] = useState("");
+  const pendingCashItem = pendingHandovers.find((h) => str(h.collection_type) !== "online");
+  const pendingOnlineItem = pendingHandovers.find((h) => str(h.collection_type) === "online");
+  const pendingCashAmt = pendingCashItem ? cleanMoney(str(pendingCashItem.amount)) || "0" : "0";
+  const pendingOnlineAmt = pendingOnlineItem ? cleanMoney(str(pendingOnlineItem.amount)) || "0" : "0";
+  const totalPendingAmt = D(pendingCashAmt).plus(D(pendingOnlineAmt)).toFixed(2);
+
+  const [isReceivingOpen, setIsReceivingOpen] = useState(false);
+  const [settleCashAmount, setSettleCashAmount] = useState("");
+  const [settleOnlineAmount, setSettleOnlineAmount] = useState("");
+  const [settleNote, setSettleNote] = useState("");
   const [handoverBusy, setHandoverBusy] = useState(false);
   const [handoverError, setHandoverError] = useState("");
   const [handoverSuccess, setHandoverSuccess] = useState("");
 
-  const defaultHandoverCashAccount = str(cash[0]?.id ?? "");
+  const defaultHandoverCashAccount = str(
+    cash.find(
+      (c) =>
+        !str(c.name).toLowerCase().includes("mudhasir") &&
+        !str(c.name).toLowerCase().includes("mubashir"),
+    )?.id ??
+    cash[0]?.id ??
+    "",
+  );
+  const defaultHandoverBankAccount = str(
+    banks.find(
+      (b) =>
+        !str(b.name).toLowerCase().includes("mudhasir") &&
+        !str(b.name).toLowerCase().includes("mubashir"),
+    )?.id ??
+    banks[0]?.id ??
+    "",
+  );
 
-  const openAcceptHandover = (h: Row) => {
-    setReviewingHandover(h);
-    setHandoverActionType("accept");
-    setHandoverAcceptedAmount(str(h.amount));
-    setHandoverAccountId(defaultHandoverCashAccount);
-    setHandoverNote("");
+  const openConsolidatedReceive = () => {
+    setSettleCashAmount(pendingCashAmt);
+    setSettleOnlineAmount(pendingOnlineAmt);
+    setSettleNote("");
     setHandoverError("");
     setHandoverSuccess("");
+    setIsReceivingOpen(true);
   };
 
-  const handleConfirmHandover = async () => {
-    if (!reviewingHandover) return;
-    const targetAccountId = handoverAccountId || defaultHandoverCashAccount;
-    if (!targetAccountId) {
-      setHandoverError("Please select a physical cash till account.");
+  const handleConfirmConsolidatedReceive = async () => {
+    const cashAmtNum = parseMoneyNumber(settleCashAmount);
+    const onlineAmtNum = parseMoneyNumber(settleOnlineAmount);
+
+    const hasCash = !isNaN(cashAmtNum) && cashAmtNum > 0;
+    const hasOnline = !isNaN(onlineAmtNum) && onlineAmtNum > 0;
+
+    if (!hasCash && !hasOnline) {
+      setHandoverError("Please enter a valid cash or online amount to receive.");
       return;
     }
-    const enteredAmt = parseMoneyNumber(handoverAcceptedAmount);
-    const maxAmt = parseMoneyNumber(reviewingHandover.amount);
-    if (isNaN(enteredAmt) || enteredAmt <= 0) {
-      setHandoverError("Please enter a valid accepted cash amount.");
-      return;
-    }
-    if (enteredAmt > maxAmt) {
-      setHandoverError(`Accepted amount cannot exceed the handed over amount of ${rupees(reviewingHandover.amount)}.`);
-      return;
-    }
+
     setHandoverBusy(true);
     setHandoverError("");
+    setHandoverSuccess("");
+
     try {
-      await api(
-        "commands/confirmCashHandover",
-        commandResult,
-        {
-          handoverId: str(reviewingHandover.id),
-          acceptedAmount: cleanMoney(handoverAcceptedAmount),
-          accountId: targetAccountId,
-          date: str(d.date),
-          managerNote: handoverNote.trim() || undefined,
-        },
-        "POST",
-        crypto.randomUUID(),
-      );
+      const messages: string[] = [];
+
+      // 1. Confirm Cash into physical drawer
+      if (hasCash) {
+        if (!defaultHandoverCashAccount) {
+          throw new Error("No default manager cash till account found.");
+        }
+        await api(
+          "commands/confirmCashHandover",
+          commandResult,
+          {
+            handoverId: pendingCashItem ? str(pendingCashItem.id) : undefined,
+            salesmanId: pendingCashItem ? str(pendingCashItem.salesman_id) : undefined,
+            acceptedAmount: cleanMoney(settleCashAmount),
+            accountId: defaultHandoverCashAccount,
+            sourceAccountId: pendingCashItem?.source_account_id
+              ? str(pendingCashItem.source_account_id)
+              : undefined,
+            method: "cash",
+            date: str(d.date),
+            managerNote: settleNote.trim() || "Route cash received into drawer",
+          },
+          "POST",
+          crypto.randomUUID(),
+        );
+        messages.push(`${rupees(cashAmtNum.toFixed(2))} cash into drawer`);
+      }
+
+      // 2. Confirm Online transfer into receiving bank
+      if (hasOnline) {
+        if (!defaultHandoverBankAccount) {
+          throw new Error("No default manager receiving bank account found.");
+        }
+        await api(
+          "commands/confirmCashHandover",
+          commandResult,
+          {
+            handoverId: pendingOnlineItem ? str(pendingOnlineItem.id) : undefined,
+            salesmanId: pendingOnlineItem ? str(pendingOnlineItem.salesman_id) : undefined,
+            acceptedAmount: cleanMoney(settleOnlineAmount),
+            accountId: defaultHandoverBankAccount,
+            sourceAccountId: pendingOnlineItem?.source_account_id
+              ? str(pendingOnlineItem.source_account_id)
+              : undefined,
+            method: "online",
+            date: str(d.date),
+            managerNote: settleNote.trim() || "Route online collections transferred into bank",
+          },
+          "POST",
+          crypto.randomUUID(),
+        );
+        messages.push(`${rupees(onlineAmtNum.toFixed(2))} online into receiving bank`);
+      }
+
       setHandoverSuccess(
-        `Successfully accepted ${rupees(enteredAmt.toFixed(2))} cash into physical drawer!`
+        `Successfully received ${messages.join(" and ")}!`,
       );
-      setReviewingHandover(null);
-      await qc.invalidateQueries();
-    } catch (err: unknown) {
-      setHandoverError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setHandoverBusy(false);
-    }
-  };
-
-  const handleRejectHandover = async () => {
-    if (!reviewingHandover) return;
-    if (!handoverNote.trim() || handoverNote.trim().length < 3) {
-      setHandoverError("Please enter a reason for rejecting the handover (at least 3 characters).");
-      return;
-    }
-    setHandoverBusy(true);
-    setHandoverError("");
-    try {
-      await api(
-        "commands/rejectCashHandover",
-        commandResult,
-        {
-          handoverId: str(reviewingHandover.id),
-          reason: handoverNote.trim(),
-        },
-        "POST",
-        crypto.randomUUID(),
-      );
-      setHandoverSuccess("Cash handover rejected.");
-      setReviewingHandover(null);
+      setIsReceivingOpen(false);
       await qc.invalidateQueries();
     } catch (err: unknown) {
       setHandoverError(err instanceof Error ? err.message : String(err));
@@ -1099,9 +1129,9 @@ function Dashboard({
   const mudashirDues = seg.mubashir_dues ?? "0.00";
 
   const summary = (d.summary as Row) ?? {};
-  const cashRec = summary.cash_collections ?? "0.00";
-  const onlineRec = summary.online_collections ?? "0.00";
-  const totalRec = summary.collections ?? D(str(cashRec)).plus(D(str(onlineRec))).toFixed(2);
+  const cashRec = summary.cash_inflows ?? summary.cash_collections ?? "0.00";
+  const onlineRec = summary.bank_inflows ?? summary.online_collections ?? "0.00";
+  const totalRec = summary.total_inflows ?? summary.collections ?? D(str(cashRec)).plus(D(str(onlineRec))).toFixed(2);
   const expensesAndLoans = summary.expenses_and_loans ?? D(str(summary.expenses ?? "0.00")).plus(D(str(summary.loans ?? "0.00"))).toFixed(2);
   const expensesOnly = summary.expenses ?? "0.00";
   const loansOnly = summary.loans ?? "0.00";
@@ -1139,16 +1169,16 @@ function Dashboard({
           tone="expense"
         />
         <Metric
-          label="Todays Cig Sales (Retail + Mudashir)"
+          label="Todays Sales"
           value={todayBilled}
           caption={`Retail: ${rupees(todayRetailBilled)} · Mudashir: ${rupees(todayMudashirBilled)}`}
           icon={FileText}
           tone="bills"
         />
         <Metric
-          label="Todays Received (Cash + Online)"
+          label="Todays Total Inflows"
           value={totalRec}
-          caption={`Cash: ${rupees(cashRec)} · Online: ${rupees(onlineRec)}`}
+          caption={`Cash: ${rupees(cashRec)} · Bank: ${rupees(onlineRec)}`}
           icon={IndianRupee}
           tone="cash"
         />
@@ -1415,8 +1445,8 @@ function Dashboard({
           <section className="panel inbound-handovers-panel" style={{ minHeight: "auto", margin: 0, padding: "16px 20px" }}>
             <div className="section-title" style={{ marginBottom: 12 }}>
               <div>
-                <h2 style={{ fontSize: 17, margin: 0 }}>Inbound Cash from Mudhasir (Route Collections)</h2>
-                <p className="cash-subtitle" style={{ fontSize: 12, margin: "2px 0 0" }}>Direct field cash collections awaiting manager verification into till</p>
+                <h2 style={{ fontSize: 17, margin: 0 }}>Inbound Collections from Mudhasir (Route Collections)</h2>
+                <p className="cash-subtitle" style={{ fontSize: 12, margin: "2px 0 0" }}>Direct field collections (cash & online UPI) awaiting manager verification into till or bank</p>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span className="badge" style={{ background: pendingHandovers.length > 0 ? "#dbeafe" : "#e2e8f0", color: pendingHandovers.length > 0 ? "#1e40af" : "#475569", fontWeight: 700, fontSize: 11, padding: "3px 8px" }}>
@@ -1439,14 +1469,14 @@ function Dashboard({
 
             {pendingHandovers.length === 0 ? (
               <div style={{ padding: "24px 16px", textAlign: "center", color: "#64748b", background: "#f8fafc", borderRadius: 12, border: "1px dashed #cbd5e1" }}>
-                <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#166534" }}>✓ All Mudhasir route collections received into till.</p>
-                <small style={{ color: "#94a3b8", fontSize: 12, marginTop: 2, display: "block" }}>No pending route cash awaiting manager count.</small>
+                <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#166534" }}>✓ All Mudhasir route collections received.</p>
+                <small style={{ color: "#94a3b8", fontSize: 12, marginTop: 2, display: "block" }}>No pending route cash or online collections awaiting manager confirmation.</small>
               </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {pendingHandovers.map((h) => {
                   const hId = str(h.id);
-                  const isSelected = reviewingHandover && str(reviewingHandover.id) === hId;
+                  const isOnline = str(h.collection_type) === "online";
                   return (
                     <div
                       className="drawer-card compact-drawer-card"
@@ -1454,14 +1484,9 @@ function Dashboard({
                       style={{
                         padding: "10px 14px",
                         borderRadius: 10,
-                        marginBottom: 8,
+                        marginBottom: 4,
                         gap: 12,
-                        cursor: "pointer",
-                        background: isSelected ? "#f0fdf4" : undefined,
-                        borderColor: isSelected ? "#86efac" : undefined,
                       }}
-                      onClick={() => openAcceptHandover(h)}
-                      title="Click to select this route cash collection"
                     >
                       <div style={{ minWidth: 0, flex: 1 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -1472,17 +1497,20 @@ function Dashboard({
                             style={{
                               fontSize: 10,
                               fontWeight: 700,
-                              background: "#fef3c7",
-                              color: "#b45309",
+                              background: isOnline ? "#dbeafe" : "#fef3c7",
+                              color: isOnline ? "#1e40af" : "#b45309",
                               padding: "2px 6px",
                               borderRadius: 4,
                             }}
                           >
-                            IN HAND
+                            {isOnline ? "ONLINE (UPI)" : "IN HAND"}
                           </span>
                         </div>
                         <small style={{ fontSize: 12, color: "var(--dashboard-muted)", display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {h.salesman_note ? str(h.salesman_note) : "Route collection"}{h.date ? ` · ${dateLabel(h.date)}` : ""}
+                          {isOnline
+                            ? "Mudhasir online account ➔ Demo receiving bank"
+                            : "Mudhasir cash account ➔ Demo manager cash"}
+                          {h.date ? ` · ${dateLabel(h.date)}` : ""}
                         </small>
                       </div>
 
@@ -1490,7 +1518,7 @@ function Dashboard({
                         <b style={{ fontSize: 18, display: "block", color: "#0f172a", fontVariantNumeric: "tabular-nums" }}>
                           {rupees(h.amount)}
                         </b>
-                        <small style={{ fontSize: 11, color: "var(--dashboard-muted)" }}>Route cash</small>
+                        <small style={{ fontSize: 11, color: "var(--dashboard-muted)" }}>{isOnline ? "Route online" : "Route cash"}</small>
                       </div>
                     </div>
                   );
@@ -1499,197 +1527,143 @@ function Dashboard({
             )}
 
             <div className="drawer-footer" style={{ flexDirection: "column", alignItems: "stretch", gap: 8, marginTop: 8, paddingTop: 10, borderTop: "1px solid #f1f5f9" }}>
-              {!reviewingHandover ? (
+              {!isReceivingOpen ? (
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                   <p style={{ margin: 0, fontSize: 12, color: "#64748b" }}>
                     {pendingHandovers.length > 0
-                      ? "Manager count required to transfer route cash into drawer."
-                      : "No pending route cash awaiting manager count."}
+                      ? "Manager count & verification required to accept route collections."
+                      : "No pending route collections awaiting manager count."}
                   </p>
                   <Button
                     className="primary"
                     disabled={handoverBusy || isDayClosed || pendingHandovers.length === 0}
-                    style={{ padding: "6px 14px", fontSize: 12 }}
-                    onClick={() => {
-                      if (pendingHandovers.length > 0) {
-                        openAcceptHandover(pendingHandovers[0]);
-                      }
-                    }}
+                    style={{ padding: "8px 18px", fontSize: 13, background: "#15803d" }}
+                    onClick={openConsolidatedReceive}
+                    title="Open settlement form to receive route cash into drawer and transfer online to receiving bank"
                   >
-                    <Check size={14} /> Receive
+                    <Check size={14} /> Receive Collections ({rupees(totalPendingAmt)})
                   </Button>
                 </div>
               ) : (
                 <div
                   style={{
-                    padding: 12,
-                    background: handoverActionType === "accept" ? "#f0fdf4" : "#fef2f2",
-                    border: handoverActionType === "accept" ? "1px solid #86efac" : "1px solid #fca5a5",
-                    borderRadius: 8,
+                    padding: 14,
+                    background: "#f0fdf4",
+                    border: "1px solid #86efac",
+                    borderRadius: 10,
                   }}
                 >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                    <strong style={{ fontSize: 13, color: handoverActionType === "accept" ? "#166534" : "#991b1b" }}>
-                      {handoverActionType === "accept"
-                        ? `Accept Cash Handover from ${str(reviewingHandover.salesman_name)}`
-                        : `Reject Cash Handover from ${str(reviewingHandover.salesman_name)}`}
-                    </strong>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                    <div>
+                      <strong style={{ fontSize: 14, color: "#166534" }}>
+                        Receive Route Collections from {str(pendingHandovers[0]?.salesman_name ?? "Mudhasir")}
+                      </strong>
+                      <div style={{ fontSize: 11, color: "#4b5563", marginTop: 4, display: "flex", flexWrap: "wrap", gap: 16 }}>
+                        <span>💵 Cash: <b>Mudhasir cash account ➔ Demo manager cash</b></span>
+                        <span>📱 Online: <b>Mudhasir online account ➔ Demo receiving bank</b></span>
+                      </div>
+                    </div>
                     <Button
                       type="button"
                       className="text-link"
                       style={{ fontSize: 12 }}
-                      onClick={() => setReviewingHandover(null)}
+                      onClick={() => setIsReceivingOpen(false)}
                       disabled={handoverBusy}
                     >
                       Cancel
                     </Button>
                   </div>
 
-                  {handoverActionType === "accept" ? (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      <div style={{ fontSize: 12, color: "#374151" }}>
-                        Reported route cash in hand: <b>{rupees(reviewingHandover.amount)}</b>
-                      </div>
-                      <div className="form-grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                        <Field label="Actual Counted Cash (₹) * (Supports Partial)">
-                          <input
-                            type="text"
-                            inputMode="decimal"
-                            value={handoverAcceptedAmount}
-                            onChange={(e) => setHandoverAcceptedAmount(e.target.value)}
-                            placeholder="e.g. 10000.00"
-                            required
-                            style={{ fontSize: 13, padding: "6px 10px" }}
-                          />
-                        </Field>
-                        <Field label="Target Cash Till / Account *">
-                          <select
-                            value={handoverAccountId || defaultHandoverCashAccount}
-                            onChange={(e) => setHandoverAccountId(e.target.value)}
-                            required
-                            style={{ fontSize: 13, padding: "6px 10px" }}
-                          >
-                            {cash.map((cAcc) => (
-                              <option key={str(cAcc.id)} value={str(cAcc.id)}>
-                                {str(cAcc.name)} ({str(cAcc.holder)})
-                              </option>
-                            ))}
-                          </select>
-                        </Field>
-                      </div>
-
-                      {parseMoneyNumber(handoverAcceptedAmount) < parseMoneyNumber(reviewingHandover.amount) && (
-                        <div
-                          style={{
-                            background: "#fffbeb",
-                            color: "#92400e",
-                            padding: "6px 10px",
-                            borderRadius: 6,
-                            fontSize: 12,
-                            border: "1px solid #fde68a",
-                          }}
-                        >
-                          ⚠️ Partial acceptance: You are accepting{" "}
-                          <b>{rupees(cleanMoney(handoverAcceptedAmount) || "0")}</b> out of{" "}
-                          <b>{rupees(reviewingHandover.amount)}</b>. The difference of{" "}
-                          <b>
-                            {rupees(
-                              (
-                                parseMoneyNumber(reviewingHandover.amount) -
-                                (parseMoneyNumber(handoverAcceptedAmount) || 0)
-                              ).toFixed(2),
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    <div className="form-grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                      <Field label="Actual Counted Cash (₹) * (Supports Partial)">
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={settleCashAmount}
+                          onChange={(e) => setSettleCashAmount(e.target.value)}
+                          placeholder="0.00"
+                          disabled={handoverBusy}
+                          style={{ fontSize: 13, padding: "7px 10px", fontWeight: 600 }}
+                        />
+                        {parseMoneyNumber(pendingCashAmt) > 0 && (
+                          <small style={{ color: "#64748b", fontSize: 11, marginTop: 3, display: "block" }}>
+                            Reported cash in hand: <b>{rupees(pendingCashAmt)}</b>
+                            {parseMoneyNumber(settleCashAmount) < parseMoneyNumber(pendingCashAmt) && (
+                              <span style={{ color: "#b45309", marginLeft: 4 }}>
+                                (₹{(parseMoneyNumber(pendingCashAmt) - (parseMoneyNumber(settleCashAmount) || 0)).toFixed(2)} remains with salesman)
+                              </span>
                             )}
-                          </b>{" "}
-                          remains with the salesman.
-                        </div>
-                      )}
-
-                      <Field label="Manager remarks / count notes (optional)">
-                        <input
-                          type="text"
-                          placeholder="e.g. Counted into physical till at 4:30 PM"
-                          value={handoverNote}
-                          onChange={(e) => setHandoverNote(e.target.value)}
-                          style={{ fontSize: 13, padding: "6px 10px" }}
-                        />
+                          </small>
+                        )}
                       </Field>
 
-                      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-                        <Button
-                          type="button"
-                          className="secondary"
-                          style={{ color: "#dc2626", borderColor: "#fca5a5", padding: "5px 12px", fontSize: 12 }}
-                          disabled={handoverBusy}
-                          onClick={() => setHandoverActionType("reject")}
-                        >
-                          Reject
-                        </Button>
-                        <Button
-                          type="button"
-                          className="secondary"
-                          disabled={handoverBusy}
-                          style={{ padding: "5px 12px", fontSize: 12 }}
-                          onClick={() => setReviewingHandover(null)}
-                        >
-                          Cancel
-                        </Button>
-                        <Button
-                          type="button"
-                          className="primary"
-                          disabled={handoverBusy}
-                          style={{ padding: "5px 14px", fontSize: 12 }}
-                          onClick={handleConfirmHandover}
-                        >
-                          {handoverBusy
-                            ? "Crediting Till…"
-                            : `Confirm & Add ${rupees(handoverAcceptedAmount || "0")} to Cash Till`}
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      <Field label="Reason for rejection (min 3 chars) *">
+                      <Field label="Online amount (₹) * (Supports Partial)">
                         <input
                           type="text"
-                          placeholder="e.g. Cash not received physically"
-                          value={handoverNote}
-                          onChange={(e) => setHandoverNote(e.target.value)}
-                          required
-                          minLength={3}
-                          style={{ fontSize: 13, padding: "6px 10px" }}
+                          inputMode="decimal"
+                          value={settleOnlineAmount}
+                          onChange={(e) => setSettleOnlineAmount(e.target.value)}
+                          placeholder="0.00"
+                          disabled={handoverBusy}
+                          style={{ fontSize: 13, padding: "7px 10px", fontWeight: 600 }}
                         />
+                        {parseMoneyNumber(pendingOnlineAmt) > 0 && (
+                          <small style={{ color: "#64748b", fontSize: 11, marginTop: 3, display: "block" }}>
+                            Reported online: <b>{rupees(pendingOnlineAmt)}</b>
+                            {parseMoneyNumber(settleOnlineAmount) < parseMoneyNumber(pendingOnlineAmt) && (
+                              <span style={{ color: "#b45309", marginLeft: 4 }}>
+                                (₹{(parseMoneyNumber(pendingOnlineAmt) - (parseMoneyNumber(settleOnlineAmount) || 0)).toFixed(2)} remains in salesman account)
+                              </span>
+                            )}
+                          </small>
+                        )}
                       </Field>
-                      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-                        <Button
-                          type="button"
-                          className="secondary"
-                          disabled={handoverBusy}
-                          style={{ padding: "5px 12px", fontSize: 12 }}
-                          onClick={() => setHandoverActionType("accept")}
-                        >
-                          Back
-                        </Button>
-                        <Button
-                          type="button"
-                          className="secondary"
-                          disabled={handoverBusy}
-                          style={{ padding: "5px 12px", fontSize: 12 }}
-                          onClick={() => setReviewingHandover(null)}
-                        >
-                          Cancel
-                        </Button>
-                        <Button
-                          type="button"
-                          className="secondary"
-                          style={{ color: "#dc2626", borderColor: "#fca5a5", padding: "5px 12px", fontSize: 12 }}
-                          disabled={handoverBusy}
-                          onClick={handleRejectHandover}
-                        >
-                          {handoverBusy ? "Rejecting…" : "Confirm Rejection"}
-                        </Button>
-                      </div>
                     </div>
-                  )}
+
+                    <Field label="Manager remarks / count & transfer notes (optional)">
+                      <input
+                        type="text"
+                        placeholder="e.g. Counted physical cash into till and verified bank UPI transfer"
+                        value={settleNote}
+                        onChange={(e) => setSettleNote(e.target.value)}
+                        disabled={handoverBusy}
+                        style={{ fontSize: 13, padding: "6px 10px" }}
+                      />
+                    </Field>
+
+                    <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
+                      <Button
+                        type="button"
+                        className="secondary"
+                        disabled={handoverBusy}
+                        style={{ padding: "6px 14px", fontSize: 12 }}
+                        onClick={() => setIsReceivingOpen(false)}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        type="button"
+                        className="primary"
+                        disabled={
+                          handoverBusy ||
+                          (parseMoneyNumber(settleCashAmount) <= 0 && parseMoneyNumber(settleOnlineAmount) <= 0)
+                        }
+                        style={{ padding: "6px 16px", fontSize: 12, background: "#15803d" }}
+                        onClick={handleConfirmConsolidatedReceive}
+                      >
+                        <Check size={14} />
+                        {handoverBusy
+                          ? "Processing Receive…"
+                          : `Confirm & Receive (${rupees(
+                              (
+                                (parseMoneyNumber(settleCashAmount) || 0) +
+                                (parseMoneyNumber(settleOnlineAmount) || 0)
+                              ).toFixed(2),
+                            )})`}
+                      </Button>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
@@ -2115,8 +2089,7 @@ function FoodsPage({
           crypto.randomUUID(),
         );
         messages.push(
-          `Online (₹${totalBankParsed.toFixed(2)}${
-            parsedBankAmounts.length > 1 ? ` across ${parsedBankAmounts.length} split claims` : ""
+          `Online (₹${totalBankParsed.toFixed(2)}${parsedBankAmounts.length > 1 ? ` across ${parsedBankAmounts.length} split claims` : ""
           }) queued for bank verification`
         );
       }
@@ -5666,7 +5639,19 @@ function CustomerStatementPage({
           })()}
 
           <div style={{ marginTop: 16, display: "flex", gap: 10 }}>
-            <Button className="secondary" onClick={() => window.print()}>
+            <Button
+              className="secondary"
+              onClick={() => {
+                let styleEl = document.getElementById("dynamic-print-page-style") as HTMLStyleElement | null;
+                if (!styleEl) {
+                  styleEl = document.createElement("style");
+                  styleEl.id = "dynamic-print-page-style";
+                  document.head.appendChild(styleEl);
+                }
+                styleEl.innerHTML = `@media print { @page { size: A4 portrait; margin: 6mm 8mm; } }`;
+                window.print();
+              }}
+            >
               <Printer size={16} /> Print Statement
             </Button>
           </div>
@@ -6001,7 +5986,19 @@ function StatementPage({
               ["amount", "Amount", true],
             ]}
           />
-          <Button className="secondary" onClick={() => window.print()}>
+          <Button
+            className="secondary"
+            onClick={() => {
+              let styleEl = document.getElementById("dynamic-print-page-style") as HTMLStyleElement | null;
+              if (!styleEl) {
+                styleEl = document.createElement("style");
+                styleEl.id = "dynamic-print-page-style";
+                document.head.appendChild(styleEl);
+              }
+              styleEl.innerHTML = `@media print { @page { size: A4 portrait; margin: 6mm 8mm; } }`;
+              window.print();
+            }}
+          >
             Print statement
           </Button>
         </>
