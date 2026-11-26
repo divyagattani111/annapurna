@@ -39,8 +39,8 @@ export function parseMultiAmounts(val: unknown): string[] {
   if (val === null || val === undefined) return [];
   const raw = String(val).trim();
   if (!raw) return [];
-  // Split by comma, space, newline, semicolon, or plus sign
-  const tokens = raw.split(/[\s,;+]+/).filter(Boolean);
+  // Split by plus '+', slash '/', or pipe '|' so amounts with internal commas (e.g. ₹1,500.00) are not fragmented
+  const tokens = raw.split(/[+|/]/);
   const results: string[] = [];
   for (const t of tokens) {
     const cleaned = cleanMoney(t);
@@ -160,6 +160,7 @@ const openingInput = z
     rowId: z.string().min(1).max(100),
     target: z.enum([
       "trade",
+      "customer",
       "money",
       "loan_given",
       "borrowed",
@@ -558,8 +559,14 @@ export const previewResponse = z
     discount: money.optional(),
     previous: signedMoney,
     confirmed: money,
+    cashConfirmed: money.optional(),
+    onlineConfirmed: money.optional(),
     pending: money,
     projected: signedMoney,
+    salesmanPrevious: signedMoney.optional(),
+    salesmanProjected: signedMoney.optional(),
+    customerPrevious: signedMoney.optional(),
+    customerProjected: signedMoney.optional(),
     lines: z.array(
       z
         .object({

@@ -10,7 +10,7 @@ import {
   canonical,
   quoteFingerprint,
 } from "../apps/api/src/money";
-import { commands, z } from "../packages/contracts/src";
+import { commands, z, parseMultiAmounts } from "../packages/contracts/src";
 import { isDirectRouteSalesman } from "../apps/api/src/engine";
 describe("Exact decimal domain rules", () => {
   test("A13 configured conversion and price basis", () =>
@@ -69,6 +69,25 @@ describe("Exact decimal domain rules", () => {
   });
   test("Large exact decimal amount stays exact", () =>
     expect(money("9999999999999999.99")).toBe("9999999999999999.99"));
+  test("parseMultiAmounts splits by '+', '/', or '|' and supports formatted amounts with commas and rupee signs", () => {
+    // Single amounts with commas and rupee signs must stay as single amounts
+    expect(parseMultiAmounts("1,500")).toEqual(["1500.00"]);
+    expect(parseMultiAmounts("₹1,20,500.50")).toEqual(["120500.50"]);
+    expect(parseMultiAmounts(" 500.00 ")).toEqual(["500.00"]);
+
+    // Multiple amounts separated by pipe '|', plus '+', or slash '/'
+    expect(parseMultiAmounts("500 | 1,200")).toEqual(["500.00", "1200.00"]);
+    expect(parseMultiAmounts("500 + 1,200")).toEqual(["500.00", "1200.00"]);
+    expect(parseMultiAmounts("500+1200")).toEqual(["500.00", "1200.00"]);
+    expect(parseMultiAmounts("500 / 1,200")).toEqual(["500.00", "1200.00"]);
+    expect(parseMultiAmounts("500/1200")).toEqual(["500.00", "1200.00"]);
+    expect(parseMultiAmounts("₹1,20,500.50 + 50,000 / 2500 | 300")).toEqual(["120500.50", "50000.00", "2500.00", "300.00"]);
+
+    // Empty, invalid or zero amounts ignored cleanly
+    expect(parseMultiAmounts("")).toEqual([]);
+    expect(parseMultiAmounts("0.00 + -50 / 1000")).toEqual(["1000.00"]);
+    expect(parseMultiAmounts(" + 500 / ")).toEqual(["500.00"]);
+  });
 });
 
 test("Bill-only pricing uses explicit basis and discount after exact line rounding", () => {
@@ -315,7 +334,7 @@ describe("H5 canonical fingerprinting & C4 UUID safety", () => {
     expect(invalid.success).toBe(false);
 
     // Verify documents/lines array parsing contract
-    const lineItemSchema = z.array(z.record(z.unknown()));
+    const lineItemSchema = z.array(z.record(z.string(), z.unknown()));
     const sampleLines = [
       {
         id: "4c9ab663-4e87-4ebf-af0a-c13097e07790",

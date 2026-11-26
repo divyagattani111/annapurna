@@ -20,6 +20,8 @@ Before writing or changing code, read the **entire** `CODEX_APP_CONTEXT.md` in t
 - Inspect existing files before editing and protect user changes.
 - Make a short phased plan and implement usable vertical slices, not only a mock UI.
 - Keep `ASSUMPTIONS.md`, a requirements/test checklist, reviewed SQL migration history, and working setup/deploy/restore documentation.
+- **Mandatory verification rule**: Always run `bun run --filter @ledger/web build` (or Vite transform check) whenever frontend code (`apps/web`) is edited, BEFORE and IN ADDITION TO Bun unit & integration tests. Never report a change complete without validating that `apps/web` builds cleanly with zero JSX/syntax/transform errors.
+- **Strict Git Rule**: NEVER run `git add`, `git commit`, `git stash`, or any git staging/committing commands under any circumstances unless the user explicitly and directly instructs to do so. All edits must remain as unstaged working directory changes so the user has full visibility and control over source control.
 - Typecheck, lint, run Bun tests, PostgreSQL-backed integration tests and representative Playwright tests; report what actually ran and failed.
 - Do not make production deployments, buy services, reveal credentials, or run destructive migrations/resets without authorization.
 

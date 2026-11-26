@@ -110,6 +110,30 @@ export async function balance(
   );
   return r.balance;
 }
+export async function customerBalance(
+  t: Tx | typeof db,
+  org: string,
+  customerId: string,
+  asOf = businessDate(),
+) {
+  const [r] = await rows<{ balance: string }>(
+    t,
+    sql`
+      select (
+        coalesce(sum(case when d.kind in ('bill', 'opening') then d.amount::numeric else 0 end), 0)
+        - coalesce(sum(case when d.kind in ('receipt', 'identify', 'return') then d.amount::numeric else 0 end), 0)
+      )::numeric(18,2)::text as balance
+      from documents d
+      left join documents orig on orig.id::text = d.data->>'billId' and orig.org = d.org
+      where d.org = ${org}
+        and coalesce(d.customer_id, orig.customer_id) = ${customerId}::uuid
+        and d.kind in ('bill', 'opening', 'receipt', 'identify', 'return')
+        and d.business_date <= ${asOf}::date
+        and not exists(select 1 from documents rev where rev.org = d.org and rev.reverses = d.id)
+    `,
+  );
+  return r?.balance ?? "0.00";
+}
 export async function scoped(
   t: Tx,
   a: Actor,
@@ -459,14 +483,8 @@ async function receive(
 
   let prevBal = D(0);
   if (p.customerId) {
-    const custDocs = await rows<{ id: string; kind: string; amount: string }>(
-      t,
-      sql`select d.id, d.kind, d.amount::text from documents d left join documents orig on orig.id::text = d.data->>'billId' and orig.org = d.org where d.org=${a.org} and coalesce(d.customer_id, orig.customer_id) = ${p.customerId}::uuid and d.kind in ('bill', 'receipt', 'return') and not exists(select 1 from documents rev where rev.org = ${a.org} and rev.reverses = d.id) order by d.business_date asc, d.created_at asc, case when d.kind in ('opening', 'bill') then 1 when d.kind in ('return') then 2 else 3 end asc, d.id asc`,
-    );
-    for (const cd of custDocs) {
-      if (cd.kind === "bill") prevBal = prevBal.plus(cd.amount);
-      else prevBal = prevBal.minus(cd.amount);
-    }
+    const custBal = await customerBalance(t, a.org, p.customerId, p.actualDate);
+    prevBal = D(custBal);
   } else if (p.salesmanId) {
     const [prevRow] = await rows<{ bal: string }>(
       t,
@@ -805,7 +823,10 @@ async function execute<K extends CommandName>(
         t,
         sql`select name,setup from organizations where id=${a.org}`,
       );
-      const previous = await balance(t, a.org, trade(b.salesmanId), date);
+      const salesmanPrevious = await balance(t, a.org, trade(b.salesmanId), date);
+      const previous = b.customerId
+        ? await customerBalance(t, a.org, b.customerId, date)
+        : salesmanPrevious;
       const fingerprint = quoteFingerprint(
         date,
         b.salesmanId,
@@ -833,10 +854,17 @@ async function execute<K extends CommandName>(
         );
       const confirmed = b.receipts
         .reduce((s, r) => s.plus(r.amount), D(0));
+      const cashConfirmed = b.receipts
+        .filter((r) => r.method === "cash")
+        .reduce((s, r) => s.plus(r.amount), D(0));
+      const onlineConfirmed = b.receipts
+        .filter((r) => r.method === "online")
+        .reduce((s, r) => s.plus(r.amount), D(0));
       const projected = D(previous).plus(total).minus(confirmed);
+      const salesmanProjected = D(salesmanPrevious).plus(total).minus(confirmed);
       if (
         salesman.credit_limit !== null &&
-        projected.gt(String(salesman.credit_limit))
+        salesmanProjected.gt(String(salesman.credit_limit))
       ) {
         owner(a);
         ensure(
@@ -870,7 +898,11 @@ async function execute<K extends CommandName>(
           billDiscount: b.discount ? money(b.discount) : "0.00",
           previousBalance: previous,
           confirmed: money(confirmed),
+          cashConfirmed: money(cashConfirmed),
+          onlineConfirmed: money(onlineConfirmed),
           issueBalance: money(projected),
+          salesmanPrevious,
+          salesmanIssueBalance: money(salesmanProjected),
           salesmanName: salesman.name,
           businessName: business.name,
           businessProfile: business.setup,
@@ -1190,9 +1222,11 @@ async function execute<K extends CommandName>(
         };
       }
       let target: string;
+      let effectiveSalesmanId: string | undefined = undefined;
       if (o.target === "trade") {
         await scoped(t, a, "salesmen", o.targetId);
         target = trade(o.targetId);
+        effectiveSalesmanId = o.targetId;
         const history = await rows(
           t,
           sql`select id from documents where org=${a.org} and salesman_id=${o.targetId} limit 1`,
@@ -1201,6 +1235,24 @@ async function execute<K extends CommandName>(
           !history.length,
           "Opening must precede operational history; legacy total and bills cannot both be loaded",
         );
+      } else if (o.target === "customer") {
+        const [cust] = await rows<{
+          id: string;
+          customer_id: string;
+          customer_name: string;
+          salesman_id: string | null;
+        }>(
+          t,
+          sql`select id, customer_id, customer_name, salesman_id from itc_customers where org=${a.org} and id=${o.targetId}::uuid and active=true`,
+        );
+        ensure(cust, "Customer not found or inactive", "NOT_FOUND", 404);
+        ensure(
+          cust.salesman_id,
+          "Customer must be assigned to a salesman to record opening balance",
+        );
+        await scoped(t, a, "salesmen", cust.salesman_id);
+        target = trade(cust.salesman_id);
+        effectiveSalesmanId = cust.salesman_id;
       } else if (o.target === "money") {
         await account(t, a, o.targetId);
         target = cash(o.targetId);
@@ -1234,6 +1286,7 @@ async function execute<K extends CommandName>(
       const data: Row = {
         ...o,
         openingTarget: o.target,
+        ...(o.target === "customer" ? { customerId: o.targetId } : {}),
         ...(openingLoan
           ? {
             direction:
@@ -1264,9 +1317,9 @@ async function execute<K extends CommandName>(
             { account: "opening:clearing", debit: abs },
             { account: target, credit: abs },
           ],
-        o.target === "trade" ? o.targetId : undefined,
+        effectiveSalesmanId,
       );
-      if (o.target === "trade") await allocate(t, a, o.targetId);
+      if (effectiveSalesmanId) await allocate(t, a, effectiveSalesmanId);
       return saved;
     }
     case "expense": {

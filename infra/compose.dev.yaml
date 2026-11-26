@@ -6,7 +6,7 @@ services:
       POSTGRES_DB: family_ledger_demo
       POSTGRES_USER: ledger
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set private local password}
-    ports: ['127.0.0.1:5433:5432']
+    ports: ["127.0.0.1:${DEV_PG_PORT:-5434}:5432"]
     volumes: [demo_pg:/var/lib/postgresql]
     healthcheck:
       test: [CMD-SHELL, 'pg_isready -U ledger -d family_ledger_demo']

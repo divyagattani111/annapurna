@@ -447,6 +447,11 @@ bun --no-env-file --env-file=.env run db:migrate
 how to run in local :::
 
 
+
+export PATH="$(pwd)/.tools/bun/bin:$PATH"
+bun --version
+
+
 1.cd /Users/divyagattani/Desktop/projects/codex
 2.bun --version
 3.nc -z 127.0.0.1 55432 && echo "Postgres is up!" 

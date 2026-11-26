@@ -1668,3 +1668,166 @@ test("Owner bill-pricing capabilities are explicit, independent and preserved by
   ).toBe(201);
   expect(await due(f)).toBe("118.00");
 });
+
+test("Direct cigarette bill preview and posting calculates customer-scoped outstanding instead of complete salesman outstanding", async () => {
+  const f = await fixture();
+  const cookie = await authCookie(f, "owner");
+  const custId = crypto.randomUUID();
+
+  await db.execute(
+    sql`insert into itc_customers(id,org,customer_id,customer_name,salesman_itc_id,salesman_id,salesman_name,beat_code,beat_name,active) values(${custId},${f.org},'CUST-01','Test Shop','ITC-S1',${f.s1},'S1','B01','Beat 1',true)`,
+  );
+
+  // Salesman already owes ₹500 from an unrelated prior bill
+  await f.bill("5");
+  expect(await due(f)).toBe("500.00");
+
+  // New bill for specific customer under this salesman
+  const billPayload = {
+    date,
+    salesmanId: f.s1,
+    customerId: custId,
+    lines: [{ productId: f.product, quantity: "1" }],
+    receipts: [],
+  };
+
+  const previewRes = await request(cookie, "preview/bill", billPayload);
+  expect(previewRes.status).toBe(200);
+  const quote = await previewRes.json();
+
+  // Customer has 0 prior dues, while salesman has 500.00
+  expect(quote.previous).toBe("0.00");
+  expect(quote.projected).toBe("100.00");
+  expect(quote.customerPrevious).toBe("0.00");
+  expect(quote.salesmanPrevious).toBe("500.00");
+
+  // Post the customer bill with quoteHash verification
+  const postRes = await request(cookie, "commands/bill", {
+    ...billPayload,
+    expectedQuoteHash: quote.quoteHash,
+  });
+  expect(postRes.status).toBe(201);
+  const postedResult = await postRes.json();
+  const [doc] = await rows<{ data: Record<string, unknown> }>(
+    db,
+    sql`select data from documents where id = ${postedResult.id}`,
+  );
+  expect(doc.data.previousBalance).toBe("0.00");
+  expect(doc.data.issueBalance).toBe("100.00");
+  expect(doc.data.salesmanPrevious).toBe("500.00");
+  expect(doc.data.customerName).toBe("Test Shop");
+
+  // Overall salesman ledger due is now 500 + 100 = 600
+  expect(await due(f)).toBe("600.00");
+
+  // A second bill for the same customer now sees previous due of 100.00
+  const secondPreviewRes = await request(cookie, "preview/bill", {
+    ...billPayload,
+    lines: [{ productId: f.product, quantity: "2" }],
+    receipts: [{
+      amount: "50.00",
+      accountId: f.cash,
+      method: "cash",
+      actualDate: date,
+      reference: "",
+      verified: false,
+    }],
+  });
+  expect(secondPreviewRes.status).toBe(200);
+  const quote2 = await secondPreviewRes.json();
+  expect(quote2.previous).toBe("100.00"); // Customer previous balance
+  expect(quote2.total).toBe("200.00");
+  expect(quote2.confirmed).toBe("50.00");
+  expect(quote2.cashConfirmed).toBe("50.00");
+  expect(quote2.onlineConfirmed).toBe("0.00");
+  expect(quote2.projected).toBe("250.00"); // 100 + 200 - 50 = 250
+  expect(quote2.salesmanPrevious).toBe("600.00"); // Complete salesman ledger balance
+
+  // Post second bill and verify cashConfirmed in document data
+  const postRes2 = await request(cookie, "commands/bill", {
+    ...billPayload,
+    lines: [{ productId: f.product, quantity: "2" }],
+    receipts: [{
+      amount: "50.00",
+      accountId: f.cash,
+      method: "cash",
+      actualDate: date,
+      reference: "",
+      verified: false,
+    }],
+    expectedQuoteHash: quote2.quoteHash,
+  });
+  expect(postRes2.status).toBe(201);
+  const postedResult2 = await postRes2.json();
+  const [doc2] = await rows<{ data: Record<string, unknown> }>(
+    db,
+    sql`select data from documents where id = ${postedResult2.id}`,
+  );
+  expect(doc2.data.confirmed).toBe("50.00");
+  expect(doc2.data.cashConfirmed).toBe("50.00");
+  expect(doc2.data.onlineConfirmed).toBe("0.00");
+
+  // Third bill with split cash and online payments
+  const thirdPreviewRes = await request(cookie, "preview/bill", {
+    ...billPayload,
+    lines: [{ productId: f.product, quantity: "2" }],
+    receipts: [
+      {
+        amount: "40.00",
+        accountId: f.cash,
+        method: "cash",
+        actualDate: date,
+        reference: "",
+        verified: false,
+      },
+      {
+        amount: "60.00",
+        accountId: f.bank,
+        method: "online",
+        actualDate: date,
+        reference: "UPI-REF-01",
+        verified: false,
+      },
+    ],
+  });
+  expect(thirdPreviewRes.status).toBe(200);
+  const quote3 = await thirdPreviewRes.json();
+  expect(quote3.confirmed).toBe("100.00");
+  expect(quote3.cashConfirmed).toBe("40.00");
+  expect(quote3.onlineConfirmed).toBe("60.00");
+  expect(quote3.previous).toBe("250.00");
+  expect(quote3.projected).toBe("350.00"); // 250 + 200 - 100 = 350
+
+  const postRes3 = await request(cookie, "commands/bill", {
+    ...billPayload,
+    lines: [{ productId: f.product, quantity: "2" }],
+    receipts: [
+      {
+        amount: "40.00",
+        accountId: f.cash,
+        method: "cash",
+        actualDate: date,
+        reference: "",
+        verified: false,
+      },
+      {
+        amount: "60.00",
+        accountId: f.bank,
+        method: "online",
+        actualDate: date,
+        reference: "UPI-REF-01",
+        verified: false,
+      },
+    ],
+    expectedQuoteHash: quote3.quoteHash,
+  });
+  expect(postRes3.status).toBe(201);
+  const postedResult3 = await postRes3.json();
+  const [doc3] = await rows<{ data: Record<string, unknown> }>(
+    db,
+    sql`select data from documents where id = ${postedResult3.id}`,
+  );
+  expect(doc3.data.confirmed).toBe("100.00");
+  expect(doc3.data.cashConfirmed).toBe("40.00");
+  expect(doc3.data.onlineConfirmed).toBe("60.00");
+});

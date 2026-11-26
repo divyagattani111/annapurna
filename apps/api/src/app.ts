@@ -25,6 +25,7 @@ import {
   auditEvent,
   lock,
   balance,
+  customerBalance,
   type Actor,
 } from "./engine";
 import {
@@ -220,7 +221,7 @@ app.get("/api/v1/me", async (c) => {
 });
 app.get("/api/v1/masters", async (c) => {
   const a = c.get("actor");
-  const [salesmen, products, accounts] = await Promise.all([
+  const [salesmen, products, accounts, customers] = await Promise.all([
     rows(db, sql`select * from salesmen where org=${a.org} order by code`),
     rows(
       db,
@@ -230,8 +231,12 @@ app.get("/api/v1/masters", async (c) => {
       db,
       sql`select * from money_accounts where org=${a.org} order by type,name`,
     ),
+    rows(
+      db,
+      sql`select id, customer_id, customer_name, salesman_id, beat_code, beat_name, active from itc_customers where org=${a.org} order by customer_name`,
+    ),
   ]);
-  return c.json({ salesmen, products, accounts });
+  return c.json({ salesmen, products, accounts, customers });
 });
 app.post("/api/v1/salesmen", async (c) => {
   const a = c.get("actor"),
@@ -943,6 +948,40 @@ app.get("/api/v1/documents/:id", async (c) =>
       }
     }
     const shareToken = getDocumentShareToken(String(d.id));
+    const childReceipts = d.kind === "bill"
+      ? await rows<{
+          id: string;
+          number: string;
+          kind: string;
+          amount: string;
+          method: string;
+          is_reversed: boolean;
+          reversal_id: string | null;
+          reversal_number: string | null;
+          business_date: string;
+          created_at: string;
+        }>(
+          t,
+          sql`
+            select 
+              r.id,
+              r.number,
+              r.kind,
+              r.amount::text,
+              coalesce(r.data->>'method', 'cash') as method,
+              exists(select 1 from documents rev where rev.org = r.org and rev.reverses = r.id) as is_reversed,
+              (select rev.id from documents rev where rev.org = r.org and rev.reverses = r.id limit 1) as reversal_id,
+              (select rev.number from documents rev where rev.org = r.org and rev.reverses = r.id limit 1) as reversal_number,
+              r.business_date::text as business_date,
+              r.created_at::text as created_at
+            from documents r
+            where r.org = ${a.org}
+              and r.kind = 'receipt'
+              and r.data->>'billId' = ${recordId}
+            order by r.created_at asc, r.number asc
+          `,
+        )
+      : [];
     const openClaims = d.salesman_id
       ? await rows(
           t,
@@ -954,7 +993,7 @@ app.get("/api/v1/documents/:id", async (c) =>
             sql`select id, amount, actual_date, reference, state from receipt_claims where org=${a.org} and foods_salesman_id=${(d.data as Record<string, unknown>).foodsSalesmanId as string} and state = 'pending' order by actual_date desc`,
           )
         : []);
-    return c.json({ ...d, shareToken, lines, entries, allocations, attachments, openClaims });
+    return c.json({ ...d, shareToken, lines, entries, allocations, attachments, openClaims, childReceipts });
   }),
 );
 app.get("/api/v1/statements/:id", async (c) =>
@@ -1038,17 +1077,47 @@ app.post("/api/v1/drafts", async (c) => {
     .strict()
     .parse(await c.req.json());
   const draftId = p.id && p.id.trim() ? p.id.trim() : undefined;
-  const draftVersion = p.version ?? 0;
-  const [r] = draftId
-    ? await rows(
-      db,
-      sql`update drafts set data=${JSON.stringify(p.data)}::jsonb,version=version+1 where id=${draftId} and org=${a.org} and actor=${a.id} and version=${draftVersion} returning id,version`,
-    )
-    : await rows(
+  const draftVersion = p.version && p.version > 0 ? p.version : undefined;
+  let r: { id: string; version: number } | undefined;
+  if (draftId) {
+    const [updated] = draftVersion
+      ? await rows<{ id: string; version: number }>(
+          db,
+          sql`update drafts set data=${JSON.stringify(p.data)}::jsonb,version=version+1,actor=${a.id} where id=${draftId} and org=${a.org} and version=${draftVersion} returning id,version`,
+        )
+      : await rows<{ id: string; version: number }>(
+          db,
+          sql`update drafts set data=${JSON.stringify(p.data)}::jsonb,version=version+1,actor=${a.id} where id=${draftId} and org=${a.org} returning id,version`,
+        );
+    if (updated) {
+      r = updated;
+    } else {
+      const [existing] = await rows<{ id: string; version: number }>(
+        db,
+        sql`select id, version from drafts where id=${draftId} and org=${a.org}`,
+      );
+      if (existing) {
+        const [forced] = await rows<{ id: string; version: number }>(
+          db,
+          sql`update drafts set data=${JSON.stringify(p.data)}::jsonb,version=version+1,actor=${a.id} where id=${draftId} and org=${a.org} returning id,version`,
+        );
+        r = forced;
+      } else {
+        const [inserted] = await rows<{ id: string; version: number }>(
+          db,
+          sql`insert into drafts(org,actor,data) values(${a.org},${a.id},${JSON.stringify(p.data)}::jsonb) returning id,version`,
+        );
+        r = inserted;
+      }
+    }
+  } else {
+    const [inserted] = await rows<{ id: string; version: number }>(
       db,
       sql`insert into drafts(org,actor,data) values(${a.org},${a.id},${JSON.stringify(p.data)}::jsonb) returning id,version`,
     );
-  ensure(r, "Draft changed in another tab", "DRAFT_CONFLICT", 409);
+    r = inserted;
+  }
+  ensure(r, "Could not save draft", "DRAFT_ERROR", 500);
   return c.json(r);
 });
 app.get("/api/v1/drafts", async (c) => {
@@ -2026,7 +2095,7 @@ app.get("/api/v1/direct-cig/summary", async (c) => {
           max(d.business_date::text) last_bill_date
         from documents d
         where d.org = ${a.org}
-          and d.kind = 'bill'
+          and d.kind in ('bill', 'opening')
           and d.customer_id is not null
           and not exists(select 1 from documents rev where rev.org = d.org and rev.reverses = d.id)
         group by d.customer_id
@@ -2099,6 +2168,8 @@ app.get("/api/v1/direct-cig/summary", async (c) => {
     today_reversed: string;
     today_returned: string;
     today_received: string;
+    today_cash_received: string;
+    today_online_received: string;
     total_qty: string;
     today_qty: string;
   }>(
@@ -2160,6 +2231,29 @@ app.get("/api/v1/direct-cig/summary", async (c) => {
           ), 0)::numeric(18,2)::text
           from direct_docs d
         ) as today_received,
+        (
+          select coalesce(sum(
+            case when d.kind = 'receipt'
+              and coalesce(d.data->>'method', 'cash') = 'cash'
+              and coalesce(d.data->>'isHandoverConfirmation', 'false') != 'true'
+              and not (d.data ? 'reference' and d.data->>'reference' like 'Cash handover confirmed%')
+              and d.business_date = ${date}::date
+              and not exists(select 1 from documents rev where rev.org = d.org and rev.reverses = d.id)
+            then d.amount else 0 end
+          ), 0)::numeric(18,2)::text
+          from direct_docs d
+        ) as today_cash_received,
+        (
+          select coalesce(sum(
+            case when ((d.kind = 'receipt' and coalesce(d.data->>'method', '') = 'online') or d.kind = 'identify')
+              and coalesce(d.data->>'isHandoverConfirmation', 'false') != 'true'
+              and not (d.data ? 'reference' and d.data->>'reference' like 'Cash handover confirmed%')
+              and d.business_date = ${date}::date
+              and not exists(select 1 from documents rev where rev.org = d.org and rev.reverses = d.id)
+            then d.amount else 0 end
+          ), 0)::numeric(18,2)::text
+          from direct_docs d
+        ) as today_online_received,
         (
           select coalesce(sum(
             case when d.kind = 'bill' and not exists(select 1 from documents rev where rev.org = d.org and rev.reverses = d.id) then
@@ -2224,9 +2318,7 @@ app.get("/api/v1/direct-cig/summary", async (c) => {
       db,
       sql`
         with collections as (
-          select coalesce(sum(
-            case when d.reverses is null then d.amount else -d.amount end
-          ), 0) as amt
+          select coalesce(sum(d.amount), 0) as amt
           from documents d
           where d.org = ${a.org}
             and d.salesman_id = ${salesmanId}
@@ -2235,6 +2327,7 @@ app.get("/api/v1/direct-cig/summary", async (c) => {
             and d.data->>'handoverId' is null
             and coalesce(d.data->>'isHandoverConfirmation', 'false') != 'true'
             and not (d.data ? 'reference' and d.data->>'reference' like 'Cash handover confirmed%')
+            and not exists(select 1 from documents rev where rev.org = d.org and rev.reverses = d.id)
         ),
         confirmed_handovers as (
           select coalesce(sum(coalesce(accepted_amount, amount)), 0) as amt
@@ -2281,6 +2374,8 @@ app.get("/api/v1/direct-cig/summary", async (c) => {
       todayReversed: docStats?.today_reversed ?? "0.00",
       todayReturned: docStats?.today_returned ?? "0.00",
       todayReceived: docStats?.today_received ?? "0.00",
+      todayCashReceived: docStats?.today_cash_received ?? "0.00",
+      todayOnlineReceived: docStats?.today_online_received ?? "0.00",
       totalQty: docStats?.total_qty ?? "0",
       todayQty: docStats?.today_qty ?? "0",
       cashInHand,
@@ -2304,6 +2399,8 @@ app.get("/api/v1/retail-cig/summary", async (c) => {
     today_reversed: string;
     today_returned: string;
     today_received: string;
+    today_cash_received: string;
+    today_online_received: string;
     total_qty: string;
     today_qty: string;
     total_due: string;
@@ -2364,6 +2461,8 @@ app.get("/api/v1/retail-cig/summary", async (c) => {
           coalesce(sum(case when d.kind = 'bill' and not exists(select 1 from documents rev where rev.org = d.org and rev.reverses = d.id) then d.amount else 0 end), 0) total_billed,
           coalesce(sum(case when d.kind in ('receipt', 'identify') and coalesce(d.data->>'isHandoverConfirmation', 'false') != 'true' and not (d.data ? 'reference' and d.data->>'reference' like 'Cash handover confirmed%') and not exists(select 1 from documents rev where rev.org = d.org and rev.reverses = d.id) then d.amount else 0 end), 0) total_received,
           coalesce(sum(case when d.kind in ('receipt', 'identify') and coalesce(d.data->>'isHandoverConfirmation', 'false') != 'true' and not (d.data ? 'reference' and d.data->>'reference' like 'Cash handover confirmed%') and d.business_date = ${date}::date and not exists(select 1 from documents rev where rev.org = d.org and rev.reverses = d.id) then d.amount else 0 end), 0) today_received,
+          coalesce(sum(case when d.kind = 'receipt' and coalesce(d.data->>'method', 'cash') = 'cash' and coalesce(d.data->>'isHandoverConfirmation', 'false') != 'true' and not (d.data ? 'reference' and d.data->>'reference' like 'Cash handover confirmed%') and d.business_date = ${date}::date and not exists(select 1 from documents rev where rev.org = d.org and rev.reverses = d.id) then d.amount else 0 end), 0) today_cash_received,
+          coalesce(sum(case when ((d.kind = 'receipt' and coalesce(d.data->>'method', '') = 'online') or d.kind = 'identify') and coalesce(d.data->>'isHandoverConfirmation', 'false') != 'true' and not (d.data ? 'reference' and d.data->>'reference' like 'Cash handover confirmed%') and d.business_date = ${date}::date and not exists(select 1 from documents rev where rev.org = d.org and rev.reverses = d.id) then d.amount else 0 end), 0) today_online_received,
           coalesce(sum(
             case when d.kind = 'bill' and not exists(select 1 from documents rev where rev.org = d.org and rev.reverses = d.id) then
               coalesce((
@@ -2403,6 +2502,8 @@ app.get("/api/v1/retail-cig/summary", async (c) => {
         (tb.reversed_billed + tpr.prior_reversed)::numeric(18,2)::text today_reversed,
         tr.returned_amount::numeric(18,2)::text today_returned,
         (select today_received::numeric(18,2)::text from doc_totals) today_received,
+        (select today_cash_received::numeric(18,2)::text from doc_totals) today_cash_received,
+        (select today_online_received::numeric(18,2)::text from doc_totals) today_online_received,
         (select total_qty::numeric(18,2)::text from doc_totals) total_qty,
         (select today_qty::numeric(18,2)::text from doc_totals) today_qty,
         coalesce((select sum(case when bal > 0 then bal else 0 end) from salesman_balances), 0)::numeric(18,2)::text total_due
@@ -2422,6 +2523,8 @@ app.get("/api/v1/retail-cig/summary", async (c) => {
     todayReversed: totals?.today_reversed ?? "0.00",
     todayReturned: totals?.today_returned ?? "0.00",
     todayReceived: totals?.today_received ?? "0.00",
+    todayCashReceived: totals?.today_cash_received ?? "0.00",
+    todayOnlineReceived: totals?.today_online_received ?? "0.00",
     totalQty: totals?.total_qty ?? "0",
     todayQty: totals?.today_qty ?? "0",
   });
@@ -2469,7 +2572,7 @@ app.get("/api/v1/direct-cig/statement/:customerId", async (c) => {
       left join documents orig on orig.id::text = d.data->>'billId' and orig.org = d.org
       where d.org=${a.org}
         and coalesce(d.customer_id, orig.customer_id) = ${custId}::uuid
-        and d.kind in ('bill', 'receipt', 'return')
+        and d.kind in ('bill', 'opening', 'receipt', 'return')
         and not exists(select 1 from documents rev where rev.org = ${a.org} and rev.reverses = d.id)
       order by d.business_date asc, d.created_at asc
     `,
@@ -2477,10 +2580,10 @@ app.get("/api/v1/direct-cig/statement/:customerId", async (c) => {
 
   let runningBalance = D(0);
   const ledger = docs.map((d) => {
-    const isBill = d.kind === "bill";
-    const debit = isBill ? d.amount : "0.00";
-    const credit = !isBill ? d.amount : "0.00";
-    if (isBill) runningBalance = runningBalance.plus(d.amount);
+    const isDebit = d.kind === "bill" || d.kind === "opening";
+    const debit = isDebit ? d.amount : "0.00";
+    const credit = !isDebit ? d.amount : "0.00";
+    if (isDebit) runningBalance = runningBalance.plus(d.amount);
     else runningBalance = runningBalance.minus(d.amount);
     return {
       id: d.id,
@@ -2587,10 +2690,21 @@ app.post("/api/v1/preview/bill", async (c) =>
       "Bill discount cannot be greater than or equal to the total bill amount",
     );
     total = total.minus(rawDiscount);
-    const previous = await balance(t, a.org, "trade:" + p.salesmanId, p.date),
-      confirmed = p.receipts
-        .reduce((s, r) => s.plus(r.amount), D(0)),
-      pending = D(0);
+    const salesmanPrevious = await balance(t, a.org, "trade:" + p.salesmanId, p.date);
+    const customerPrevious = p.customerId
+      ? await customerBalance(t, a.org, p.customerId, p.date)
+      : undefined;
+    const previous = customerPrevious ?? salesmanPrevious;
+    const confirmed = p.receipts
+      .reduce((s, r) => s.plus(r.amount), D(0));
+    const cashConfirmed = p.receipts
+      .filter((r) => r.method === "cash")
+      .reduce((s, r) => s.plus(r.amount), D(0));
+    const onlineConfirmed = p.receipts
+      .filter((r) => r.method === "online")
+      .reduce((s, r) => s.plus(r.amount), D(0));
+    const pending = D(0);
+    const projected = money(D(previous).plus(total).minus(confirmed));
     const openClaims: unknown[] = [];
     return c.json({
       quoteHash: quoteFingerprint(
@@ -2606,15 +2720,21 @@ app.post("/api/v1/preview/bill", async (c) =>
       needsOwnerApproval:
         billPricingNeedsApproval(a, p.lines) ||
         (salesman.credit_limit !== null &&
-          D(previous).plus(total).minus(confirmed).gt(salesman.credit_limit)),
+          D(salesmanPrevious).plus(total).minus(confirmed).gt(salesman.credit_limit)),
       lines,
       subtotal: money(subtotal),
       discount: p.discount ? money(p.discount) : "0.00",
       total: money(total),
       previous,
       confirmed: money(confirmed),
+      cashConfirmed: money(cashConfirmed),
+      onlineConfirmed: money(onlineConfirmed),
       pending: money(pending),
-      projected: money(D(previous).plus(total).minus(confirmed)),
+      projected,
+      salesmanPrevious,
+      salesmanProjected: money(D(salesmanPrevious).plus(total).minus(confirmed)),
+      customerPrevious,
+      customerProjected: customerPrevious !== undefined ? projected : undefined,
       openClaims,
     });
   }),
@@ -3196,8 +3316,13 @@ app.post("/api/v1/opening-import/preview", async (c) => {
         message:
           "Legacy invoice detail import is not enabled; use approved total mode with unknown legacy age",
       });
-    if (r.target === "trade" || r.target === "money") {
-      const table = r.target === "trade" ? "salesmen" : "money_accounts";
+    if (r.target === "trade" || r.target === "money" || r.target === "customer") {
+      const table =
+        r.target === "trade"
+          ? "salesmen"
+          : r.target === "customer"
+            ? "itc_customers"
+            : "money_accounts";
       const [target] = await rows(
         db,
         sql`select id from ${sql.identifier(table)} where org=${a.org} and id=${r.targetId}`,
