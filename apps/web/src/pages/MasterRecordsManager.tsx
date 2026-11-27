@@ -928,7 +928,7 @@ export function MasterRecordsManager({
                     </div>
                     <div style={{ display: "flex", gap: 16, marginTop: 4, fontSize: "0.85rem", color: "#78716c", flexWrap: "wrap" }}>
                       {emp.phone && <span>Phone: <b>{emp.phone}</b></span>}
-                      <span>Ready for Salaries & Advances in Other Money</span>
+                      <span>Ready for Salaries & Advances in Others tab</span>
                     </div>
                   </div>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -1021,7 +1021,7 @@ export function MasterRecordsManager({
                     </div>
                     <div style={{ display: "flex", gap: 16, marginTop: 4, fontSize: "0.85rem", color: "#78716c", flexWrap: "wrap" }}>
                       {fs.phone && <span>Phone: <b>{fs.phone}</b></span>}
-                      <span>Ready for Foods Collections in Foods tab</span>
+                      <span>Ready for Foods Collections in Others tab</span>
                     </div>
                   </div>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>

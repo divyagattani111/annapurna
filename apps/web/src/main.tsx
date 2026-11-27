@@ -13,6 +13,7 @@ import { createRoot } from "react-dom/client";
 import { getProductBarcodes, matchProductsByScanOrCode, matchProductByScanOrCode, useGlobalBarcodeScanner } from "./utils/barcodeScanner";
 import { RetailCigSalesPage } from "./pages/RetailCigSalesPage";
 import { DirectCigSalesPage } from "./pages/DirectCigSalesPage";
+import { OthersPage } from "./pages/OthersPage";
 import { DocumentDetail, WhatsAppShareModal } from "./pages/DocumentDetail";
 import { MasterRecordsManager, MasterForm } from "./pages/MasterRecordsManager";
 import { api, client } from "./api";
@@ -166,8 +167,7 @@ const nav = [
   ["Home", LayoutDashboard],
   ["Retail", Users],
   ["Mudashir", Store],
-  ["Foods", Utensils],
-  ["Other Money", ArrowLeftRight],
+  ["Others", Layers],
   ["Reports", BarChart3],
   ["Settings", Settings],
 ] as const;
@@ -184,14 +184,15 @@ const commandSection: Partial<Record<CommandName, string>> = {
   resolveDeposit: "Cash & Bank",
   reconcile: "Cash & Bank",
   reopen: "Daily Close",
-  expense: "Other Money",
-  salary: "Other Money",
-  loan: "Other Money",
-  repay: "Other Money",
-  owner: "Other Money",
-  refund: "Other Money",
-  unidentified: "Other Money",
-  identify: "Other Money",
+  expense: "Others",
+  salary: "Others",
+  loan: "Others",
+  repay: "Others",
+  owner: "Others",
+  refund: "Others",
+  unidentified: "Others",
+  identify: "Others",
+  foodsReceipt: "Others",
 };
 
 function App() {
@@ -342,16 +343,11 @@ function App() {
     md = masters.data ?? {},
     d = dash.data,
     date = str(m.date),
-    owner = m.role === "owner",
+    isOwner = m.role === "owner",
+    owner = m.role === "owner" || m.role === "manager",
     isSalesman = m.role === "salesman",
     mubashirSalesman = arr(md.salesmen).find(
-      (s) =>
-        str((s.details as Row)?.is_direct_route) === "true" ||
-        str((s.details as Row)?.direct_route) === "true" ||
-        str((s.details as Row)?.isDirectRoute) === "true" ||
-        str(s.name).toLowerCase().includes("mubashir") ||
-        str(s.name).toLowerCase().includes("muddasir") ||
-        str((s.details as Row)?.itc_id) === "1HG2",
+      (s) => str(s.name).trim().toUpperCase() === "MUBASHIR SALESMAN",
     ),
     mubashirSalesmanId = mubashirSalesman ? str(mubashirSalesman.id) : undefined,
     workflowOpen = !!(
@@ -414,14 +410,14 @@ function App() {
           </div>
           <div className="workspace-profile">
             <div>
-              <strong>{owner ? "Owner workspace" : "Manager workspace"}</strong>
+              <strong>{isOwner ? "Owner workspace" : "Manager workspace"}</strong>
               <small>
                 {str(business.mode) === "live"
                   ? "Business records"
                   : "Fictional demo records"}
               </small>
             </div>
-            <span className="role-badge">{owner ? "OWNER" : "MANAGER"}</span>
+            <span className="role-badge">{isOwner ? "OWNER" : "MANAGER"}</span>
           </div>
           <nav aria-label="Main navigation">
             {nav.map(([label, Icon]) => (
@@ -494,7 +490,7 @@ function App() {
                       : isSalesman
                         ? "Mudashir Direct Route"
                         : page === "Home"
-                          ? owner
+                          ? isOwner
                             ? "Your business at a glance"
                             : "Manager Daily Desk"
                           : page}
@@ -522,10 +518,8 @@ function App() {
                       "Salesmen ledger, new cigarette bills, customer collections and registers."
                     ) : page === "Mudashir" ? (
                       "Direct cigarette sales, customer billing, dues and collections for route customers."
-                    ) : page === "Foods" ? (
-                      "Foods salesmen collections, bills, items and registers."
-                    ) : page === "Other Money" ? (
-                      "Expenses, employee salaries & advances, and cash/bank transfers."
+                    ) : page === "Others" ? (
+                      "Foods collections, operating expenses, employee salaries & advances, and cash/bank transfers."
                     ) : (
                       "Keep every record clear, connected and accounted for."
                     )}
@@ -663,24 +657,17 @@ function App() {
                     onCustomerStatement={(custId: string) => openDocument("customer-statement:" + custId)}
                     restoreDraftRecord={directBillDraftRecord}
                     onClearRestoreDraft={() => setDirectBillDraftRecord(null)}
-                    lockedSalesmanId={isSalesman ? (str(m.salesmanId) || mubashirSalesmanId) : undefined}
+                    lockedSalesmanId={isSalesman ? (str(m.salesmanId) || mubashirSalesmanId) : mubashirSalesmanId}
                     activeView={directActiveView}
                     onViewChange={setDirectActiveView}
                     initialBillCustomerId={directBillCustomerId}
                     initialReceiveCustomerId={directReceiveCustomerId}
                     onClearInitialBillCustomer={() => setDirectBillCustomerId(null)}
                     onClearInitialReceiveCustomer={() => setDirectReceiveCustomerId(null)}
-                    initialSalesmanId={selectedSalesmanId}
+                    initialSalesmanId={mubashirSalesmanId || selectedSalesmanId}
                   />
-                ) : page === "Foods" ? (
-                  <FoodsPage
-                    date={date}
-                    masters={md}
-                    owner={owner}
-                    onSelect={openDocument}
-                  />
-                ) : page === "Other Money" ? (
-                  <OtherMoneyPage
+                ) : page === "Others" ? (
+                  <OthersPage
                     date={date}
                     masters={md}
                     owner={owner}
@@ -852,7 +839,20 @@ function App() {
                 customerId={selected.slice(19)}
                 onClose={goBackDocument}
                 date={date}
+                owner={owner}
                 onSelectRecord={openDocument}
+                onSetOpening={(custId) => {
+                  setDraftRecord({
+                    data: {
+                      values: {
+                        target: "customer",
+                        targetId: custId,
+                        amount: "",
+                      },
+                    },
+                  });
+                  openCommand("opening");
+                }}
                 onNewBill={(custId, salesmanId) => {
                   setSelected(null);
                   setSelectedHistory([]);
@@ -1148,8 +1148,7 @@ function Dashboard({
           [
             ["Retail", "Retail", "Salesmen & wholesale", Users, "action-retail"],
             ["Mudashir", "Mudashir", "Direct cig sales & beats", Store, "action-mudashir"],
-            ["Foods", "Foods", "Foods collections & salesmen", Utensils, "action-foods"],
-            ["Other Money", "Other Money", "Expenses, loans & salaries", ArrowLeftRight, "action-other"],
+            ["Others", "Others", "Foods, expenses, staff & banking", Layers, "action-other"],
             ["Reports", "Reports", "Statements & ledger views", BarChart3, "action-reports"],
             ["Settings", "Settings", "Masters & configuration", Settings, "action-settings"],
           ] as const
@@ -1183,7 +1182,7 @@ function Dashboard({
         <Metric
           label="Todays Total Inflows"
           value={totalRec}
-          caption={`Cash: ${rupees(cashRec)} · Bank: ${rupees(onlineRec)}`}
+          caption={`Cash: ${rupees(cashRec)} · Online: ${rupees(onlineRec)}`}
           icon={IndianRupee}
           tone="cash"
         />
@@ -1651,11 +1650,11 @@ function Dashboard({
                         {handoverBusy
                           ? "Processing Receive…"
                           : `Confirm & Receive (${rupees(
-                              (
-                                (parseMoneyNumber(settleCashAmount) || 0) +
-                                (parseMoneyNumber(settleOnlineAmount) || 0)
-                              ).toFixed(2),
-                            )})`}
+                            (
+                              (parseMoneyNumber(settleCashAmount) || 0) +
+                              (parseMoneyNumber(settleOnlineAmount) || 0)
+                            ).toFixed(2),
+                          )})`}
                       </Button>
                     </div>
                   </div>
@@ -1959,1016 +1958,6 @@ function ReceiveMoneyPage({
     </>
   );
 }
-
-function FoodsPage({
-  date,
-  masters,
-  owner: _owner,
-  onSelect,
-}: {
-  date: string;
-  masters: Row;
-  owner: boolean;
-  onSelect: (id: string) => void;
-}) {
-  const qc = useQueryClient(),
-    [activeTab, setActiveTab] = useState<"foods">("foods"),
-    [busy, setBusy] = useState(false),
-    [error, setError] = useState(""),
-    [success, setSuccess] = useState("");
-
-  const accounts = arr(masters.accounts);
-  const cashAccounts = accounts.filter((a) => a.type === "cash");
-  const bankAccounts = accounts.filter((a) => a.type === "bank");
-  const defaultCash = str(cashAccounts[0]?.id ?? "");
-  const defaultBank = str(bankAccounts[0]?.id ?? "");
-
-  // Load registered foods salesmen list from API
-  const foodsSalesmenQuery = useQuery({
-    queryKey: ["foods-salesmen"],
-    queryFn: async () => {
-      const r = await fetch("/api/v1/foods-salesmen");
-      return (await r.json()) as Array<{ id: string; name: string; territory?: string; phone?: string; active: boolean }>;
-    },
-  });
-  const foodsSalesmenOptions = (foodsSalesmenQuery.data ?? []).filter((f) => f.active);
-
-  // Foods Collections state
-  const [foodsSalesman, setFoodsSalesman] = useState(""),
-    [foodsDate, setFoodsDate] = useState(date),
-    [foodsBillNo, setFoodsBillNo] = useState(""),
-    [foodsItems, setFoodsItems] = useState(""),
-    [foodsCashAmount, setFoodsCashAmount] = useState(""),
-    [foodsCashAccountId, setFoodsCashAccountId] = useState(defaultCash),
-    [foodsBankAmount, setFoodsBankAmount] = useState(""),
-    [foodsBankAccountId, setFoodsBankAccountId] = useState(defaultBank),
-    [foodsNotes, setFoodsNotes] = useState("");
-
-  const parsedBankAmounts = parseMultiAmounts(foodsBankAmount);
-  const totalBankParsed = parsedBankAmounts.reduce((acc, curr) => acc.plus(curr), D(0));
-  const foodsCashVal = (() => {
-    const c = cleanMoney(foodsCashAmount);
-    return c && !isNaN(Number(c)) ? D(c) : D(0);
-  })();
-  const totalFoodsPayment = foodsCashVal.plus(totalBankParsed);
-
-  const handleFoodsSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
-    setSuccess("");
-    if (!foodsSalesman) {
-      setError("Please select the foods salesman.");
-      return;
-    }
-    const cleanCash = cleanMoney(foodsCashAmount);
-    const cashVal = cleanCash ? parseMoneyNumber(cleanCash) : 0;
-    const bankVal = totalBankParsed.toNumber();
-
-    if (cashVal <= 0 && bankVal <= 0) {
-      setError("Please enter at least one amount (cash or bank/online).");
-      return;
-    }
-
-    setBusy(true);
-    try {
-      const foodsObj = foodsSalesmenOptions.find((f) => f.name === foodsSalesman || f.id === foodsSalesman);
-      const foodsSalesmanId = foodsObj?.id;
-      const foodsDisplayName = foodsObj?.name || foodsSalesman;
-
-      // If both cash and bank are present, or separate transactions:
-      // Post cash receipt separately from online receipt so each event is independently
-      // reversible, verifiable, and tracked to its exact cash drawer vs bank account.
-      const messages: string[] = [];
-
-      if (cashVal > 0) {
-        await api(
-          "commands/foodsReceipt",
-          commandResult,
-          {
-            date: foodsDate,
-            foodsSalesman: foodsDisplayName,
-            foodsSalesmanId,
-            billNo: foodsBillNo.trim(),
-            foodItems: foodsItems.trim(),
-            method: "cash",
-            cashAmount: cleanCash,
-            bankAmount: "0.00",
-            cashAccountId: foodsCashAccountId || defaultCash || undefined,
-            note: foodsNotes.trim(),
-          },
-          "POST",
-          crypto.randomUUID(),
-        );
-        messages.push(`Cash (₹${cleanCash}) posted to Cash Drawer`);
-      }
-
-      if (bankVal > 0) {
-        await api(
-          "commands/foodsReceipt",
-          commandResult,
-          {
-            date: foodsDate,
-            foodsSalesman: foodsDisplayName,
-            foodsSalesmanId,
-            billNo: foodsBillNo.trim(),
-            foodItems: foodsItems.trim(),
-            method: "online",
-            cashAmount: "0.00",
-            bankAmount: totalBankParsed.toFixed(2),
-            bankAmounts: parsedBankAmounts.length > 0 ? parsedBankAmounts : undefined,
-            bankAccountId: foodsBankAccountId || defaultBank || undefined,
-            verified: false,
-            note: foodsNotes.trim(),
-          },
-          "POST",
-          crypto.randomUUID(),
-        );
-        messages.push(
-          `Online (₹${totalBankParsed.toFixed(2)}${parsedBankAmounts.length > 1 ? ` across ${parsedBankAmounts.length} split claims` : ""
-          }) queued for bank verification`
-        );
-      }
-
-      setSuccess(`Foods collection recorded successfully: ${messages.join(" and ")}.`);
-      setFoodsBillNo("");
-      setFoodsItems("");
-      setFoodsCashAmount("");
-      setFoodsBankAmount("");
-      setFoodsNotes("");
-      await qc.invalidateQueries();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <>
-      <section className="panel" style={{ paddingBottom: 8 }}>
-        <div
-          style={{
-            display: "flex",
-            gap: 24,
-            borderBottom: "1px solid #e7e5e4",
-            marginBottom: 20,
-          }}
-        >
-          {[
-            ["foods", "Foods Collection"],
-          ].map(([k, label]) => (
-            <button
-              key={k}
-              type="button"
-              onClick={() => {
-                setActiveTab(k as typeof activeTab);
-                setError("");
-                setSuccess("");
-              }}
-              style={{
-                background: "none",
-                border: "none",
-                padding: "10px 4px",
-                fontSize: "14px",
-                fontWeight: activeTab === k ? 700 : 500,
-                color: activeTab === k ? "#c2410c" : "#78716c",
-                borderBottom: activeTab === k ? "3px solid #ea580c" : "3px solid transparent",
-                cursor: "pointer",
-              }}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {activeTab === "foods" && (
-          <form onSubmit={handleFoodsSubmit}>
-            <div className="form-grid">
-              <Field label="Foods Salesman *">
-                <select
-                  value={foodsSalesman}
-                  onChange={(e) => setFoodsSalesman(e.target.value)}
-                  required
-                >
-                  <option value="">Choose foods salesman…</option>
-                  {foodsSalesmenOptions.map((f) => (
-                    <option key={f.id} value={f.name}>
-                      {f.name} {f.territory ? `· ${f.territory}` : ""}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-
-              <Field label="Date *">
-                <input
-                  type="date"
-                  value={foodsDate}
-                  onChange={(e) => setFoodsDate(e.target.value)}
-                  required
-                />
-              </Field>
-
-              <Field label="Bill No (optional)">
-                <input
-                  placeholder="e.g. FOOD-BILL-089"
-                  value={foodsBillNo}
-                  onChange={(e) => setFoodsBillNo(e.target.value)}
-                />
-              </Field>
-
-              <Field label="Food Items (optional)">
-                <input
-                  placeholder="e.g. Spices, Atta, Grains, Snacks"
-                  value={foodsItems}
-                  onChange={(e) => setFoodsItems(e.target.value)}
-                />
-              </Field>
-
-              <Field label="Cash Amount (₹)">
-                <input
-                  inputMode="decimal"
-                  placeholder="0.00"
-                  value={foodsCashAmount}
-                  onChange={(e) => setFoodsCashAmount(e.target.value)}
-                />
-              </Field>
-
-              {cashAccounts.length > 0 && (
-                <Field label="Cash Drawer / Account">
-                  <select
-                    value={foodsCashAccountId || defaultCash}
-                    onChange={(e) => setFoodsCashAccountId(e.target.value)}
-                  >
-                    {cashAccounts.map((a) => (
-                      <option key={str(a.id)} value={str(a.id)}>
-                        {str(a.name)} {a.holder ? `(${str(a.holder)})` : ""}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-              )}
-
-              <Field label="Bank / Online Amount(s) (₹)">
-                <input
-                  placeholder="e.g. 500 + 1,200"
-                  value={foodsBankAmount}
-                  onChange={(e) => setFoodsBankAmount(e.target.value)}
-                />
-                {(() => {
-                  const parsed = parsedBankAmounts;
-                  if (parsed.length > 1) {
-                    return (
-                      <div style={{ marginTop: 4, fontSize: 11, color: "#0369a1", display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
-                        <span>{parsed.length} split online records:</span>
-                        {parsed.map((p, i) => (
-                          <span key={i} style={{ background: "#e0f2fe", padding: "1px 6px", borderRadius: 4, fontWeight: 600 }}>
-                            ₹{p}
-                          </span>
-                        ))}
-                        <strong style={{ color: "#0c4a6e" }}>(Total ₹{totalBankParsed.toFixed(2)})</strong>
-                      </div>
-                    );
-                  }
-                  return (
-                    <div style={{ marginTop: 2, fontSize: 11, color: "#64748b" }}>
-                      Separate multiple amounts by comma or space (adds to Online Queue)
-                    </div>
-                  );
-                })()}
-              </Field>
-
-              {bankAccounts.length > 0 && (
-                <Field label="Bank Account">
-                  <select
-                    value={foodsBankAccountId || defaultBank}
-                    onChange={(e) => setFoodsBankAccountId(e.target.value)}
-                  >
-                    {bankAccounts.map((a) => (
-                      <option key={str(a.id)} value={str(a.id)}>
-                        {str(a.name)}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-              )}
-
-              <Field label="Total Received (₹)">
-                <div
-                  style={{
-                    padding: "8px 12px",
-                    borderRadius: 6,
-                    background: "#f0fdf4",
-                    border: "1.5px solid #86efac",
-                    color: "#15803d",
-                    fontWeight: 800,
-                    fontSize: 16,
-                    minHeight: 38,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                  }}
-                >
-                  <span>₹{totalFoodsPayment.toFixed(2)}</span>
-                  <span style={{ fontSize: 11, fontWeight: 600, color: "#166534" }}>
-                    Cash: ₹{foodsCashVal.toFixed(2)} + Bank: ₹{totalBankParsed.toFixed(2)}
-                  </span>
-                </div>
-              </Field>
-
-              <Field label="Notes (optional)">
-                <input
-                  placeholder="Additional remarks or slip reference…"
-                  value={foodsNotes}
-                  onChange={(e) => setFoodsNotes(e.target.value)}
-                />
-              </Field>
-            </div>
-
-            {error && <p role="alert" className="error">{error}</p>}
-            {success && <p role="status" className="notice">{success}</p>}
-
-            <div style={{ marginTop: 20, display: "flex", justifyContent: "flex-end" }}>
-              <Button className="primary" disabled={busy} type="submit" style={{ padding: "10px 24px" }}>
-                {busy ? "Recording…" : "Save Foods Collection"}
-              </Button>
-            </div>
-          </form>
-        )}
-      </section>
-
-      {/* Relevant register table for Foods Collection */}
-      <Documents
-        onSelect={onSelect}
-        kind="foods_receipt"
-      />
-    </>
-  );
-}
-
-function OtherMoneyPage({
-  date,
-  masters,
-  owner,
-  onSelect,
-}: {
-  date: string;
-  masters: Row;
-  owner: boolean;
-  onSelect: (id: string) => void;
-}) {
-  const qc = useQueryClient(),
-    [activeTab, setActiveTab] = useState<"expense" | "employee" | "transfer">("expense"),
-    [busy, setBusy] = useState(false),
-    [error, setError] = useState(""),
-    [success, setSuccess] = useState("");
-
-  const accounts = arr(masters.accounts);
-  const defaultCash = str(accounts.find((a) => a.type === "cash")?.id ?? "");
-  const defaultBank = str(accounts.find((a) => a.type === "bank")?.id ?? "");
-
-  // Load registered employees list from API
-  const employeesQuery = useQuery({
-    queryKey: ["employees"],
-    queryFn: async () => {
-      const r = await fetch("/api/v1/employees");
-      return (await r.json()) as Array<{ id: string; name: string; role: string; phone?: string; active: boolean }>;
-    },
-  });
-  const employeeOptions = (employeesQuery.data ?? []).filter((e) => e.active);
-
-  const foodsSalesmenQuery = useQuery({
-    queryKey: ["foods-salesmen"],
-    queryFn: async () => {
-      const r = await fetch("/api/v1/foods-salesmen");
-      return (await r.json()) as Array<{ id: string; name: string; territory?: string; phone?: string; active: boolean }>;
-    },
-  });
-  const foodsSalesmenOptions = (foodsSalesmenQuery.data ?? []).filter((f) => f.active);
-
-  // 1. Operating expense state
-  const [expenseCategory, setExpenseCategory] = useState("Diesel / Vehicle Fuel"),
-    [expenseAmount, setExpenseAmount] = useState(""),
-    [expensePayee, setExpensePayee] = useState(""),
-    [expenseAccount, setExpenseAccount] = useState<string>(defaultCash),
-    [expenseDate, setExpenseDate] = useState(date),
-    [expenseRef, setExpenseRef] = useState("");
-
-  // 2. Employee state (salary, advance, receive)
-  const [empType, setEmpType] = useState<"salary" | "advance" | "receive">("salary"),
-    [empName, setEmpName] = useState(""),
-    [empAmount, setEmpAmount] = useState(""),
-    [empPeriod, setEmpPeriod] = useState(""),
-    [empAccount, setEmpAccount] = useState<string>(defaultCash),
-    [empDate, setEmpDate] = useState(date),
-    [empNotes, setEmpNotes] = useState(""),
-    [signatureBlob, setSignatureBlob] = useState<Blob | null>(null),
-    [createdDocId, setCreatedDocId] = useState<string | null>(null);
-
-  // 3. Cash to bank transfer state
-  const [transferFrom, setTransferFrom] = useState<string>(defaultCash),
-    [transferTo, setTransferTo] = useState<string>(defaultBank),
-    [transferAmount, setTransferAmount] = useState(""),
-    [transferDate, setTransferDate] = useState(date),
-    [transferNotes, setTransferNotes] = useState("");
-
-  useEffect(() => {
-    if (!expenseAccount && defaultCash) setExpenseAccount(defaultCash);
-    if (!empAccount && defaultCash) setEmpAccount(defaultCash);
-    if (!transferFrom && defaultCash) setTransferFrom(defaultCash);
-    if (!transferTo && defaultBank) setTransferTo(defaultBank);
-  }, [defaultCash, defaultBank]);
-
-  const handleExpenseSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
-    setSuccess("");
-    const cleanAmt = cleanMoney(expenseAmount);
-    if (!cleanAmt || parseMoneyNumber(cleanAmt) <= 0) {
-      setError("Please enter a valid expense amount.");
-      return;
-    }
-    if (!expenseAccount) {
-      setError("Please select the paying account.");
-      return;
-    }
-    setBusy(true);
-    try {
-      await api(
-        "commands/expense",
-        commandResult,
-        {
-          date: expenseDate,
-          category: expenseCategory,
-          payee: expensePayee || expenseCategory,
-          amount: cleanAmt,
-          note: expenseRef,
-          legs: [{ accountId: expenseAccount, amount: cleanAmt }],
-        },
-        "POST",
-        crypto.randomUUID(),
-      );
-      setSuccess("Operating expense recorded successfully.");
-      setExpenseAmount("");
-      setExpensePayee("");
-      setExpenseRef("");
-      await qc.invalidateQueries();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleEmployeeSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
-    setSuccess("");
-    setCreatedDocId(null);
-    if (!empName.trim()) {
-      setError("Please enter the employee name.");
-      return;
-    }
-    const cleanAmt = cleanMoney(empAmount);
-    if (!cleanAmt || parseMoneyNumber(cleanAmt) <= 0) {
-      setError("Please enter a valid amount.");
-      return;
-    }
-    if (!empAccount) {
-      setError(empType === "receive" ? "Please select the receiving account." : "Please select the paying account.");
-      return;
-    }
-
-    setBusy(true);
-    try {
-      const empObj = employeeOptions.find((e) => e.name === empName.trim() || e.id === empName);
-      const employeeId = empObj?.id;
-      const empDisplayName = empObj?.name || empName.trim();
-
-      let docResult: { id?: string; number?: string; amount?: string } | null = null;
-      if (empType === "salary") {
-        docResult = await api(
-          "commands/salary",
-          commandResult,
-          {
-            date: empDate,
-            payee: empDisplayName,
-            employeeId,
-            period: empPeriod || "Regular Salary",
-            amount: cleanAmt,
-            setoff: "0",
-            accountId: empAccount,
-            note: empNotes,
-          },
-          "POST",
-          crypto.randomUUID(),
-        );
-      } else if (empType === "advance") {
-        if (!owner) {
-          await api("requests", rowSchema, {
-            command: "loan",
-            payload: {
-              date: empDate,
-              direction: "staff",
-              counterparty: empDisplayName,
-              employeeId,
-              accountId: empAccount,
-              amount: cleanAmt,
-              note: empNotes,
-            },
-            reason: `Staff advance requested for ${empDisplayName}`,
-          });
-        } else {
-          docResult = await api(
-            "commands/loan",
-            commandResult,
-            {
-              date: empDate,
-              direction: "staff",
-              counterparty: empDisplayName,
-              employeeId,
-              accountId: empAccount,
-              amount: cleanAmt,
-              note: empNotes,
-            },
-            "POST",
-            crypto.randomUUID(),
-          );
-        }
-      } else if (empType === "receive") {
-        docResult = await api(
-          "commands/employeeReceipt",
-          commandResult,
-          {
-            date: empDate,
-            employeeName: empDisplayName,
-            employeeId,
-            amount: cleanAmt,
-            accountId: empAccount,
-            note: empNotes,
-          },
-          "POST",
-          crypto.randomUUID(),
-        );
-      }
-
-      // If digital signature was captured and document was created, upload it as private evidence
-      if (docResult?.id && signatureBlob) {
-        try {
-          const sigFile = new File([signatureBlob], "employee-signature.png", {
-            type: "image/png",
-          });
-          const form = new FormData();
-          form.set("file", sigFile);
-          await fetch("/api/v1/attachments/" + docResult.id, {
-            method: "POST",
-            body: form,
-          });
-        } catch (uploadErr) {
-          console.error("Signature upload failed", uploadErr);
-        }
-      }
-
-      if (docResult?.id) {
-        setCreatedDocId(docResult.id);
-        setSuccess(
-          empType === "receive"
-            ? `Money received from employee recorded successfully as #${docResult.number ?? ""}. Added to account!`
-            : `Employee ${empType} payment recorded successfully as #${docResult.number ?? ""}. Digital signature attached!`,
-        );
-      } else {
-        setSuccess("Approval request submitted for owner approval.");
-      }
-
-      setEmpAmount("");
-      setEmpNotes("");
-      setEmpPeriod("");
-      setSignatureBlob(null);
-      await qc.invalidateQueries();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleTransferSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
-    setSuccess("");
-    const cleanAmt = cleanMoney(transferAmount);
-    if (!cleanAmt || parseMoneyNumber(cleanAmt) <= 0) {
-      setError("Please enter a valid transfer amount.");
-      return;
-    }
-    if (transferFrom === transferTo) {
-      setError("Source and destination accounts must be different.");
-      return;
-    }
-
-    setBusy(true);
-    try {
-      await api(
-        "commands/transfer",
-        commandResult,
-        {
-          date: transferDate,
-          sourceId: transferFrom,
-          destinationId: transferTo,
-          amount: cleanAmt,
-          note: transferNotes,
-        },
-        "POST",
-        crypto.randomUUID(),
-      );
-      setSuccess("Cash to bank transfer recorded successfully.");
-      setTransferAmount("");
-      setTransferNotes("");
-      await qc.invalidateQueries();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <>
-      <section className="panel" style={{ paddingBottom: 8 }}>
-        <div
-          style={{
-            display: "flex",
-            gap: 24,
-            borderBottom: "1px solid #e7e5e4",
-            marginBottom: 20,
-          }}
-        >
-          {[
-            ["expense", "Operating Expenses"],
-            ["employee", "Employee & Staff / Foods (Salary / Advance / Expense)"],
-            ["transfer", "Cash to Bank Transfer"],
-          ].map(([k, label]) => (
-            <button
-              key={k}
-              type="button"
-              onClick={() => {
-                setActiveTab(k as typeof activeTab);
-                setError("");
-                setSuccess("");
-              }}
-              style={{
-                background: "none",
-                border: "none",
-                padding: "10px 4px",
-                fontSize: "14px",
-                fontWeight: activeTab === k ? 700 : 500,
-                color: activeTab === k ? "#c2410c" : "#78716c",
-                borderBottom: activeTab === k ? "3px solid #ea580c" : "3px solid transparent",
-                cursor: "pointer",
-              }}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {activeTab === "expense" && (
-          <form onSubmit={handleExpenseSubmit}>
-            <h3 style={{ textTransform: "uppercase", fontSize: 13, letterSpacing: 0.5, color: "#44403c", marginBottom: 16 }}>
-              Record Operating Expense
-            </h3>
-            <div className="form-grid">
-              <Field label="Category *">
-                <select
-                  value={expenseCategory}
-                  onChange={(e) => setExpenseCategory(e.target.value)}
-                  required
-                >
-                  {[
-                    "Diesel / Vehicle Fuel",
-                    "Shop / Godown Rent",
-                    "Electricity / Utilities",
-                    "Transport / Freight",
-                    "Repairs & Maintenance",
-                    "Stationery & Printing",
-                    "Tea, Snacks & Refreshment",
-                    "Loading & Unloading",
-                    "Packaging Materials",
-                    "Miscellaneous Expense",
-                  ].map((cat) => (
-                    <option key={cat} value={cat}>
-                      {cat}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-
-              <Field label="Amount (₹) *">
-                <input
-                  inputMode="decimal"
-                  placeholder="0.00"
-                  value={expenseAmount}
-                  onChange={(e) => setExpenseAmount(e.target.value)}
-                  required
-                />
-              </Field>
-
-              <Field label="Recipient / Description *">
-                <input
-                  placeholder="e.g. Bharat Petroleum - Diesel refill for delivery van"
-                  value={expensePayee}
-                  onChange={(e) => setExpensePayee(e.target.value)}
-                  required
-                />
-              </Field>
-
-              <Field label="Date *">
-                <input
-                  type="date"
-                  value={expenseDate}
-                  onChange={(e) => setExpenseDate(e.target.value)}
-                  required
-                />
-              </Field>
-
-              <Field label="Paid From Account *">
-                <select
-                  value={expenseAccount}
-                  onChange={(e) => setExpenseAccount(e.target.value)}
-                  required
-                >
-                  <option value="">Choose account…</option>
-                  {accounts.map((a) => (
-                    <option key={str(a.id)} value={str(a.id)}>
-                      {str(a.name)} ({str(a.type)})
-                    </option>
-                  ))}
-                </select>
-              </Field>
-
-              <Field label="Bill / Voucher Reference">
-                <input
-                  placeholder="e.g. Bill #8821"
-                  value={expenseRef}
-                  onChange={(e) => setExpenseRef(e.target.value)}
-                />
-              </Field>
-            </div>
-
-            {error && <p role="alert" className="error">{error}</p>}
-            {success && <p role="status" className="notice">{success}</p>}
-
-            <div style={{ marginTop: 20, display: "flex", justifyContent: "flex-end" }}>
-              <Button className="primary" disabled={busy} type="submit" style={{ padding: "10px 24px" }}>
-                {busy ? "Recording…" : "Record Expense"}
-              </Button>
-            </div>
-          </form>
-        )}
-
-        {activeTab === "employee" && (
-          <form onSubmit={handleEmployeeSubmit}>
-            <h3 style={{ textTransform: "uppercase", fontSize: 13, letterSpacing: 0.5, color: "#44403c", marginBottom: 16 }}>
-              Employee & Staff / Foods Salesman (Salary, Advance & Money Received)
-            </h3>
-            <div className="form-grid">
-              <Field label="Entry Type *">
-                <select
-                  value={empType}
-                  onChange={(e) => setEmpType(e.target.value as typeof empType)}
-                  required
-                >
-                  <option value="salary">Salary Payment</option>
-                  <option value="advance">Salary Advance (Staff Loan)</option>
-                  <option value="receive">Receive money from emp</option>
-                </select>
-              </Field>
-
-              <Field label="Employee / Foods Salesman *">
-                <select
-                  value={empName}
-                  onChange={(e) => setEmpName(e.target.value)}
-                  required
-                >
-                  <option value="">Choose employee or foods salesman…</option>
-                  {employeeOptions.length > 0 && (
-                    <optgroup label="Employees & Staff">
-                      {employeeOptions.map((e) => (
-                        <option key={e.id} value={e.name}>
-                          {e.name} {e.role ? `(${e.role})` : ""}
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                  {foodsSalesmenOptions.length > 0 && (
-                    <optgroup label="Foods Salesmen">
-                      {foodsSalesmenOptions.map((f) => (
-                        <option key={f.id} value={f.name}>
-                          {f.name} {f.territory ? `(${f.territory})` : "(Foods)"}
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                  {/* Keep selected value visible if it was customized or not in standard list */}
-                  {empName &&
-                    !employeeOptions.some((e) => e.name === empName) &&
-                    !foodsSalesmenOptions.some((f) => f.name === empName) && (
-                      <option value={empName}>{empName}</option>
-                    )}
-                </select>
-              </Field>
-
-              <Field label="Amount (₹) *">
-                <input
-                  inputMode="decimal"
-                  placeholder="0.00"
-                  value={empAmount}
-                  onChange={(e) => setEmpAmount(e.target.value)}
-                  required
-                />
-              </Field>
-
-              <Field label="Date *">
-                <input
-                  type="date"
-                  value={empDate}
-                  onChange={(e) => setEmpDate(e.target.value)}
-                  required
-                />
-              </Field>
-
-              {empType === "salary" && (
-                <Field label="Salary Month / Period">
-                  <input
-                    placeholder="e.g. October 2026"
-                    value={empPeriod}
-                    onChange={(e) => setEmpPeriod(e.target.value)}
-                  />
-                </Field>
-              )}
-
-              <Field label={empType === "receive" ? "Received Into Account *" : "Paid From Account *"}>
-                <select
-                  value={empAccount}
-                  onChange={(e) => setEmpAccount(e.target.value)}
-                  required
-                >
-                  <option value="">Choose account…</option>
-                  {accounts.map((a) => (
-                    <option key={str(a.id)} value={str(a.id)}>
-                      {str(a.name)} ({str(a.type)})
-                    </option>
-                  ))}
-                </select>
-              </Field>
-
-              <Field label="Notes / Reference">
-                <input
-                  placeholder="Payment remarks or voucher number…"
-                  value={empNotes}
-                  onChange={(e) => setEmpNotes(e.target.value)}
-                />
-              </Field>
-            </div>
-
-            <SignaturePad
-              key={createdDocId ?? "sigpad"}
-              onChange={(blob) => setSignatureBlob(blob)}
-              onClear={() => setSignatureBlob(null)}
-            />
-
-            {error && <p role="alert" className="error">{error}</p>}
-            {success && (
-              <div
-                role="status"
-                className="notice"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  flexWrap: "wrap",
-                  gap: 10,
-                }}
-              >
-                <span>{success}</span>
-                {createdDocId && (
-                  <Button
-                    type="button"
-                    className="primary"
-                    style={{ fontSize: 13, padding: "6px 14px" }}
-                    onClick={() => onSelect(createdDocId)}
-                  >
-                    <Printer size={15} style={{ marginRight: 6 }} /> View & Print Payment Voucher
-                  </Button>
-                )}
-              </div>
-            )}
-
-            <div style={{ marginTop: 20, display: "flex", justifyContent: "flex-end" }}>
-              <Button className="primary" disabled={busy} type="submit" style={{ padding: "10px 24px" }}>
-                {busy
-                  ? "Recording…"
-                  : empType === "receive"
-                    ? "Receive Money"
-                    : "Save Employee Record"}
-              </Button>
-            </div>
-          </form>
-        )}
-
-        {activeTab === "transfer" && (
-          <form onSubmit={handleTransferSubmit}>
-            <h3 style={{ textTransform: "uppercase", fontSize: 13, letterSpacing: 0.5, color: "#44403c", marginBottom: 16 }}>
-              Cash & Bank Transfer
-            </h3>
-            <div className="form-grid">
-              <Field label="Transfer From *">
-                <select
-                  value={transferFrom}
-                  onChange={(e) => setTransferFrom(e.target.value)}
-                  required
-                >
-                  <option value="">Choose source account…</option>
-                  {accounts.map((a) => (
-                    <option key={str(a.id)} value={str(a.id)}>
-                      {str(a.name)} ({str(a.type)})
-                    </option>
-                  ))}
-                </select>
-              </Field>
-
-              <Field label="Transfer To *">
-                <select
-                  value={transferTo}
-                  onChange={(e) => setTransferTo(e.target.value)}
-                  required
-                >
-                  <option value="">Choose destination account…</option>
-                  {accounts.map((a) => (
-                    <option key={str(a.id)} value={str(a.id)}>
-                      {str(a.name)} ({str(a.type)})
-                    </option>
-                  ))}
-                </select>
-              </Field>
-
-              <Field label="Transfer Amount (₹) *">
-                <input
-                  inputMode="decimal"
-                  placeholder="0.00"
-                  value={transferAmount}
-                  onChange={(e) => setTransferAmount(e.target.value)}
-                  required
-                />
-              </Field>
-
-              <Field label="Date *">
-                <input
-                  type="date"
-                  value={transferDate}
-                  onChange={(e) => setTransferDate(e.target.value)}
-                  required
-                />
-              </Field>
-
-              <Field label="Transfer Notes / Cheque / Ref">
-                <input
-                  placeholder="e.g. Cash deposit slip #1049"
-                  value={transferNotes}
-                  onChange={(e) => setTransferNotes(e.target.value)}
-                />
-              </Field>
-            </div>
-
-            {error && <p role="alert" className="error">{error}</p>}
-            {success && <p role="status" className="notice">{success}</p>}
-
-            <div style={{ marginTop: 20, display: "flex", justifyContent: "flex-end" }}>
-              <Button className="primary" disabled={busy} type="submit" style={{ padding: "10px 24px" }}>
-                {busy ? "Recording…" : "Complete Transfer"}
-              </Button>
-            </div>
-          </form>
-        )}
-
-      </section>
-
-      {/* Relevant register table for the active category */}
-      <Documents
-        onSelect={onSelect}
-        kind={
-          activeTab === "expense"
-            ? "expense"
-            : activeTab === "employee"
-              ? "salary,loan,employee_receipt"
-              : "transfer,deposit"
-        }
-      />
-
-      <Requests owner={owner} date={date} masters={masters} />
-    </>
-  );
-}
-
 
 function Requests({
   owner,
@@ -3379,6 +2368,7 @@ const labels: Record<CommandName, string> = {
   reconcile: "Bank reconciliation",
   reallocate: "Review allocations",
   foodsReceipt: "Foods payment receipt",
+  sonyReceipt: "Sony collection receipt",
   employeeReceipt: "Employee advance / recovery receipt",
   receiveSalesmanCash: "Receive salesman cash into till",
   initiateCashHandover: "Initiate cash handover to manager",
@@ -3559,8 +2549,8 @@ const specs: Partial<Record<CommandName, Spec[]>> = {
     },
   ],
   opening: [
-    { key: "target", label: "Opening type", options: ["trade", "money"] },
-    { key: "targetId", label: "Salesman or money account", source: "accounts" },
+    { key: "target", label: "Opening type", options: ["trade", "customer", "money"] },
+    { key: "targetId", label: "Salesman, customer or money account", source: "accounts" },
     {
       key: "amount",
       label: "Signed opening (negative = advance)",
@@ -3658,13 +2648,7 @@ function CommandPage({
   onSelect?: (id: string) => void;
 }) {
   const mubashirSalesman = arr(masters.salesmen).find(
-    (s) =>
-      str((s.details as Row)?.is_direct_route) === "true" ||
-      str((s.details as Row)?.direct_route) === "true" ||
-      str((s.details as Row)?.isDirectRoute) === "true" ||
-      str(s.name).toLowerCase().includes("mubashir") ||
-      str(s.name).toLowerCase().includes("muddasir") ||
-      str((s.details as Row)?.itc_id) === "1HG2",
+    (s) => str(s.name).trim().toUpperCase() === "MUBASHIR SALESMAN",
   );
   const mubashirSalesmanId = mubashirSalesman ? str(mubashirSalesman.id) : undefined;
   const qc = useQueryClient(),
@@ -3772,7 +2756,12 @@ function CommandPage({
         ),
       enabled: name === "return",
     });
-  const set = (k: string, v: string) => setValues((s) => ({ ...s, [k]: v }));
+  const set = (k: string, v: string) =>
+    setValues((s) => ({
+      ...s,
+      [k]: v,
+      ...(k === "target" && s.target !== v ? { targetId: "" } : {}),
+    }));
   const options = (s: Spec): Row[] =>
     s.source === "closes"
       ? arr(dashboard.exceptions).map((r) => ({
@@ -3798,15 +2787,30 @@ function CommandPage({
                     ? r.kind === "unidentified"
                     : true),
           )
-          : s.key === "targetId" && values.target === "trade"
-            ? arr(masters.salesmen)
-            : s.source === "salesmen"
+          : s.key === "targetId" && values.target === "customer"
+            ? arr(masters.customers)
+              .filter(
+                (c) =>
+                  c.active !== false &&
+                  (!mubashirSalesmanId || c.salesman_id === mubashirSalesmanId),
+              )
+              .map((c) => {
+                const route = str(c.beat_name || c.beat_code || "").trim();
+                const name = route ? `${str(c.customer_name)} - ${route}` : str(c.customer_name);
+                return {
+                  ...c,
+                  name,
+                };
+              })
+            : s.key === "targetId" && values.target === "trade"
               ? arr(masters.salesmen)
-              : arr(masters.accounts).filter((r) =>
-                s.source === "cash" || s.source === "bank"
-                  ? r.type === s.source
-                  : true,
-              );
+              : s.source === "salesmen"
+                ? arr(masters.salesmen)
+                : arr(masters.accounts).filter((r) =>
+                  s.source === "cash" || s.source === "bank"
+                    ? r.type === s.source
+                    : true,
+                );
   const onlyRequest =
     (!owner &&
       [
@@ -4185,9 +3189,11 @@ function CommandPage({
                     f.key === "targetId"
                       ? values.target === "trade"
                         ? "Select Salesman"
-                        : values.target === "money"
-                          ? "Select Money / Bank Account"
-                          : f.label
+                        : values.target === "customer"
+                          ? "Select Mudhashir's Customer"
+                          : values.target === "money"
+                            ? "Select Money / Bank Account"
+                            : f.label
                       : f.label;
                   return (
                     <Field
@@ -4208,11 +3214,17 @@ function CommandPage({
                                   : o !== "cash_over_short",
                               )
                               : f.options
-                            ).map((o) => (
-                              <option key={o} value={o}>
-                                {o.replaceAll("_", " ")}
-                              </option>
-                            ))
+                            ).map((o) => {
+                              const optLabel =
+                                name === "opening" && f.key === "target" && o === "customer"
+                                  ? "Mudhashir's Customers"
+                                  : o.replaceAll("_", " ");
+                              return (
+                                <option key={o} value={o}>
+                                  {optLabel}
+                                </option>
+                              );
+                            })
                             : options(f).map((r) => (
                               <option key={str(r.id)} value={str(r.id)}>
                                 {str(r.name ?? r.number ?? r.label)}
@@ -5240,16 +4252,20 @@ function CustomerStatementPage({
   customerId,
   onClose,
   date,
+  owner,
   onSelectRecord,
   onNewBill,
   onReceiveMoney,
+  onSetOpening,
 }: {
   customerId: string;
   onClose: () => void;
   date?: string;
+  owner?: boolean;
   onSelectRecord?: (recordId: string) => void;
   onNewBill?: (customerId: string, salesmanId?: string) => void;
   onReceiveMoney?: (customerId: string, salesmanId?: string) => void;
+  onSetOpening?: (customerId: string, salesmanId?: string) => void;
 }) {
   const [selectedDate, setSelectedDate] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
@@ -5316,6 +4332,29 @@ function CustomerStatementPage({
           >
             <IndianRupee size={14} strokeWidth={2.5} /> Receive
           </Button>
+          {owner && (
+            <Button
+              className="secondary"
+              onClick={() =>
+                onSetOpening?.(
+                  currentCustomerId,
+                  str((q.data?.customer as Row)?.salesman_id),
+                )
+              }
+              style={{
+                padding: "6px 14px",
+                minHeight: 36,
+                fontSize: 13,
+                fontWeight: 600,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+              }}
+              title="Set or approve opening balance for this customer"
+            >
+              <BookOpen size={14} strokeWidth={2.5} /> Set Opening
+            </Button>
+          )}
         </div>
       }
     >
@@ -5515,10 +4554,24 @@ function CustomerStatementPage({
 
           {(() => {
             const rawEntries = arr(q.data.ledger)
-              .map((row: Row) => ({
-                ...row,
-                displayType: str(row.kind).toUpperCase(),
-              }))
+              .map((row: Row) => {
+                const rowData = ((row.details || row.data || {}) as Row) || {};
+                const method = str(rowData.method || row.method || "").toLowerCase();
+                let displayType = str(row.kind).toUpperCase();
+                if (row.kind === "receipt") {
+                  displayType = method === "online" ? "ONLINE RECEIPT" : "CASH RECEIPT";
+                }
+                const account = str(
+                  row.account ||
+                  rowData.accountName ||
+                  (method === "online" ? "Demo receiving bank" : method === "cash" ? "Demo manager cash" : "—")
+                );
+                return {
+                  ...row,
+                  displayType,
+                  account,
+                };
+              })
               .slice()
               .reverse(); // latest first
 
@@ -5530,6 +4583,7 @@ function CustomerStatementPage({
                 const term = searchTerm.trim().toLowerCase();
                 const num = str(row.number).toLowerCase();
                 const type = str(row.displayType).toLowerCase();
+                const acc = str(row.account).toLowerCase();
                 const note = str(
                   row.note ||
                   (row.data as Row)?.note ||
@@ -5538,7 +4592,7 @@ function CustomerStatementPage({
                   (row.data as Row)?.reference ||
                   ""
                 ).toLowerCase();
-                if (!num.includes(term) && !type.includes(term) && !note.includes(term)) {
+                if (!num.includes(term) && !type.includes(term) && !acc.includes(term) && !note.includes(term)) {
                   return false;
                 }
               }
@@ -5568,6 +4622,7 @@ function CustomerStatementPage({
                       ["number", "Record"],
                       ["date", "Date"],
                       ["displayType", "Type"],
+                      ["account", "Account"],
                       ["note_icon", "Note"],
                       ["debit", "Bill (Due Increases)", true],
                       ["credit", "Paid / Return (Due Reduces)", true],
@@ -5848,7 +4903,8 @@ function StatementPage({
           {(() => {
             const rawEntries = arr(q.data.entries)
               .map((e) => {
-                const method = (e.data as Row | undefined)?.method;
+                const rowData = ((e.data as Row | undefined) || {}) as Row;
+                const method = rowData.method;
                 let displayType = str(e.kind);
                 if (e.kind === "receipt") {
                   displayType =
@@ -5858,9 +4914,15 @@ function StatementPage({
                         ? "receipt-online"
                         : "receipt";
                 }
+                const account = str(
+                  rowData.accountName ||
+                  rowData.sourceAccountName ||
+                  (method === "online" ? "Demo receiving bank" : method === "cash" ? "Demo manager cash" : "—")
+                );
                 return {
                   ...e,
                   displayType,
+                  account,
                   searchIndex: (
                     str(e.number) +
                     " " +
@@ -5868,17 +4930,19 @@ function StatementPage({
                     " " +
                     displayType +
                     " " +
+                    account +
+                    " " +
                     str(e.date) +
                     " " +
-                    str((e.data as Row)?.note || "") +
+                    str(rowData.note || "") +
                     " " +
-                    str((e.data as Row)?.notes || "") +
+                    str(rowData.notes || "") +
                     " " +
-                    str((e.data as Row)?.remarks || "") +
+                    str(rowData.remarks || "") +
                     " " +
-                    str((e.data as Row)?.reason || "") +
+                    str(rowData.reason || "") +
                     " " +
-                    str((e.data as Row)?.reference || "")
+                    str(rowData.reference || "")
                   ).toLowerCase(),
                 };
               })
@@ -5909,6 +4973,7 @@ function StatementPage({
                     ["number", "Record"],
                     ["date", "Date"],
                     ["displayType", "Type"],
+                    ["account", "Account"],
                     ["note_icon", "Note"],
                     ["debit", "Increases due", true],
                     ["credit", "Reduces due", true],

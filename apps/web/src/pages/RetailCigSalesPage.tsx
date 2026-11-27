@@ -1237,13 +1237,15 @@ export function RetailCigSalesPage({
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+                gridTemplateColumns: "minmax(220px, 3fr) minmax(130px, 1.2fr) minmax(240px, 4fr)",
                 gap: 14,
+                alignItems: "start",
                 background: "#f8fafc",
                 padding: "16px 16px",
                 borderRadius: 12,
                 border: "1px solid #e2e8f0",
               }}
+              className="form-grid-mobile"
             >
               <div>
                 <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>
@@ -1262,26 +1264,6 @@ export function RetailCigSalesPage({
                     </option>
                   ))}
                 </select>
-
-                <div style={{ marginTop: 10 }}>
-                  <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#64748b", marginBottom: 4 }}>
-                    BILL NOTES / REMARKS (OPTIONAL)
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Special order remarks, delivery note…"
-                    value={billNote}
-                    onChange={(e) => setBillNote(e.target.value)}
-                    style={{
-                      width: "100%",
-                      padding: "8px 12px",
-                      borderRadius: 8,
-                      border: "1px solid #cbd5e1",
-                      fontSize: 13,
-                      background: "#ffffff",
-                    }}
-                  />
-                </div>
               </div>
 
               <div>
@@ -1293,7 +1275,27 @@ export function RetailCigSalesPage({
                   value={billDate}
                   onChange={(e) => setBillDate(e.target.value)}
                   required
-                  style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 14 }}
+                  style={{ width: "100%", padding: "9px 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 13, background: "#ffffff", fontWeight: 500 }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>
+                  BILL NOTES / REMARKS (OPTIONAL)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Special order remarks, delivery note…"
+                  value={billNote}
+                  onChange={(e) => setBillNote(e.target.value)}
+                  style={{
+                    width: "100%",
+                    padding: "9px 12px",
+                    borderRadius: 8,
+                    border: "1px solid #cbd5e1",
+                    fontSize: 13,
+                    background: "#ffffff",
+                  }}
                 />
               </div>
             </div>

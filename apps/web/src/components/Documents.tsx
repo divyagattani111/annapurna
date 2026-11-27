@@ -49,14 +49,44 @@ export function Documents({
 
   const rawRows: Row[] = (q.data ?? []).map((r: Row) => {
     const rowData = (r.data as Row) || {};
-    const personName =
-      rowData.customerName
-        ? `${rowData.customerName}${r.salesman_name ? ` (${r.salesman_name})` : ""}`
-        : r.salesman_name ||
-        rowData.employeeName ||
-        rowData.payee ||
-        rowData.counterparty ||
-        "—";
+    const isTransferOrDeposit =
+      r.kind === "transfer" ||
+      r.kind === "deposit" ||
+      r.kind === "cash_transfer" ||
+      r.kind === "bank_deposit";
+
+    const destName = str(
+      rowData.destinationAccountName ||
+      r.destination_account_name ||
+      rowData.accountName ||
+      rowData.bankName ||
+      r.bank_name ||
+      (isTransferOrDeposit ? "Demo receiving bank" : "")
+    );
+    const srcName = str(
+      rowData.sourceAccountName ||
+      r.source_account_name ||
+      (isTransferOrDeposit ? "Demo manager cash" : "")
+    );
+
+    let personName: string;
+    if (isTransferOrDeposit) {
+      if (destName && srcName && destName !== srcName) {
+        personName = `${destName} (from ${srcName})`;
+      } else {
+        personName = destName || srcName || str(r.salesman_name) || "Demo receiving bank";
+      }
+    } else {
+      personName = rowData.customerName
+        ? `${str(rowData.customerName)}${r.salesman_name ? ` (${r.salesman_name})` : ""}`
+        : str(
+          r.salesman_name ||
+          rowData.employeeName ||
+          rowData.payee ||
+          rowData.counterparty ||
+          "—",
+        );
+    }
     let statusStr = str(r.settlement ?? "Posted");
     if (r.kind === "bill") {
       const parts = [str(r.settlement ?? "Unpaid")];
@@ -84,6 +114,9 @@ export function Documents({
     return {
       ...r,
       person_name: personName,
+      is_transfer_or_deposit: isTransferOrDeposit,
+      dest_name: destName,
+      src_name: srcName,
       formatted_date: formattedDate,
       raw_date: str(r.business_date || ""),
       status: statusStr,
@@ -188,11 +221,13 @@ export function Documents({
 
   const personColumnTitle = salesmanId
     ? "Customer / Person"
-    : kind?.includes("salary")
-      ? "Employee / Person"
-      : kind === "foods_receipt"
-        ? "Foods Salesman"
-        : "Salesman / Customer";
+    : kind?.includes("transfer") || kind?.includes("deposit")
+      ? "Bank / Account"
+      : kind?.includes("salary")
+        ? "Employee / Person"
+        : kind === "foods_receipt"
+          ? "Foods Salesman"
+          : "Salesman / Customer";
 
   return (
     <section className="panel" style={{ padding: "16px 18px" }}>
@@ -313,7 +348,7 @@ export function Documents({
                 <th style={{ padding: "6px 8px" }}>
                   <input
                     type="search"
-                    placeholder="Search name…"
+                    placeholder={kind?.includes("transfer") || kind?.includes("deposit") ? "Search bank / account…" : "Search name…"}
                     value={colPerson}
                     onChange={(e) => {
                       setColPerson(e.target.value);
@@ -451,7 +486,20 @@ export function Documents({
                       </div>
                     </td>
                     <td style={{ padding: "10px 12px", fontWeight: 500, color: "#0f172a" }}>
-                      {str(r.person_name)}
+                      {r.is_transfer_or_deposit && r.dest_name ? (
+                        <div>
+                          <div style={{ fontWeight: 600, color: "#0c4a6e" }}>
+                            {str(r.dest_name)}
+                          </div>
+                          {Boolean(r.src_name && r.src_name !== r.dest_name) && (
+                            <div style={{ fontSize: 11, color: "#64748b" }}>
+                              From: {str(r.src_name)}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        str(r.person_name)
+                      )}
                     </td>
                     <td style={{ padding: "10px 12px" }}>
                       <span

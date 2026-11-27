@@ -204,6 +204,32 @@ export function resolveTransactionType(doc: Row | null | undefined): Transaction
     };
   }
 
+  // Sony Receipts
+  if (rawKind === "sony_receipt" || rawKind === "sony_receipt_cash" || rawKind === "sony_receipt_online") {
+    if (method === "online" || rawKind === "sony_receipt_online") {
+      return {
+        key: "sony_receipt_online",
+        label: "Sony Receipt Online",
+        group: "sony_receipt",
+        badgeStyle: { background: "#f0f9ff", color: "#0284c7" },
+      };
+    }
+    if (method === "cash" || rawKind === "sony_receipt_cash") {
+      return {
+        key: "sony_receipt_cash",
+        label: "Sony Receipt Cash",
+        group: "sony_receipt",
+        badgeStyle: { background: "#faf5ff", color: "#7c3aed" },
+      };
+    }
+    return {
+      key: "sony_receipt",
+      label: "Sony Receipt",
+      group: "sony_receipt",
+      badgeStyle: { background: "#faf5ff", color: "#7c3aed" },
+    };
+  }
+
   // 3. Bills
   if (rawKind === "bill") {
     return {

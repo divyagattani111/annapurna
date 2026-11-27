@@ -228,9 +228,11 @@ async function post(
     prefix =
       kind === "foods_receipt"
         ? "FOODS-RECEIPT"
-        : kind === "employee_receipt"
-          ? "EMP-RECEIPT"
-          : kind.toUpperCase(),
+        : kind === "sony_receipt"
+          ? "SONY-RECEIPT"
+          : kind === "employee_receipt"
+            ? "EMP-RECEIPT"
+            : kind.toUpperCase(),
     number = `${series.documentPrefix ?? ""}${prefix}-${issued.padStart(6, "0")}`;
 
   let customerId: string | null = null;
@@ -617,8 +619,6 @@ export async function command<K extends CommandName>(
       "refund",
       "opening",
       "openingBatch",
-      "loan",
-      "repay",
       "owner",
       "reverse",
       "reopen",
@@ -626,6 +626,15 @@ export async function command<K extends CommandName>(
       "resolveCloseException",
     ];
     if (ownerCommands.includes(name)) owner(a);
+    if (name === "loan") {
+      const l = p as Inputs["loan"];
+      if (l?.direction === "staff") {
+        ownerOrManager(a);
+      } else {
+        owner(a);
+      }
+    }
+    if (name === "repay") ownerOrManager(a);
     const payload = p as unknown as {
       method?: string;
       verified?: boolean;
@@ -1396,22 +1405,36 @@ async function execute<K extends CommandName>(
         v.sourceId !== v.destinationId,
         "Source and destination must differ",
       );
-      await account(t, a, v.sourceId, name === "deposit" ? "cash" : undefined);
-      await account(
+      const srcAcc = await account(t, a, v.sourceId, name === "deposit" ? "cash" : undefined);
+      const destAcc = await account(
         t,
         a,
         v.destinationId,
         name === "deposit" ? "bank" : undefined,
       );
       const transitId = crypto.randomUUID();
-      return post(t, a, name, date, money(v.amount), { ...v, transitId }, [
+      return post(
+        t,
+        a,
+        name,
+        date,
+        money(v.amount),
         {
-          account:
-            name === "deposit" ? "transit:" + transitId : cash(v.destinationId),
-          debit: v.amount,
+          ...v,
+          sourceAccountName: srcAcc.name,
+          destinationAccountName: destAcc.name,
+          bankName: destAcc.type === "bank" ? destAcc.name : (srcAcc.type === "bank" ? srcAcc.name : undefined),
+          transitId,
         },
-        { account: cash(v.sourceId), credit: v.amount },
-      ]);
+        [
+          {
+            account:
+              name === "deposit" ? "transit:" + transitId : cash(v.destinationId),
+            debit: v.amount,
+          },
+          { account: cash(v.sourceId), credit: v.amount },
+        ],
+      );
     }
     case "resolveDeposit": {
       const r = p as Inputs["resolveDeposit"];
@@ -1456,8 +1479,12 @@ async function execute<K extends CommandName>(
       return saved;
     }
     case "loan": {
-      owner(a);
       const l = p as Inputs["loan"];
+      if (l.direction === "staff") {
+        ownerOrManager(a);
+      } else {
+        owner(a);
+      }
       await account(t, a, l.accountId);
       positive(l.amount);
       const loanId = crypto.randomUUID(),
@@ -1486,14 +1513,18 @@ async function execute<K extends CommandName>(
       );
     }
     case "repay": {
-      owner(a);
       const r = p as Inputs["repay"];
       const l = await effective(t, a, r.loanId);
       ensure(l.kind === "loan", "Select a loan");
+      const data = l.data as Row;
+      if (data.direction === "staff") {
+        ownerOrManager(a);
+      } else {
+        owner(a);
+      }
       await account(t, a, r.accountId);
       positive(r.amount);
-      const data = l.data as Row,
-        target = String(data.target),
+      const target = String(data.target),
         borrowed = data.direction === "borrowed";
       const outstanding = D(await balance(t, a.org, target, date)).times(
         borrowed ? -1 : 1,
@@ -1692,7 +1723,7 @@ async function execute<K extends CommandName>(
         original.salesman_id ? String(original.salesman_id) : undefined,
         r.documentId,
       );
-      if (original.kind === "receipt" || original.kind === "foods_receipt") {
+      if (original.kind === "receipt" || original.kind === "foods_receipt" || original.kind === "sony_receipt") {
         await t.execute(
           sql`update receipt_claims set state='reversed', reason=coalesce(reason || ' · ', '') || 'Reversed: ' || ${r.reason} where org=${a.org} and document_id=${r.documentId}`,
         );
@@ -1895,6 +1926,74 @@ async function execute<K extends CommandName>(
 
       return doc;
     }
+    case "sonyReceipt": {
+      const r = p as Inputs["sonyReceipt"];
+      const cashAmt = D(r.cashAmount || "0");
+
+      const splitBankAmounts = (r.bankAmounts && r.bankAmounts.length > 0)
+        ? r.bankAmounts.map((x) => D(x))
+        : (r.bankAmount && D(r.bankAmount).gt(0) ? [D(r.bankAmount)] : []);
+      const bankAmt = splitBankAmounts.reduce((acc, curr) => acc.plus(curr), D(0));
+
+      const total = cashAmt.plus(bankAmt);
+      ensure(total.gt(0), "At least one amount (cash or bank) must be greater than zero");
+
+      let cashAccId = r.cashAccountId;
+      if (cashAmt.gt(0)) {
+        if (!cashAccId) {
+          const [cashAcc] = await rows(
+            t,
+            sql`select id from money_accounts where org=${a.org} and type='cash' and active order by name limit 1`,
+          );
+          ensure(cashAcc, "No active cash account configured");
+          cashAccId = String(cashAcc.id);
+        } else {
+          await account(t, a, cashAccId, "cash");
+        }
+      }
+
+      let bankAccId = r.bankAccountId;
+      if (bankAmt.gt(0)) {
+        if (!bankAccId) {
+          const [bankAcc] = await rows(
+            t,
+            sql`select id from money_accounts where org=${a.org} and type='bank' and active order by name limit 1`,
+          );
+          ensure(bankAcc, "No active bank account configured");
+          bankAccId = String(bankAcc.id);
+        } else {
+          await account(t, a, bankAccId, "bank");
+        }
+      }
+
+      const legs: Leg[] = [];
+      if (cashAmt.gt(0) && cashAccId) {
+        legs.push({ account: cash(cashAccId), debit: money(cashAmt) });
+      }
+      if (bankAmt.gt(0) && bankAccId) {
+        legs.push({ account: cash(bankAccId), debit: money(bankAmt) });
+      }
+      legs.push({ account: "revenue:sony", credit: money(total) });
+
+      const doc = await post(
+        t,
+        a,
+        "sony_receipt",
+        date,
+        money(total),
+        {
+          area: r.area,
+          method: r.method || (cashAmt.gt(0) && bankAmt.lte(0) ? "cash" : bankAmt.gt(0) && cashAmt.lte(0) ? "online" : undefined),
+          cashAmount: money(cashAmt),
+          bankAmount: money(bankAmt),
+          unverifiedOnlineAmount: "0.00",
+          note: r.note || "",
+        },
+        legs,
+      );
+
+      return doc;
+    }
     case "employeeReceipt": {
       const r = p as Inputs["employeeReceipt"];
       positive(r.amount);
@@ -2075,22 +2174,20 @@ async function execute<K extends CommandName>(
         salesmanId,
       );
 
-      if (!isOnline) {
-        const [existingRecord] = await rows(
-          t,
-          sql`select id from cash_handovers where id=${handoverRecordId} and org=${a.org} limit 1`,
-        );
+      const [existingRecord] = await rows(
+        t,
+        sql`select id from cash_handovers where id=${handoverRecordId} and org=${a.org} limit 1`,
+      );
 
-        if (existingRecord) {
-          await t.execute(
-            sql`update cash_handovers set status='confirmed', accepted_amount=${c.acceptedAmount}, document_id=${r.id}, manager_note=${c.managerNote ?? null}, verified_by=${a.id}, verified_at=now() where id=${handoverRecordId} and org=${a.org}`,
-          );
-        } else {
-          await t.execute(
-            sql`insert into cash_handovers(id, org, salesman_id, amount, accepted_amount, date, status, manager_note, document_id, actor, verified_by, verified_at)
-                values(${handoverRecordId}, ${a.org}, ${salesmanId}, ${c.acceptedAmount}, ${c.acceptedAmount}, ${date}, 'confirmed', ${c.managerNote ?? null}, ${r.id}, ${a.id}, ${a.id}, now())`,
-          );
-        }
+      if (existingRecord) {
+        await t.execute(
+          sql`update cash_handovers set status='confirmed', accepted_amount=${c.acceptedAmount}, document_id=${r.id}, manager_note=${c.managerNote ?? null}, verified_by=${a.id}, verified_at=now() where id=${handoverRecordId} and org=${a.org}`,
+        );
+      } else {
+        await t.execute(
+          sql`insert into cash_handovers(id, org, salesman_id, amount, accepted_amount, date, status, manager_note, document_id, actor, verified_by, verified_at)
+              values(${handoverRecordId}, ${a.org}, ${salesmanId}, ${c.acceptedAmount}, ${c.acceptedAmount}, ${date}, 'confirmed', ${c.managerNote ?? null}, ${r.id}, ${a.id}, ${a.id}, now())`,
+        );
       }
 
       await allocate(t, a, salesmanId);

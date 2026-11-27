@@ -856,7 +856,7 @@ app.get("/api/v1/documents", async (c) => {
   if (search) {
     const s = "%" + search.replace(/[%_\\]/g, "\\$&") + "%";
     conditions.push(
-      sql`(d.number ilike ${s} or s.name ilike ${s} or d.data->>'customerName' ilike ${s} or d.data->>'customerRef' ilike ${s} or d.data->>'paperReference' ilike ${s} or d.data->>'reference' ilike ${s} or d.data->>'payee' ilike ${s} or d.data->>'category' ilike ${s} or d.data->>'foodsSalesman' ilike ${s} or d.data->>'foodItems' ilike ${s} or d.data->>'billNo' ilike ${s} or d.data->>'note' ilike ${s})`,
+      sql`(d.number ilike ${s} or s.name ilike ${s} or d.data->>'customerName' ilike ${s} or d.data->>'customerRef' ilike ${s} or d.data->>'paperReference' ilike ${s} or d.data->>'reference' ilike ${s} or d.data->>'payee' ilike ${s} or d.data->>'category' ilike ${s} or d.data->>'foodsSalesman' ilike ${s} or d.data->>'foodItems' ilike ${s} or d.data->>'billNo' ilike ${s} or d.data->>'note' ilike ${s} or src_acc.name ilike ${s} or dest_acc.name ilike ${s})`,
     );
   }
 
@@ -867,7 +867,31 @@ app.get("/api/v1/documents", async (c) => {
     sql`
       select 
         d.*,
-        coalesce(s.name, d.data->>'foodsSalesman', d.data->>'payee', d.data->>'counterparty', d.data->>'employeeName') salesman_name,
+        coalesce(
+          s.name, 
+          d.data->>'foodsSalesman', 
+          d.data->>'payee', 
+          d.data->>'counterparty', 
+          d.data->>'employeeName',
+          case 
+            when d.kind in ('transfer', 'deposit') then 
+              coalesce(
+                dest_acc.name,
+                d.data->>'destinationAccountName',
+                d.data->>'bankName',
+                d.data->>'accountName',
+                src_acc.name,
+                d.data->>'sourceAccountName'
+              )
+          end
+        ) salesman_name,
+        src_acc.name as source_account_name,
+        dest_acc.name as destination_account_name,
+        case 
+          when dest_acc.type = 'bank' then dest_acc.name 
+          when src_acc.type = 'bank' then src_acc.name 
+          else coalesce(d.data->>'bankName', dest_acc.name) 
+        end as bank_name,
         case 
           when d.kind<>'bill' then null 
           when coalesce(ap.applied,0)>=d.amount then 'Settled' 
@@ -895,6 +919,8 @@ app.get("/api/v1/documents", async (c) => {
         coalesce(qty.lines_count, 0)::int lines_count
       from documents d 
       left join salesmen s on s.id=d.salesman_id 
+      left join money_accounts src_acc on src_acc.org = d.org and src_acc.id::text = coalesce(d.data->>'sourceId', d.data->>'sourceAccountId')
+      left join money_accounts dest_acc on dest_acc.org = d.org and dest_acc.id::text = coalesce(d.data->>'destinationId', d.data->>'accountId') 
       left join lateral (
         select sum(x.amount) applied 
         from allocations x 
@@ -961,6 +987,13 @@ app.get("/api/v1/documents/:id", async (c) =>
         coalesce(s.phone, s.details->>'phone') salesman_phone,
         fs.phone foods_salesman_phone,
         e.phone employee_phone,
+        src_acc.name as source_account_name,
+        dest_acc.name as destination_account_name,
+        case 
+          when dest_acc.type = 'bank' then dest_acc.name 
+          when src_acc.type = 'bank' then src_acc.name 
+          else coalesce(d.data->>'bankName', dest_acc.name) 
+        end as bank_name,
         exists(select 1 from documents r where r.reverses=d.id and r.org=d.org) reversed,
         (select r.id from documents r where r.reverses=d.id and r.org=d.org limit 1) reversal_id,
         (select r.number from documents r where r.reverses=d.id and r.org=d.org limit 1) reversal_number,
@@ -991,9 +1024,22 @@ app.get("/api/v1/documents/:id", async (c) =>
       left join salesmen s on s.id = d.salesman_id and s.org = d.org
       left join foods_salesmen fs on fs.id = case when (d.data->>'foodsSalesmanId') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (d.data->>'foodsSalesmanId')::uuid else null end and fs.org = d.org
       left join employees e on e.id = case when (d.data->>'employeeId') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (d.data->>'employeeId')::uuid else null end and e.org = d.org
+      left join money_accounts src_acc on src_acc.org = d.org and src_acc.id::text = coalesce(d.data->>'sourceId', d.data->>'sourceAccountId')
+      left join money_accounts dest_acc on dest_acc.org = d.org and dest_acc.id::text = coalesce(d.data->>'destinationId', d.data->>'accountId')
       where d.org=${a.org} and d.id=${recordId}`,
     );
     ensure(d, "Record not found", "NOT_FOUND", 404);
+    if (d.kind === "transfer" || d.kind === "deposit") {
+      const dRec = (d.data ?? {}) as Record<string, unknown>;
+      const srcName = (d as Record<string, unknown>).source_account_name as string | undefined;
+      const destName = (d as Record<string, unknown>).destination_account_name as string | undefined;
+      d.data = {
+        ...dRec,
+        sourceAccountName: dRec.sourceAccountName || srcName,
+        destinationAccountName: dRec.destinationAccountName || destName,
+        bankName: dRec.bankName || destName,
+      };
+    }
     const [fetchedLines, entries, allocations, attachments] = await Promise.all([
       rows(
         t,
@@ -2539,11 +2585,34 @@ app.get("/api/v1/direct-cig/summary", async (c) => {
     handoversList = await rows(
       db,
       sql`
-        select id, amount, accepted_amount, date::text, status, salesman_note, manager_note, created_at::text, verified_at::text
-        from cash_handovers
-        where org = ${a.org}
-          and salesman_id = ${salesmanId}
-        order by created_at desc
+        select 
+          h.id, 
+          h.amount, 
+          h.accepted_amount, 
+          h.date::text, 
+          h.status, 
+          h.salesman_note, 
+          h.manager_note, 
+          h.created_at::text, 
+          h.verified_at::text,
+          coalesce(
+            m_dest.name,
+            d.data->>'accountName',
+            case when d.data->>'method' = 'online' then 'Demo receiving bank' else 'Demo manager cash' end
+          ) as account_name,
+          coalesce(
+            m_src.name,
+            d.data->>'sourceAccountName',
+            case when d.data->>'method' = 'online' then 'Mudhasir online account' else null end
+          ) as source_account_name,
+          d.data->>'method' as method
+        from cash_handovers h
+        left join documents d on d.id = h.document_id
+        left join money_accounts m_dest on m_dest.org = h.org and m_dest.id::text = coalesce(d.data->>'accountId', d.data->>'destinationId')
+        left join money_accounts m_src on m_src.org = h.org and m_src.id::text = coalesce(d.data->>'sourceAccountId', d.data->>'sourceId')
+        where h.org = ${a.org}
+          and h.salesman_id = ${salesmanId}
+        order by h.created_at desc
         limit 50
       `,
     );
@@ -2756,9 +2825,15 @@ app.get("/api/v1/direct-cig/statement/:customerId", async (c) => {
         d.business_date::text, 
         d.amount::text, 
         d.data, 
-        d.created_at::text
+        d.created_at::text,
+        coalesce(
+          m.name,
+          d.data->>'accountName',
+          case when d.data->>'method' = 'online' then 'Demo receiving bank' when d.data->>'method' = 'cash' then 'Demo manager cash' else null end
+        ) as account_name
       from documents d
       left join documents orig on orig.id::text = d.data->>'billId' and orig.org = d.org
+      left join money_accounts m on m.org = d.org and m.id::text = coalesce(d.data->>'accountId', d.data->>'destinationId')
       where d.org=${a.org}
         and coalesce(d.customer_id, orig.customer_id) = ${custId}::uuid
         and d.kind in ('bill', 'opening', 'receipt', 'return')
@@ -2774,6 +2849,7 @@ app.get("/api/v1/direct-cig/statement/:customerId", async (c) => {
     const credit = !isDebit ? d.amount : "0.00";
     if (isDebit) runningBalance = runningBalance.plus(d.amount);
     else runningBalance = runningBalance.minus(d.amount);
+    const acc = (d as unknown as { account_name?: string }).account_name || String(d.data?.accountName ?? "") || (d.kind === "receipt" ? "Demo manager cash" : "—");
     return {
       id: d.id,
       number: d.number,
@@ -2784,13 +2860,16 @@ app.get("/api/v1/direct-cig/statement/:customerId", async (c) => {
       credit,
       balance: money(runningBalance),
       note: String(d.data?.note ?? ""),
+      account: acc,
       details: d.data,
     };
   });
 
+  const openingDoc = docs.find((d) => d.kind === "opening");
   return c.json({
     customer,
     ledger,
+    opening: openingDoc ? openingDoc.amount : "0.00",
     currentBalance: money(runningBalance),
   });
 });
@@ -3000,6 +3079,9 @@ app.get("/api/v1/reports/:name", async (c) => {
             when d.kind = 'foods_receipt' and (coalesce(d.data->>'method', '') = 'online' or (coalesce((d.data->>'bankAmount')::numeric, 0) > 0 and coalesce((d.data->>'cashAmount')::numeric, 0) = 0)) then 'foods_receipt_online'
             when d.kind = 'foods_receipt' and (coalesce(d.data->>'method', '') = 'cash' or (coalesce((d.data->>'cashAmount')::numeric, 0) > 0 and coalesce((d.data->>'bankAmount')::numeric, 0) = 0)) then 'foods_receipt_cash'
             when d.kind = 'foods_receipt' then 'foods_receipt'
+            when d.kind = 'sony_receipt' and (coalesce(d.data->>'method', '') = 'online' or (coalesce((d.data->>'bankAmount')::numeric, 0) > 0 and coalesce((d.data->>'cashAmount')::numeric, 0) = 0)) then 'sony_receipt_online'
+            when d.kind = 'sony_receipt' and (coalesce(d.data->>'method', '') = 'cash' or (coalesce((d.data->>'cashAmount')::numeric, 0) > 0 and coalesce((d.data->>'bankAmount')::numeric, 0) = 0)) then 'sony_receipt_cash'
+            when d.kind = 'sony_receipt' then 'sony_receipt'
             when d.kind = 'expense' then 'expense'
             when d.kind = 'salary' then 'salary'
             when d.kind = 'employee_receipt' then 'employee_receipt'
@@ -3014,11 +3096,21 @@ app.get("/api/v1/reports/:name", async (c) => {
             when d.kind in ('receipt', 'identify') and (coalesce(d.data->>'isHandoverConfirmation', 'false') = 'true' or (d.data ? 'reference' and d.data->>'reference' like 'Cash handover confirmed%')) then coalesce(s.name, d.data->>'salesmanName', 'Salesman') || ' (Cash Handover)'
             when d.kind in ('receipt', 'identify') then coalesce(s.name, '—')
             when d.kind = 'foods_receipt' then coalesce(d.data->>'foodsSalesman', 'Foods')
+            when d.kind = 'sony_receipt' then coalesce('Sony (' || (d.data->>'area') || ')', 'Sony Collection')
             when d.kind = 'salary' then coalesce(d.data->>'payee', d.data->>'employeeName', 'Staff')
             when d.kind = 'employee_receipt' then coalesce(d.data->>'employeeName', d.data->>'payee', 'Staff')
             when d.kind = 'expense' then coalesce(d.data->>'category', 'Operating expense')
-            when d.kind = 'deposit' then '—'
-            when d.kind = 'transfer' then coalesce('From: ' || src_acc.name, case when d.data ? 'sourceAccountName' then 'From: ' || (d.data->>'sourceAccountName') end, '—')
+            when d.kind = 'deposit' then coalesce(dest_acc.name, d.data->>'destinationAccountName', 'Demo receiving bank')
+            when d.kind = 'transfer' then coalesce(
+              case 
+                when dest_acc.name is not null and src_acc.name is not null then dest_acc.name || ' (from ' || src_acc.name || ')'
+                when dest_acc.name is not null then dest_acc.name
+                when src_acc.name is not null then 'To bank / from ' || src_acc.name
+              end,
+              case when d.data ? 'destinationAccountName' then d.data->>'destinationAccountName' end,
+              case when d.data ? 'sourceAccountName' then 'From: ' || (d.data->>'sourceAccountName') end,
+              'Demo receiving bank'
+            )
             when d.kind = 'loan' then coalesce(d.data->>'counterparty', '—')
             when d.kind = 'return' then coalesce(s.name, '—')
             else coalesce(s.name, d.data->>'category', d.data->>'payee', '—')
@@ -3058,6 +3150,7 @@ app.get("/api/v1/reports/:name", async (c) => {
         from documents d
         left join salesmen s on s.id = d.salesman_id and s.org = d.org
         left join money_accounts src_acc on src_acc.org = d.org and src_acc.id::text = coalesce(d.data->>'sourceId', d.data->>'sourceAccountId')
+        left join money_accounts dest_acc on dest_acc.org = d.org and dest_acc.id::text = coalesce(d.data->>'destinationId', d.data->>'accountId')
         left join lateral (
           select sum(x.amount) applied 
           from allocations x 
@@ -3155,6 +3248,9 @@ app.get("/api/v1/reports/:name", async (c) => {
             when d.kind = 'foods_receipt' and (coalesce(d.data->>'method', '') = 'online' or (coalesce((d.data->>'bankAmount')::numeric, 0) > 0 and coalesce((d.data->>'cashAmount')::numeric, 0) = 0)) then 'foods_receipt_online'
             when d.kind = 'foods_receipt' and (coalesce(d.data->>'method', '') = 'cash' or (coalesce((d.data->>'cashAmount')::numeric, 0) > 0 and coalesce((d.data->>'bankAmount')::numeric, 0) = 0)) then 'foods_receipt_cash'
             when d.kind = 'foods_receipt' then 'foods_receipt'
+            when d.kind = 'sony_receipt' and (coalesce(d.data->>'method', '') = 'online' or (coalesce((d.data->>'bankAmount')::numeric, 0) > 0 and coalesce((d.data->>'cashAmount')::numeric, 0) = 0)) then 'sony_receipt_online'
+            when d.kind = 'sony_receipt' and (coalesce(d.data->>'method', '') = 'cash' or (coalesce((d.data->>'cashAmount')::numeric, 0) > 0 and coalesce((d.data->>'bankAmount')::numeric, 0) = 0)) then 'sony_receipt_cash'
+            when d.kind = 'sony_receipt' then 'sony_receipt'
             when d.kind = 'employee_receipt' then 'employee_receipt'
             when d.kind = 'deposit' then 'bank_deposit'
             when d.kind = 'transfer' then 'cash_transfer'
@@ -3171,6 +3267,7 @@ app.get("/api/v1/reports/:name", async (c) => {
             when d.kind in ('receipt', 'identify') and (coalesce(d.data->>'isHandoverConfirmation', 'false') = 'true' or (d.data ? 'reference' and d.data->>'reference' like 'Cash handover confirmed%')) then coalesce(s.name, d.data->>'salesmanName', 'Salesman') || ' (Cash Handover)'
             when d.kind in ('receipt', 'identify') then coalesce(s.name, d.data->>'salesmanName', '—')
             when d.kind = 'foods_receipt' then coalesce(d.data->>'foodsSalesman', 'Foods')
+            when d.kind = 'sony_receipt' then coalesce('Sony (' || (d.data->>'area') || ')', 'Sony Collection')
             when d.kind = 'employee_receipt' then coalesce(d.data->>'employeeName', d.data->>'payee', 'Staff')
             when d.kind = 'expense' then coalesce(d.data->>'category', d.data->>'payee', 'Operating expense')
             when d.kind = 'salary' then coalesce(d.data->>'payee', d.data->>'employeeName', 'Staff')

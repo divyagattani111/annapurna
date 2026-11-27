@@ -326,6 +326,8 @@ export function WhatsAppShareModal({
     kind === "foods_receipt" ||
     Boolean(data.foodsSalesmanId || data.foodsSalesman);
 
+  const isSonyKind = kind === "sony_receipt";
+
   const rawPhone = isEmployeeKind
     ? str(doc.employee_phone || data.employeePhone || "")
     : isFoodsKind
@@ -340,9 +342,11 @@ export function WhatsAppShareModal({
     ? str(data.employeeName ?? data.payee ?? "Employee")
     : isFoodsKind
       ? str(data.foodsSalesman ?? doc.foods_salesman_name ?? "Foods Salesman")
-      : doc.salesman_id
-        ? str(data.salesmanName ?? "Salesman")
-        : "Owner (Business Record)";
+      : isSonyKind
+        ? str(data.area ? `Sony Area: ${data.area}` : "Sony Collection")
+        : doc.salesman_id
+          ? str(data.salesmanName ?? "Salesman")
+          : "Owner (Business Record)";
 
   // If no party at all (pure internal), route to owner
   const entityType: "salesman" | "employee" | "foods_salesman" | "owner" = isEmployeeKind
@@ -1989,13 +1993,65 @@ function DocumentRecordDetail({
                   <>{str(d.kind)} · </>
                 )}
                 {dateLabel(d.business_date)} ·{" "}
-                {str(data?.salesmanName || "Salesman")}
+                {(d.kind === "transfer" || d.kind === "deposit") ? (
+                  <>
+                    {str(data?.destinationAccountName || (d as Row).destination_account_name || data?.bankName || "Demo receiving bank")}
+                    {(data?.sourceAccountName || (d as Row).source_account_name) && (
+                      <span style={{ color: "#64748b", fontSize: 13, marginLeft: 6 }}>
+                        (From: {str(data?.sourceAccountName || (d as Row).source_account_name)})
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  str(data?.salesmanName || "Salesman")
+                )}
                 {Boolean(data?.customerName) && (
                   <span style={{ marginLeft: 8, background: "#fef3c7", color: "#92400e", padding: "2px 8px", borderRadius: 4, fontWeight: 600 }}>
                     Customer: {str(data?.customerName)}
                   </span>
                 )}
               </p>
+
+              {(d.kind === "transfer" || d.kind === "deposit") && (
+                <div style={{ background: "#f0f9ff", border: "1.5px solid #bae6fd", borderRadius: 8, padding: "14px 18px", marginBottom: 18 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14 }}>
+                    <div>
+                      <span style={{ fontSize: 11, textTransform: "uppercase", color: "#0369a1", fontWeight: 700, display: "block" }}>
+                        From (Source)
+                      </span>
+                      <strong style={{ fontSize: 15, color: "#0c4a6e" }}>
+                        {str(data?.sourceAccountName || (d as Row).source_account_name || "Demo manager cash")}
+                      </strong>
+                    </div>
+                    <div>
+                      <span style={{ fontSize: 11, textTransform: "uppercase", color: "#0369a1", fontWeight: 700, display: "block" }}>
+                        To (Destination Bank)
+                      </span>
+                      <strong style={{ fontSize: 15, color: "#0c4a6e" }}>
+                        {str(data?.destinationAccountName || (d as Row).destination_account_name || data?.bankName || "Demo receiving bank")}
+                      </strong>
+                    </div>
+                    <div>
+                      <span style={{ fontSize: 11, textTransform: "uppercase", color: "#0369a1", fontWeight: 700, display: "block" }}>
+                        Transfer Amount
+                      </span>
+                      <strong style={{ fontSize: 18, color: "#0284c7" }}>
+                        {rupees(d.amount)}
+                      </strong>
+                    </div>
+                    {Boolean(data?.note || (d as Row).note) && (
+                      <div style={{ gridColumn: "span 2" }}>
+                        <span style={{ fontSize: 11, textTransform: "uppercase", color: "#0369a1", fontWeight: 700, display: "block" }}>
+                          Notes / Reference
+                        </span>
+                        <span style={{ fontSize: 13, color: "#334155" }}>
+                          {str(data?.note || (d as Row).note)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {d.kind === "return" && (
                 <div style={{ background: "#fffbeb", border: "1.5px solid #fde68a", borderRadius: 8, padding: "14px 18px", marginBottom: 18 }}>

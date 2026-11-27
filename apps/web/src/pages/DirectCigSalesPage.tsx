@@ -93,23 +93,27 @@ export function DirectCigSalesPage({
   initialSalesmanId?: string | null;
 }) {
   const qc = useQueryClient();
-  const salesmenList = arr(masters.salesmen).filter((s) => s.active);
-  // Default to Mubashir/Muddasir if found
-  const mubashir = salesmenList.find(
-    (s) =>
-      str((s.details as Row)?.is_direct_route) === "true" ||
-      str((s.details as Row)?.direct_route) === "true" ||
-      str((s.details as Row)?.isDirectRoute) === "true" ||
-      str(s.name).toLowerCase().includes("mubashir") ||
-      str(s.name).toLowerCase().includes("muddasir") ||
-      str((s.details as Row)?.itc_id) === "1HG2",
+  const isMubashirOrDirect = (s: Row) => {
+    return str(s.name).trim().toUpperCase() === "MUBASHIR SALESMAN";
+  };
+
+  const allActiveSalesmen = arr(masters.salesmen).filter((s) => s.active);
+  // In Mudashir / Direct Route tab, only display Mubashir / direct route salesman
+  const directSalesmen = allActiveSalesmen.filter(
+    (s) => isMubashirOrDirect(s) || (lockedSalesmanId && str(s.id) === lockedSalesmanId),
   );
-  const [selectedSalesmanId, setSelectedSalesmanId] = useState<string>(
-    lockedSalesmanId || (mubashir ? str(mubashir.id) : str(salesmenList[0]?.id ?? "")),
-  );
+  const salesmenList = directSalesmen.length > 0 ? directSalesmen : allActiveSalesmen;
+  const mubashir = directSalesmen[0] || allActiveSalesmen.find(isMubashirOrDirect) || salesmenList[0];
+
+  const defaultSalesmanId = lockedSalesmanId || (mubashir ? str(mubashir.id) : str(salesmenList[0]?.id ?? ""));
+  const [selectedSalesmanId, setSelectedSalesmanId] = useState<string>(defaultSalesmanId);
   useEffect(() => {
-    if (lockedSalesmanId) setSelectedSalesmanId(lockedSalesmanId);
-  }, [lockedSalesmanId]);
+    if (lockedSalesmanId) {
+      setSelectedSalesmanId(lockedSalesmanId);
+    } else if (mubashir && (!selectedSalesmanId || !salesmenList.some((s) => str(s.id) === selectedSalesmanId))) {
+      setSelectedSalesmanId(str(mubashir.id));
+    }
+  }, [lockedSalesmanId, mubashir, salesmenList, selectedSalesmanId]);
   const [selectedBeat, setSelectedBeat] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
 
@@ -911,10 +915,7 @@ export function DirectCigSalesPage({
 
   const handleCopyList = () => {
     if (aggregatedProducts.length === 0) return;
-    const salesmanName =
-      loadingSheetScope === "all"
-        ? "All Salesmen / Routes"
-        : str(salesmenList.find((s) => str(s.id) === selectedSalesmanId)?.name || "Mudhashir");
+    const salesmanName = "MUBASHIR SALESMAN";
     const dateStr =
       !loadingSheetFrom && !loadingSheetTo
         ? "All Dates"
@@ -970,7 +971,7 @@ export function DirectCigSalesPage({
               <select
                 className="direct-cig-select"
                 value={selectedSalesmanId}
-                disabled={!!lockedSalesmanId}
+                disabled={!!lockedSalesmanId || salesmenList.length <= 1}
                 onChange={(e) => {
                   setSelectedSalesmanId(e.target.value);
                   setSelectedBeat("");
@@ -1604,13 +1605,15 @@ export function DirectCigSalesPage({
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+                gridTemplateColumns: "minmax(240px, 3fr) minmax(130px, 1.2fr) minmax(240px, 4fr)",
                 gap: 14,
+                alignItems: "start",
                 background: "#f8fafc",
                 padding: "16px 16px",
                 borderRadius: 12,
                 border: "1px solid #e2e8f0",
               }}
+              className="form-grid-mobile"
             >
               <div>
                 <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>
@@ -1628,25 +1631,6 @@ export function DirectCigSalesPage({
                     <span>Current Due: <b style={{ color: parseFloat(str(selectedBillCustomer.balance || "0")) > 0 ? "#dc2626" : "#16a34a" }}>{rupees(selectedBillCustomer.balance)}</b></span>
                   </div>
                 )}
-                <div style={{ marginTop: 10 }}>
-                  <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#64748b", marginBottom: 4 }}>
-                    BILL NOTES / REMARKS (OPTIONAL)
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Special order remarks, delivery note, customer request…"
-                    value={billNote}
-                    onChange={(e) => setBillNote(e.target.value)}
-                    style={{
-                      width: "100%",
-                      padding: "8px 12px",
-                      borderRadius: 8,
-                      border: "1px solid #cbd5e1",
-                      fontSize: 13,
-                      background: "#ffffff",
-                    }}
-                  />
-                </div>
               </div>
 
               <div>
@@ -1659,12 +1643,32 @@ export function DirectCigSalesPage({
                   onChange={(e) => setBillDate(e.target.value)}
                   style={{
                     width: "100%",
-                    padding: "9px 12px",
-                    borderRadius: 10,
+                    padding: "9px 10px",
+                    borderRadius: 8,
                     border: "1px solid #cbd5e1",
                     fontSize: 13,
                     background: "#ffffff",
                     fontWeight: 500,
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 6 }}>
+                  BILL NOTES / REMARKS (OPTIONAL)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Special order remarks, delivery note, customer request…"
+                  value={billNote}
+                  onChange={(e) => setBillNote(e.target.value)}
+                  style={{
+                    width: "100%",
+                    padding: "9px 12px",
+                    borderRadius: 8,
+                    border: "1px solid #cbd5e1",
+                    fontSize: 13,
+                    background: "#ffffff",
                   }}
                 />
               </div>
@@ -2941,9 +2945,7 @@ export function DirectCigSalesPage({
                     borderRadius: 6,
                   }}
                 >
-                  {loadingSheetScope === "all"
-                    ? "All Salesmen / Routes"
-                    : str(salesmenList.find((s) => str(s.id) === selectedSalesmanId)?.name || "Mudhashir")}
+                  MUBASHIR SALESMAN
                 </span>
               </div>
               <p className="muted" style={{ margin: "4px 0 0", fontSize: 13 }}>
@@ -2988,24 +2990,26 @@ export function DirectCigSalesPage({
                       cursor: "pointer",
                     }}
                   >
-                    {str(salesmenList.find((s) => str(s.id) === selectedSalesmanId)?.name || "Mudhashir")}
+                    MUBASHIR SALESMAN
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setLoadingSheetScope("all")}
-                    style={{
-                      padding: "4px 8px",
-                      fontSize: 11,
-                      fontWeight: 600,
-                      borderRadius: 5,
-                      border: "1px solid #cbd5e1",
-                      background: loadingSheetScope === "all" ? "#0284c7" : "#ffffff",
-                      color: loadingSheetScope === "all" ? "#ffffff" : "#475569",
-                      cursor: "pointer",
-                    }}
-                  >
-                    All Routes
-                  </button>
+                  {salesmenList.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => setLoadingSheetScope("all")}
+                      style={{
+                        padding: "4px 8px",
+                        fontSize: 11,
+                        fontWeight: 600,
+                        borderRadius: 5,
+                        border: "1px solid #cbd5e1",
+                        background: loadingSheetScope === "all" ? "#0284c7" : "#ffffff",
+                        color: loadingSheetScope === "all" ? "#ffffff" : "#475569",
+                        cursor: "pointer",
+                      }}
+                    >
+                      All Routes
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -3647,7 +3651,7 @@ export function DirectCigSalesPage({
                           Van Loading Sheet (Packing Checklist)
                         </h2>
                         <div style={{ fontSize: 10, color: "#334155", marginTop: 2 }}>
-                          Route / Salesman: <strong>{loadingSheetScope === "all" ? "All Routes / Salesmen" : str(salesmenList.find((s) => str(s.id) === selectedSalesmanId)?.name || "Mudhashir")}</strong>
+                          Route / Salesman: <strong>MUBASHIR SALESMAN</strong>
                         </div>
                       </div>
                       <div style={{ textAlign: "right", fontSize: 9.5, color: "#334155", lineHeight: 1.3 }}>
@@ -3855,6 +3859,7 @@ export function DirectCigSalesPage({
                 <thead>
                   <tr style={{ background: "#f1f5f9", textAlign: "left" }}>
                     <th style={{ padding: "10px 12px" }}>Date</th>
+                    <th style={{ padding: "10px 12px" }}>Account</th>
                     <th style={{ padding: "10px 12px" }}>Handed Over</th>
                     <th style={{ padding: "10px 12px" }}>Accepted</th>
                     <th style={{ padding: "10px 12px" }}>Status</th>
@@ -3865,6 +3870,11 @@ export function DirectCigSalesPage({
                 <tbody>
                   {handoversHistory.map((h) => {
                     const status = str(h.status);
+                    const accountDisplay = str(
+                      h.source_account_name && h.account_name && h.source_account_name !== h.account_name
+                        ? `${str(h.source_account_name)} ➔ ${str(h.account_name)}`
+                        : str(h.account_name || (str(h.method) === "online" ? "Demo receiving bank" : "Demo manager cash")) || "—"
+                    );
                     return (
                       <tr key={str(h.id)} style={{ borderBottom: "1px solid #f1f5f9" }}>
                         <td style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>
@@ -3872,6 +3882,9 @@ export function DirectCigSalesPage({
                           {h.created_at ? (
                             <div style={{ fontSize: 11, color: "#94a3b8" }}>{timeOnlyLabel(h.created_at)}</div>
                           ) : null}
+                        </td>
+                        <td style={{ padding: "10px 12px", fontWeight: 500, color: "#0f172a" }}>
+                          {accountDisplay}
                         </td>
                         <td style={{ padding: "10px 12px", fontWeight: 700 }}>
                           {rupees(h.amount)}

@@ -379,6 +379,20 @@ export const commands = {
       note: z.string().max(2000).optional(),
     })
     .strict(),
+  sonyReceipt: z
+    .object({
+      ...base,
+      area: z.string().min(1).max(200),
+      cashAmount: money.default("0.00"),
+      bankAmount: money.default("0.00"),
+      bankAmounts: z.array(money).optional(),
+      cashAccountId: id.optional(),
+      bankAccountId: id.optional(),
+      method: z.enum(["cash", "online"]).optional(),
+      verified: z.boolean().default(false),
+      note: z.string().max(2000).optional(),
+    })
+    .strict(),
   employeeReceipt: z
     .object({
       ...base,
