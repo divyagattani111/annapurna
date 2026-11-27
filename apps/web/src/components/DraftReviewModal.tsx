@@ -150,15 +150,14 @@ export function DraftReviewModal({
             str(a.holder).toLowerCase().includes("mudhasir") ||
             str(a.holder).toLowerCase().includes("mubashir")),
       );
-      const mudhasirCashAcc = arr(masters.accounts).find(
+      const managerCashAcc = arr(masters.accounts).find(
         (a) =>
           a.type === "cash" &&
-          (str(a.name).toLowerCase().includes("mudhasir") ||
-            str(a.name).toLowerCase().includes("mubashir") ||
-            str(a.holder).toLowerCase().includes("mudhasir") ||
-            str(a.holder).toLowerCase().includes("mubashir")),
-      );
-      const defaultCash = (mudhasirCashAcc?.id || arr(masters.accounts).find((a) => a.type === "cash")?.id) || "";
+          (str(a.name).toLowerCase().includes("manager") ||
+            (!str(a.name).toLowerCase().includes("mudhasir") &&
+              !str(a.name).toLowerCase().includes("mubashir"))),
+      ) || arr(masters.accounts).find((a) => a.type === "cash");
+      const defaultCash = (managerCashAcc?.id || arr(masters.accounts).find((a) => a.type === "cash")?.id) || "";
       const defaultBank = (mudhasirBankAcc?.id || arr(masters.accounts).find((a) => a.type === "bank")?.id) || "";
       const activeCashId = cashAccountId || defaultCash;
       const activeBankId = bankAccountId || defaultBank;

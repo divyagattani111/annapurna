@@ -3018,7 +3018,7 @@ app.get("/api/v1/reports/:name", async (c) => {
             when d.kind = 'employee_receipt' then coalesce(d.data->>'employeeName', d.data->>'payee', 'Staff')
             when d.kind = 'expense' then coalesce(d.data->>'category', 'Operating expense')
             when d.kind = 'deposit' then '—'
-            when d.kind = 'transfer' then '—'
+            when d.kind = 'transfer' then coalesce('From: ' || src_acc.name, case when d.data ? 'sourceAccountName' then 'From: ' || (d.data->>'sourceAccountName') end, '—')
             when d.kind = 'loan' then coalesce(d.data->>'counterparty', '—')
             when d.kind = 'return' then coalesce(s.name, '—')
             else coalesce(s.name, d.data->>'category', d.data->>'payee', '—')
@@ -3057,6 +3057,7 @@ app.get("/api/v1/reports/:name", async (c) => {
           ) as "note"
         from documents d
         left join salesmen s on s.id = d.salesman_id and s.org = d.org
+        left join money_accounts src_acc on src_acc.org = d.org and src_acc.id::text = coalesce(d.data->>'sourceId', d.data->>'sourceAccountId')
         left join lateral (
           select sum(x.amount) applied 
           from allocations x 

@@ -418,15 +418,14 @@ export function DirectCigSalesPage({
         String(a.holder ?? "").toLowerCase().includes("mudhasir") ||
         String(a.holder ?? "").toLowerCase().includes("mubashir")),
   );
-  const mudhasirCashAcc = accounts.find(
+  const managerCashAcc = accounts.find(
     (a) =>
       a.type === "cash" &&
-      (String(a.name ?? "").toLowerCase().includes("mudhasir") ||
-        String(a.name ?? "").toLowerCase().includes("mubashir") ||
-        String(a.holder ?? "").toLowerCase().includes("mudhasir") ||
-        String(a.holder ?? "").toLowerCase().includes("mubashir")),
-  );
-  const defaultCash = str(mudhasirCashAcc?.id ?? accounts.find((a) => a.type === "cash")?.id ?? accounts[0]?.id ?? "");
+      (String(a.name ?? "").toLowerCase().includes("manager") ||
+        (!String(a.name ?? "").toLowerCase().includes("mudhasir") &&
+          !String(a.name ?? "").toLowerCase().includes("mubashir"))),
+  ) ?? accounts.find((a) => a.type === "cash");
+  const defaultCash = str(managerCashAcc?.id ?? accounts.find((a) => a.type === "cash")?.id ?? accounts[0]?.id ?? "");
   const defaultBank = str(mudhasirBankAcc?.id ?? accounts.find((a) => a.type === "bank")?.id ?? accounts[0]?.id ?? "");
   const activeCashAccountId = selectedCashAccountId || defaultCash;
   const activeBankAccountId = selectedBankAccountId || defaultBank;

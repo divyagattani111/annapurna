@@ -1743,7 +1743,7 @@ async function execute<K extends CommandName>(
       const c = p as Inputs["close"];
       const cashAccounts = await rows<{ id: string }>(
         t,
-        sql`select id from money_accounts where org=${a.org} and type='cash' and active=true`,
+        sql`select id from money_accounts where org=${a.org} and type='cash' and active=true and (name not ilike '%mudhasir%' and name not ilike '%mubashir%')`,
       );
       // Validate that all active cash accounts are counted
       ensure(

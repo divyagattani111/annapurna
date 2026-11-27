@@ -907,7 +907,13 @@ function Dashboard({
   onOpenReport?: (tab: string) => void;
 }) {
   const qc = useQueryClient();
-  const cash = arr(d.accounts).filter((a) => a.type === "cash"),
+  const cash = arr(d.accounts).filter(
+    (a) =>
+      a.type === "cash" &&
+      a.active !== false &&
+      !str(a.name).toLowerCase().includes("mudhasir") &&
+      !str(a.name).toLowerCase().includes("mubashir"),
+  ),
     banks = arr(d.accounts).filter((a) => a.type === "bank");
   const isDayClosed = d.dayClosed === true;
 
@@ -1055,14 +1061,13 @@ function Dashboard({
     setCloseSuccess("");
     try {
       const activeCashAccounts = cash.filter((a) => a.active !== false);
-      const activeBankAccounts = banks.filter((a) => a.active !== false);
-      const allAccountsToClose = [...activeCashAccounts, ...activeBankAccounts];
+      const allAccountsToClose = activeCashAccounts;
 
       for (const a of allAccountsToClose) {
         const id = str(a.id);
         const countedStr = (counts[id] ?? "").trim();
         if (!countedStr) {
-          throw new Error(`Please enter the counted/verified balance for ${str(a.name)}.`);
+          throw new Error(`Please enter the counted balance for ${str(a.name)}.`);
         }
         const expectedCents = parseCents(a.balance);
         const countedCents = parseCents(countedStr);
@@ -1084,7 +1089,7 @@ function Dashboard({
         }),
       };
       await api("commands/close", commandResult, payload, "POST", crypto.randomUUID());
-      setCloseSuccess("Business date closed and locked successfully for both physical cash and bank.");
+      setCloseSuccess("Business date closed and locked successfully for physical cash drawer.");
       setIsClosingOpen(false);
       await qc.invalidateQueries();
     } catch (err: unknown) {
@@ -1227,35 +1232,26 @@ function Dashboard({
               </div>
             )}
             {cash.length ? (
-              (() => {
-                const primaryCash = cash[0];
-                const primaryBank = banks[0];
-                return (
-                  <div
-                    className="drawer-card compact-drawer-card"
-                    key={str(primaryCash.id)}
-                    style={{
-                      padding: "10px 14px",
-                      borderRadius: 10,
-                      marginBottom: 8,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                    }}
-                  >
-                    <div>
-                      <strong style={{ fontSize: 14, marginBottom: 2, display: "block" }}>{str(primaryCash.name)}</strong>
-                      <b style={{ fontSize: 18, display: "block" }}>{rupees(primaryCash.balance)}</b>
-                    </div>
-                    {primaryBank && (
-                      <div style={{ textAlign: "right" }}>
-                        <strong style={{ fontSize: 14, marginBottom: 2, display: "block" }}>{str(primaryBank.name)}</strong>
-                        <b style={{ fontSize: 18, display: "block" }}>{rupees(primaryBank.balance)}</b>
-                      </div>
-                    )}
+              cash.map((c) => (
+                <div
+                  className="drawer-card compact-drawer-card"
+                  key={str(c.id)}
+                  style={{
+                    padding: "10px 14px",
+                    borderRadius: 10,
+                    marginBottom: 8,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                  }}
+                >
+                  <div>
+                    <strong style={{ fontSize: 14, marginBottom: 2, display: "block" }}>{str(c.name)}</strong>
+                    <span style={{ fontSize: 12, color: "#64748b" }}>{str(c.holder) || "Physical Drawer"}</span>
                   </div>
-                );
-              })()
+                  <b style={{ fontSize: 18, display: "block" }}>{rupees(c.balance)}</b>
+                </div>
+              ))
             ) : (
               <Empty text="No physical cash account configured." />
             )}
@@ -1312,7 +1308,7 @@ function Dashboard({
               <div className="drawer-footer" style={{ flexDirection: "column", alignItems: "stretch", gap: 8, marginTop: 8, paddingTop: 10, borderTop: "1px solid #f1f5f9" }}>
                 {!isClosingOpen ? (
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-                    <p style={{ margin: 0, fontSize: 12, color: "#64748b" }}>Close and lock business day for both physical cash drawer and bank accounts.</p>
+                    <p style={{ margin: 0, fontSize: 12, color: "#64748b" }}>Close and lock business day for physical cash drawer.</p>
                     <Button
                       className="primary"
                       style={{ padding: "6px 14px", fontSize: 12 }}
@@ -1322,7 +1318,7 @@ function Dashboard({
                         setCloseSuccess("");
                         // Pre-populate count with current expected balance for convenience
                         const initialCounts: Record<string, string> = {};
-                        [...cash, ...banks].forEach((a) => {
+                        cash.forEach((a) => {
                           const id = str(a.id);
                           if (!counts[id]) {
                             initialCounts[id] = formatCents(parseCents(a.balance));
@@ -1333,13 +1329,13 @@ function Dashboard({
                         }
                       }}
                     >
-                      <LockKeyhole size={14} /> Close Today (Cash & Bank)
+                      <LockKeyhole size={14} /> Close Today
                     </Button>
                   </div>
                 ) : (
                   <form onSubmit={handleCloseDay} style={{ borderTop: "1px solid #e2e8f0", paddingTop: 10 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                      <strong style={{ fontSize: 13 }}>Daily Cash & Bank Reconciliation</strong>
+                      <strong style={{ fontSize: 13 }}>Daily Cash Reconciliation</strong>
                       <Button
                         type="button"
                         className="text-link"
@@ -1351,9 +1347,8 @@ function Dashboard({
                       </Button>
                     </div>
 
-                    {[...cash, ...banks].map((a) => {
+                    {cash.map((a) => {
                       const id = str(a.id);
-                      const isBank = a.type === "bank";
                       const expectedCents = parseCents(a.balance);
                       const countedStr = counts[id] ?? "";
                       const countedCents = parseCents(countedStr);
@@ -1372,11 +1367,11 @@ function Dashboard({
                           }}
                         >
                           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 13 }}>
-                            <span><b>{str(a.name)}</b> {isBank ? "(Bank Account)" : `(${str(a.holder)})`}</span>
+                            <span><b>{str(a.name)}</b> ({str(a.holder) || "Drawer"})</span>
                             <span>Expected: <b>{rupees(a.balance)}</b></span>
                           </div>
                           <div className="form-grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                            <Field label={isBank ? "Verified Closing Bank Balance (₹) *" : "Physically Counted Cash (₹) *"}>
+                            <Field label="Physically Counted Cash (₹) *">
                               <input
                                 type="text"
                                 inputMode="decimal"
@@ -1415,7 +1410,7 @@ function Dashboard({
                               }}
                             >
                               {diffCents === 0n
-                                ? `✓ ${isBank ? "Bank balance" : "Drawer"} matches expected book balance exactly.`
+                                ? "✓ Drawer matches expected book balance exactly."
                                 : `Diff: ${diffCents > 0n ? "+" : ""}${diffFormatted} (Counted: ${formatCents(countedCents)} vs Expected: ${formatCents(expectedCents)})`}
                             </div>
                           )}
@@ -1509,7 +1504,7 @@ function Dashboard({
                         <small style={{ fontSize: 12, color: "var(--dashboard-muted)", display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                           {isOnline
                             ? "Mudhasir online account ➔ Demo receiving bank"
-                            : "Mudhasir cash account ➔ Demo manager cash"}
+                            : "Route cash ➔ Demo manager cash"}
                           {h.date ? ` · ${dateLabel(h.date)}` : ""}
                         </small>
                       </div>
@@ -1559,7 +1554,7 @@ function Dashboard({
                         Receive Route Collections from {str(pendingHandovers[0]?.salesman_name ?? "Mudhasir")}
                       </strong>
                       <div style={{ fontSize: 11, color: "#4b5563", marginTop: 4, display: "flex", flexWrap: "wrap", gap: 16 }}>
-                        <span>💵 Cash: <b>Mudhasir cash account ➔ Demo manager cash</b></span>
+                        <span>💵 Cash: <b>Route cash ➔ Demo manager cash</b></span>
                         <span>📱 Online: <b>Mudhasir online account ➔ Demo receiving bank</b></span>
                       </div>
                     </div>
