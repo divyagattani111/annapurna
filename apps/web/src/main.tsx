@@ -1694,8 +1694,23 @@ function ReceiveMoneyPage({
     [success, setSuccess] = useState("");
 
   const accounts = arr(masters?.accounts);
-  const defaultCashId = accounts.find((a) => a.type === "cash")?.id ?? "";
-  const defaultBankId = accounts.find((a) => a.type === "bank")?.id ?? "";
+  const managerCashAcc = accounts.find(
+    (a) =>
+      a.type === "cash" &&
+      (str(a.name).toLowerCase().includes("manager") ||
+        (!str(a.name).toLowerCase().includes("mudhasir") &&
+          !str(a.name).toLowerCase().includes("mubashir"))),
+  ) ?? accounts.find((a) => a.type === "cash");
+  const managerBankAcc = accounts.find(
+    (a) =>
+      a.type === "bank" &&
+      (str(a.name).toLowerCase().includes("receiving") ||
+        str(a.name).toLowerCase().includes("manager") ||
+        (!str(a.name).toLowerCase().includes("mudhasir") &&
+          !str(a.name).toLowerCase().includes("mubashir"))),
+  ) ?? accounts.find((a) => a.type === "bank");
+  const defaultCashId = managerCashAcc?.id ?? accounts.find((a) => a.type === "cash")?.id ?? "";
+  const defaultBankId = managerBankAcc?.id ?? accounts.find((a) => a.type === "bank")?.id ?? "";
 
   const receiveCashVal = (() => {
     const c = cleanMoney(cashAmount);
@@ -2896,12 +2911,24 @@ function CommandPage({
         p.discount = cleanDisc;
       }
       if (withPayments) {
-        const defaultCashId =
-          cashId ||
-          (arr(masters.accounts).find((a) => a.type === "cash")?.id ?? "");
-        const defaultBankId =
-          bankId ||
-          (arr(masters.accounts).find((a) => a.type === "bank")?.id ?? "");
+        const accs = arr(masters.accounts);
+        const mgrCash = accs.find(
+          (a) =>
+            a.type === "cash" &&
+            (str(a.name).toLowerCase().includes("manager") ||
+              (!str(a.name).toLowerCase().includes("mudhasir") &&
+                !str(a.name).toLowerCase().includes("mubashir"))),
+        ) ?? accs.find((a) => a.type === "cash");
+        const mgrBank = accs.find(
+          (a) =>
+            a.type === "bank" &&
+            (str(a.name).toLowerCase().includes("receiving") ||
+              str(a.name).toLowerCase().includes("manager") ||
+              (!str(a.name).toLowerCase().includes("mudhasir") &&
+                !str(a.name).toLowerCase().includes("mubashir"))),
+        ) ?? accs.find((a) => a.type === "bank");
+        const defaultCashId = cashId || mgrCash?.id || "";
+        const defaultBankId = bankId || mgrBank?.id || "";
         const cleanCash = cleanMoney(cashPay);
         const onlineAmounts = parseMultiAmounts(onlinePay);
         const receipts: Row[] = [];

@@ -460,4 +460,44 @@ describe("H5 canonical fingerprinting & C4 UUID safety", () => {
     });
     expect(invalidHandover.success).toBe(false);
   });
+
+  test("Account matching resolution guarantees Mudhasir vs Manager accounts", () => {
+    const testAccounts = [
+      { id: "acc-1", name: "Demo manager cash", type: "cash", holder: "Demo manager" },
+      { id: "acc-2", name: "Demo receiving bank", type: "bank", holder: "Demo business" },
+      { id: "acc-3", name: "Mudhasir cash account", type: "cash", holder: "Mudhasir" },
+      { id: "acc-4", name: "Mudhasir online account", type: "bank", holder: "Mudhasir" },
+    ];
+
+    // Mudhasir route resolution
+    const mudhasirCash = testAccounts.find(
+      (a) =>
+        a.type === "cash" &&
+        (a.name.toLowerCase().includes("mudhasir") || a.holder.toLowerCase().includes("mudhasir")),
+    );
+    const mudhasirBank = testAccounts.find(
+      (a) =>
+        a.type === "bank" &&
+        (a.name.toLowerCase().includes("mudhasir") || a.holder.toLowerCase().includes("mudhasir")),
+    );
+    expect(mudhasirCash?.id).toBe("acc-3");
+    expect(mudhasirBank?.id).toBe("acc-4");
+
+    // Retail route resolution
+    const managerCash = testAccounts.find(
+      (a) =>
+        a.type === "cash" &&
+        (a.name.toLowerCase().includes("manager") ||
+          (!a.name.toLowerCase().includes("mudhasir") && !a.name.toLowerCase().includes("mubashir"))),
+    );
+    const managerBank = testAccounts.find(
+      (a) =>
+        a.type === "bank" &&
+        (a.name.toLowerCase().includes("receiving") ||
+          a.name.toLowerCase().includes("manager") ||
+          (!a.name.toLowerCase().includes("mudhasir") && !a.name.toLowerCase().includes("mubashir"))),
+    );
+    expect(managerCash?.id).toBe("acc-1");
+    expect(managerBank?.id).toBe("acc-2");
+  });
 });

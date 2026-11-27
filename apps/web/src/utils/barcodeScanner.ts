@@ -72,7 +72,7 @@ export function useGlobalBarcodeScanner({
   enabled: boolean;
   products: Row[];
   onProductScanned?: (product: Row) => void;
-  onProductsScanned?: (products: Row[]) => void;
+  onProductsScanned?: (products: Row[], rawScan?: string) => void;
   onRestoreQuantity?: (rowId: string, prevVal: string) => void;
   onScanNotFound?: (rawBarcode: string) => void;
 }) {
@@ -124,7 +124,7 @@ export function useGlobalBarcodeScanner({
 
             if (matchedList.length > 0) {
               if (onProductsScanned) {
-                onProductsScanned(matchedList);
+                onProductsScanned(matchedList, rawScan);
               } else if (onProductScanned) {
                 onProductScanned(matchedList[0]);
               }

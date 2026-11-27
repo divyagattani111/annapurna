@@ -34,6 +34,7 @@ import {
 import { api } from "../api";
 import { Button, Field, Empty, Metric } from "../components/ui";
 import { DraftReviewModal } from "../components/DraftReviewModal";
+import { ProductScanDisambiguationModal } from "../components/ProductScanDisambiguationModal";
 import { Documents } from "../components/Documents";
 import { MasterForm } from "./MasterRecordsManager";
 import { D, str, arr, rupees, formatCents, parseCents, parseMoneyNumber,
@@ -167,7 +168,12 @@ export function RetailCigSalesPage({
     [masters.products]
   );
 
-  const handleProductsScanned = (scannedProducts: Row[]) => {
+  const [disambiguateScan, setDisambiguateScan] = useState<{
+    products: Row[];
+    rawScan?: string;
+  } | null>(null);
+
+  const applyProductsToBill = (scannedProducts: Row[]) => {
     if (!scannedProducts.length) return;
     let firstTargetRowId: string | null = null;
 
@@ -213,6 +219,15 @@ export function RetailCigSalesPage({
     }, 50);
   };
 
+  const handleProductsScanned = (scannedProducts: Row[], rawScan?: string) => {
+    if (!scannedProducts.length) return;
+    if (scannedProducts.length > 1) {
+      setDisambiguateScan({ products: scannedProducts, rawScan });
+      return;
+    }
+    applyProductsToBill(scannedProducts);
+  };
+
   const handleProductScanned = (scannedProduct: Row) => {
     handleProductsScanned([scannedProduct]);
   };
@@ -220,7 +235,7 @@ export function RetailCigSalesPage({
   const [barcodeNotFoundCode, setBarcodeNotFoundCode] = useState<string | null>(null);
 
   useGlobalBarcodeScanner({
-    enabled: activeView === "new_bill",
+    enabled: activeView === "new_bill" && !disambiguateScan,
     products: cigaretteProducts,
     onProductsScanned: handleProductsScanned,
     onRestoreQuantity: (rowId, prevVal) => {
@@ -336,8 +351,6 @@ export function RetailCigSalesPage({
   const [receivePaymentDate, setReceivePaymentDate] = useState(date);
   const [receiveCashAmount, setReceiveCashAmount] = useState("");
   const [receiveBankAmount, setReceiveBankAmount] = useState("");
-  const [receiveCashAccountId, setReceiveCashAccountId] = useState("");
-  const [receiveBankAccountId, setReceiveBankAccountId] = useState("");
   const [receiveNote, setReceiveNote] = useState("");
   const [receiveBusy, setReceiveBusy] = useState(false);
   const [receiveError, setReceiveError] = useState("");
@@ -368,12 +381,29 @@ export function RetailCigSalesPage({
   const [ledgerFilter, setLedgerFilter] = useState<"all" | "due" | "advance">("all");
 
   const accounts = arr(masters.accounts);
-  const defaultCash = str(accounts.find((a) => a.type === "cash")?.id ?? accounts[0]?.id ?? "");
-  const defaultBank = str(accounts.find((a) => a.type === "bank")?.id ?? accounts[0]?.id ?? "");
-  const activeBillCashId = billCashAccountId || defaultCash;
-  const activeBillBankId = billBankAccountId || defaultBank;
-  const activeReceiveCashId = receiveCashAccountId || defaultCash;
-  const activeReceiveBankId = receiveBankAccountId || defaultBank;
+  const managerCashAcc = accounts.find(
+    (a) =>
+      a.type === "cash" &&
+      a.active !== false &&
+      (str(a.name).toLowerCase().includes("manager") ||
+        (!str(a.name).toLowerCase().includes("mudhasir") &&
+          !str(a.name).toLowerCase().includes("mubashir"))),
+  ) ?? accounts.find((a) => a.type === "cash" && a.active !== false) ?? accounts.find((a) => a.type === "cash");
+  const managerBankAcc = accounts.find(
+    (a) =>
+      a.type === "bank" &&
+      a.active !== false &&
+      (str(a.name).toLowerCase().includes("receiving") ||
+        str(a.name).toLowerCase().includes("manager") ||
+        (!str(a.name).toLowerCase().includes("mudhasir") &&
+          !str(a.name).toLowerCase().includes("mubashir"))),
+  ) ?? accounts.find((a) => a.type === "bank" && a.active !== false) ?? accounts.find((a) => a.type === "bank");
+  const defaultCash = str(managerCashAcc?.id ?? accounts.find((a) => a.type === "cash" && a.active !== false)?.id ?? accounts.find((a) => a.type === "cash")?.id ?? accounts[0]?.id ?? "");
+  const defaultBank = str(managerBankAcc?.id ?? accounts.find((a) => a.type === "bank" && a.active !== false)?.id ?? accounts.find((a) => a.type === "bank")?.id ?? accounts[0]?.id ?? "");
+  const activeBillCashId = defaultCash;
+  const activeBillBankId = defaultBank;
+  const activeReceiveCashId = defaultCash;
+  const activeReceiveBankId = defaultBank;
 
   // Estimated bill total & subtotals
   const {
@@ -2375,20 +2405,6 @@ export function RetailCigSalesPage({
                   onChange={(e) => setReceiveCashAmount(e.target.value)}
                   style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1.5px solid #cbd5e1", fontSize: 16, fontWeight: 700 }}
                 />
-                {accounts.filter((a) => a.type === "cash").length > 1 && (
-                  <div style={{ marginTop: 8 }}>
-                    <label style={{ fontSize: 11, color: "#64748b" }}>Deposited into Drawer:</label>
-                    <select
-                      value={activeReceiveCashId}
-                      onChange={(e) => setReceiveCashAccountId(e.target.value)}
-                      style={{ marginTop: 4, width: "100%", padding: "8px 10px", fontSize: 12, borderRadius: 6, border: "1px solid #cbd5e1" }}
-                    >
-                      {accounts.filter((a) => a.type === "cash").map((a) => (
-                        <option key={str(a.id)} value={str(a.id)}>{str(a.name)}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
               </div>
 
               <div style={{ background: "#ffffff", border: "1.5px solid #e2e8f0", borderRadius: 12, padding: "16px 16px" }}>
@@ -2425,20 +2441,6 @@ export function RetailCigSalesPage({
                     </div>
                   );
                 })()}
-                {accounts.filter((a) => a.type === "bank").length > 1 && (
-                  <div style={{ marginTop: 8 }}>
-                    <label style={{ fontSize: 11, color: "#64748b" }}>Received into Bank Account:</label>
-                    <select
-                      value={activeReceiveBankId}
-                      onChange={(e) => setReceiveBankAccountId(e.target.value)}
-                      style={{ marginTop: 4, width: "100%", padding: "8px 10px", fontSize: 12, borderRadius: 6, border: "1px solid #cbd5e1" }}
-                    >
-                      {accounts.filter((a) => a.type === "bank").map((a) => (
-                        <option key={str(a.id)} value={str(a.id)}>{str(a.name)}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
               </div>
 
               <div
@@ -2680,6 +2682,21 @@ export function RetailCigSalesPage({
           }}
         />
       )}
+
+      <ProductScanDisambiguationModal
+        open={Boolean(disambiguateScan && disambiguateScan.products.length > 1)}
+        products={disambiguateScan?.products || []}
+        scannedCode={disambiguateScan?.rawScan}
+        onSelectProduct={(p) => {
+          setDisambiguateScan(null);
+          applyProductsToBill([p]);
+        }}
+        onSelectAll={(prods) => {
+          setDisambiguateScan(null);
+          applyProductsToBill(prods);
+        }}
+        onClose={() => setDisambiguateScan(null)}
+      />
     </div>
   );
 }

@@ -473,12 +473,7 @@ async function receive(
     "Actual payment date cannot be in the future",
   );
   const salesman = await scoped(t, a, "salesmen", p.salesmanId);
-  const acc = await account(
-    t,
-    a,
-    p.accountId,
-    p.method === "cash" ? "cash" : "bank",
-  );
+  const providedAcc = (await scoped(t, a, "money_accounts", p.accountId)) as unknown as MoneyAccount;
   positive(p.amount);
   let customerName: string | undefined;
   if (p.customerId) {
@@ -490,44 +485,90 @@ async function receive(
   }
   const isDirect = isDirectRouteSalesman(salesman as { name?: string | null; details?: unknown });
   let targetAccountId = p.accountId;
-  let targetAccount = acc;
 
   if (isDirect && p.method === "cash") {
-    const isMudhasirCashAcc =
-      acc.type === "cash" &&
-      (acc.name.toLowerCase().includes("mudhasir") ||
-        acc.name.toLowerCase().includes("mubashir") ||
-        acc.holder.toLowerCase().includes("mudhasir") ||
-        acc.holder.toLowerCase().includes("mubashir"));
-
-    if (!isMudhasirCashAcc) {
-      const [mudhasirCash] = await rows<{ id: string; name: string; type: string; holder: string }>(
-        t,
-        sql`select id, name, type, holder from money_accounts where org=${a.org} and active=true and type='cash' and (name ilike '%mudhasir%' or name ilike '%mubashir%' or holder ilike '%mudhasir%' or holder ilike '%mubashir%') limit 1`,
+    let [mudhasirCash] = await rows<{ id: string; name: string; type: string; holder: string; active: boolean }>(
+      t,
+      sql`select id, name, type, holder, active from money_accounts where org=${a.org} and type='cash' and (name ilike '%mudhasir%' or name ilike '%mubashir%' or holder ilike '%mudhasir%' or holder ilike '%mubashir%') limit 1`,
+    );
+    if (mudhasirCash && !mudhasirCash.active) {
+      await t.execute(
+        sql`update money_accounts set active=true where id=${mudhasirCash.id} and org=${a.org}`,
       );
-      if (mudhasirCash) {
-        targetAccountId = mudhasirCash.id;
-        targetAccount = { ...acc, id: mudhasirCash.id, name: mudhasirCash.name, holder: mudhasirCash.holder };
-      }
+      mudhasirCash.active = true;
+    }
+    if (!mudhasirCash) {
+      const [created] = await rows<{ id: string; name: string; type: string; holder: string; active: boolean }>(
+        t,
+        sql`insert into money_accounts(org,name,type,holder,active) values(${a.org},'Mudhasir cash account','cash','Mudhasir',true) returning id, name, type, holder, active`,
+      );
+      mudhasirCash = created;
+    }
+    if (mudhasirCash) {
+      targetAccountId = mudhasirCash.id;
     }
   } else if (isDirect && p.method === "online") {
-    const isMudhasirAcc =
-      acc.name.toLowerCase().includes("mudhasir") ||
-      acc.name.toLowerCase().includes("mubashir") ||
-      acc.holder.toLowerCase().includes("mudhasir") ||
-      acc.holder.toLowerCase().includes("mubashir");
-
-    if (!isMudhasirAcc) {
-      const [mudhasirBank] = await rows<{ id: string; name: string; type: string; holder: string }>(
-        t,
-        sql`select id, name, type, holder from money_accounts where org=${a.org} and active=true and type='bank' and (name ilike '%mudhasir%' or name ilike '%mubashir%' or holder ilike '%mudhasir%' or holder ilike '%mubashir%') limit 1`,
+    let [mudhasirBank] = await rows<{ id: string; name: string; type: string; holder: string; active: boolean }>(
+      t,
+      sql`select id, name, type, holder, active from money_accounts where org=${a.org} and type='bank' and (name ilike '%mudhasir%' or name ilike '%mubashir%' or holder ilike '%mudhasir%' or holder ilike '%mubashir%') limit 1`,
+    );
+    if (mudhasirBank && !mudhasirBank.active) {
+      await t.execute(
+        sql`update money_accounts set active=true where id=${mudhasirBank.id} and org=${a.org}`,
       );
-      if (mudhasirBank) {
-        targetAccountId = mudhasirBank.id;
-        targetAccount = { ...acc, id: mudhasirBank.id, name: mudhasirBank.name, holder: mudhasirBank.holder };
+      mudhasirBank.active = true;
+    }
+    if (!mudhasirBank) {
+      const [created] = await rows<{ id: string; name: string; type: string; holder: string; active: boolean }>(
+        t,
+        sql`insert into money_accounts(org,name,type,holder,active) values(${a.org},'Mudhasir online account','bank','Mudhasir',true) returning id, name, type, holder, active`,
+      );
+      mudhasirBank = created;
+    }
+    if (mudhasirBank) {
+      targetAccountId = mudhasirBank.id;
+    }
+  } else if (!isDirect && p.method === "cash") {
+    const isInvalidForRetail =
+      !providedAcc.active ||
+      providedAcc.name.toLowerCase().includes("mudhasir") ||
+      providedAcc.name.toLowerCase().includes("mubashir") ||
+      providedAcc.holder.toLowerCase().includes("mudhasir") ||
+      providedAcc.holder.toLowerCase().includes("mubashir");
+    if (isInvalidForRetail) {
+      const [mgrCash] = await rows<{ id: string; name: string; type: string; holder: string }>(
+        t,
+        sql`select id, name, type, holder from money_accounts where org=${a.org} and active=true and type='cash' and (name ilike '%demo manager cash%' or (name not ilike '%mudhasir%' and name not ilike '%mubashir%')) order by case when name ilike '%demo manager cash%' then 0 else 1 end limit 1`,
+      );
+      if (mgrCash) {
+        targetAccountId = mgrCash.id;
+      }
+    }
+  } else if (!isDirect && p.method === "online") {
+    const isInvalidForRetail =
+      !providedAcc.active ||
+      providedAcc.name.toLowerCase().includes("mudhasir") ||
+      providedAcc.name.toLowerCase().includes("mubashir") ||
+      providedAcc.holder.toLowerCase().includes("mudhasir") ||
+      providedAcc.holder.toLowerCase().includes("mubashir");
+    if (isInvalidForRetail) {
+      const [mgrBank] = await rows<{ id: string; name: string; type: string; holder: string }>(
+        t,
+        sql`select id, name, type, holder from money_accounts where org=${a.org} and active=true and type='bank' and (name ilike '%demo receiving bank%' or (name not ilike '%mudhasir%' and name not ilike '%mubashir%')) order by case when name ilike '%demo receiving bank%' then 0 else 1 end limit 1`,
+      );
+      if (mgrBank) {
+        targetAccountId = mgrBank.id;
       }
     }
   }
+
+  const acc = await account(
+    t,
+    a,
+    targetAccountId,
+    p.method === "cash" ? "cash" : "bank",
+  );
+  const targetAccount = acc;
 
   const debitAccount = cash(targetAccountId);
 

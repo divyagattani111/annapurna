@@ -142,9 +142,19 @@ export function DraftReviewModal({
       const onlineAmounts = parseMultiAmounts(onlinePay);
       const hasCash = Boolean(cleanCash && parseMoneyNumber(cleanCash) > 0);
 
+      const mudhasirCashAcc = arr(masters.accounts).find(
+        (a) =>
+          a.type === "cash" &&
+          a.active !== false &&
+          (str(a.name).toLowerCase().includes("mudhasir") ||
+            str(a.name).toLowerCase().includes("mubashir") ||
+            str(a.holder).toLowerCase().includes("mudhasir") ||
+            str(a.holder).toLowerCase().includes("mubashir")),
+      );
       const mudhasirBankAcc = arr(masters.accounts).find(
         (a) =>
           a.type === "bank" &&
+          a.active !== false &&
           (str(a.name).toLowerCase().includes("mudhasir") ||
             str(a.name).toLowerCase().includes("mubashir") ||
             str(a.holder).toLowerCase().includes("mudhasir") ||
@@ -153,14 +163,29 @@ export function DraftReviewModal({
       const managerCashAcc = arr(masters.accounts).find(
         (a) =>
           a.type === "cash" &&
+          a.active !== false &&
           (str(a.name).toLowerCase().includes("manager") ||
             (!str(a.name).toLowerCase().includes("mudhasir") &&
               !str(a.name).toLowerCase().includes("mubashir"))),
-      ) || arr(masters.accounts).find((a) => a.type === "cash");
-      const defaultCash = (managerCashAcc?.id || arr(masters.accounts).find((a) => a.type === "cash")?.id) || "";
-      const defaultBank = (mudhasirBankAcc?.id || arr(masters.accounts).find((a) => a.type === "bank")?.id) || "";
-      const activeCashId = cashAccountId || defaultCash;
-      const activeBankId = bankAccountId || defaultBank;
+      ) || arr(masters.accounts).find((a) => a.type === "cash" && a.active !== false) || arr(masters.accounts).find((a) => a.type === "cash");
+      const managerBankAcc = arr(masters.accounts).find(
+        (a) =>
+          a.type === "bank" &&
+          a.active !== false &&
+          (str(a.name).toLowerCase().includes("receiving") ||
+            str(a.name).toLowerCase().includes("manager") ||
+            (!str(a.name).toLowerCase().includes("mudhasir") &&
+              !str(a.name).toLowerCase().includes("mubashir"))),
+      ) || arr(masters.accounts).find((a) => a.type === "bank" && a.active !== false) || arr(masters.accounts).find((a) => a.type === "bank");
+
+      const defaultCash = isDirectCig
+        ? (mudhasirCashAcc?.id || arr(masters.accounts).find((a) => a.type === "cash" && a.active !== false)?.id || arr(masters.accounts).find((a) => a.type === "cash")?.id || "")
+        : (managerCashAcc?.id || arr(masters.accounts).find((a) => a.type === "cash" && a.active !== false)?.id || arr(masters.accounts).find((a) => a.type === "cash")?.id || "");
+      const defaultBank = isDirectCig
+        ? (mudhasirBankAcc?.id || arr(masters.accounts).find((a) => a.type === "bank" && a.active !== false)?.id || arr(masters.accounts).find((a) => a.type === "bank")?.id || "")
+        : (managerBankAcc?.id || arr(masters.accounts).find((a) => a.type === "bank" && a.active !== false)?.id || arr(masters.accounts).find((a) => a.type === "bank")?.id || "");
+      const activeCashId = isDirectCig ? defaultCash : (cashAccountId || defaultCash);
+      const activeBankId = isDirectCig ? defaultBank : (bankAccountId || defaultBank);
 
       if (hasCash) {
         r.push({

@@ -840,7 +840,7 @@ export function BarcodeScannerInput({
 }: {
   products: Row[];
   onProductScanned?: (product: Row) => void;
-  onProductsScanned?: (products: Row[]) => void;
+  onProductsScanned?: (products: Row[], rawQuery?: string) => void;
   externalNotFoundCode?: string | null;
   onClearNotFound?: () => void;
   autoFocus?: boolean;
@@ -876,7 +876,7 @@ export function BarcodeScannerInput({
       );
       setScanValue("");
       if (onProductsScanned) {
-        onProductsScanned(matchedList);
+        onProductsScanned(matchedList, query);
       } else if (onProductScanned) {
         onProductScanned(matchedList[0]);
       }

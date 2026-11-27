@@ -43,6 +43,7 @@ import {
 import { api } from "../api";
 import { Button, Field, Empty, DocLink, Metric } from "../components/ui";
 import { DraftReviewModal } from "../components/DraftReviewModal";
+import { ProductScanDisambiguationModal } from "../components/ProductScanDisambiguationModal";
 import { Documents } from "../components/Documents";
 import {
   D, str, arr, rupees, formatCents, parseCents, parseMoneyNumber,
@@ -211,7 +212,12 @@ export function DirectCigSalesPage({
     [masters.products]
   );
 
-  const handleProductsScanned = (scannedProducts: Row[]) => {
+  const [disambiguateScan, setDisambiguateScan] = useState<{
+    products: Row[];
+    rawScan?: string;
+  } | null>(null);
+
+  const applyProductsToBill = (scannedProducts: Row[]) => {
     if (!scannedProducts.length) return;
     let firstTargetRowId: string | null = null;
 
@@ -257,6 +263,15 @@ export function DirectCigSalesPage({
     }, 50);
   };
 
+  const handleProductsScanned = (scannedProducts: Row[], rawScan?: string) => {
+    if (!scannedProducts.length) return;
+    if (scannedProducts.length > 1) {
+      setDisambiguateScan({ products: scannedProducts, rawScan });
+      return;
+    }
+    applyProductsToBill(scannedProducts);
+  };
+
   const handleProductScanned = (scannedProduct: Row) => {
     handleProductsScanned([scannedProduct]);
   };
@@ -264,7 +279,7 @@ export function DirectCigSalesPage({
   const [barcodeNotFoundCode, setBarcodeNotFoundCode] = useState<string | null>(null);
 
   useGlobalBarcodeScanner({
-    enabled: activeView === "new_bill",
+    enabled: activeView === "new_bill" && !disambiguateScan,
     products: cigaretteProducts,
     onProductsScanned: handleProductsScanned,
     onRestoreQuantity: (rowId, prevVal) => {
@@ -384,8 +399,6 @@ export function DirectCigSalesPage({
   const [paymentDate, setPaymentDate] = useState(date);
   const [cashAmount, setCashAmount] = useState("");
   const [bankAmount, setBankAmount] = useState("");
-  const [selectedCashAccountId, setSelectedCashAccountId] = useState("");
-  const [selectedBankAccountId, setSelectedBankAccountId] = useState("");
   const [paymentNote, setPaymentNote] = useState("");
   const [payBusy, setPayBusy] = useState(false);
   const [payError, setPayError] = useState("");
@@ -413,26 +426,45 @@ export function DirectCigSalesPage({
   }, [billPayOnlineList]);
   const billPayTotalVal = useMemo(() => billPayCashVal.plus(billPayOnlineVal), [billPayCashVal, billPayOnlineVal]);
 
-  const accounts = arr(masters.accounts) as Array<{ id: string; name?: string; holder?: string; type?: string; [key: string]: unknown }>;
+  const accounts = arr(masters.accounts) as Array<{ id: string; name?: string; holder?: string; type?: string; active?: boolean; [key: string]: unknown }>;
+  const mudhasirCashAcc = accounts.find(
+    (a) =>
+      a.type === "cash" &&
+      a.active !== false &&
+      (String(a.name ?? "").toLowerCase().includes("mudhasir") ||
+        String(a.name ?? "").toLowerCase().includes("mubashir") ||
+        String(a.holder ?? "").toLowerCase().includes("mudhasir") ||
+        String(a.holder ?? "").toLowerCase().includes("mubashir")),
+  ) ?? accounts.find(
+    (a) =>
+      a.type === "cash" &&
+      (String(a.name ?? "").toLowerCase().includes("mudhasir") ||
+        String(a.name ?? "").toLowerCase().includes("mubashir") ||
+        String(a.holder ?? "").toLowerCase().includes("mudhasir") ||
+        String(a.holder ?? "").toLowerCase().includes("mubashir")),
+  ) ?? accounts.find((a) => a.type === "cash" && a.active !== false) ?? accounts.find((a) => a.type === "cash");
+
   const mudhasirBankAcc = accounts.find(
+    (a) =>
+      a.type === "bank" &&
+      a.active !== false &&
+      (String(a.name ?? "").toLowerCase().includes("mudhasir") ||
+        String(a.name ?? "").toLowerCase().includes("mubashir") ||
+        String(a.holder ?? "").toLowerCase().includes("mudhasir") ||
+        String(a.holder ?? "").toLowerCase().includes("mubashir")),
+  ) ?? accounts.find(
     (a) =>
       a.type === "bank" &&
       (String(a.name ?? "").toLowerCase().includes("mudhasir") ||
         String(a.name ?? "").toLowerCase().includes("mubashir") ||
         String(a.holder ?? "").toLowerCase().includes("mudhasir") ||
         String(a.holder ?? "").toLowerCase().includes("mubashir")),
-  );
-  const managerCashAcc = accounts.find(
-    (a) =>
-      a.type === "cash" &&
-      (String(a.name ?? "").toLowerCase().includes("manager") ||
-        (!String(a.name ?? "").toLowerCase().includes("mudhasir") &&
-          !String(a.name ?? "").toLowerCase().includes("mubashir"))),
-  ) ?? accounts.find((a) => a.type === "cash");
-  const defaultCash = str(managerCashAcc?.id ?? accounts.find((a) => a.type === "cash")?.id ?? accounts[0]?.id ?? "");
-  const defaultBank = str(mudhasirBankAcc?.id ?? accounts.find((a) => a.type === "bank")?.id ?? accounts[0]?.id ?? "");
-  const activeCashAccountId = selectedCashAccountId || defaultCash;
-  const activeBankAccountId = selectedBankAccountId || defaultBank;
+  ) ?? accounts.find((a) => a.type === "bank" && a.active !== false) ?? accounts.find((a) => a.type === "bank");
+
+  const defaultCash = str(mudhasirCashAcc?.id ?? accounts.find((a) => a.type === "cash" && a.active !== false)?.id ?? accounts.find((a) => a.type === "cash")?.id ?? accounts[0]?.id ?? "");
+  const defaultBank = str(mudhasirBankAcc?.id ?? accounts.find((a) => a.type === "bank" && a.active !== false)?.id ?? accounts.find((a) => a.type === "bank")?.id ?? accounts[0]?.id ?? "");
+  const activeCashAccountId = defaultCash;
+  const activeBankAccountId = defaultBank;
 
   // Client estimated bill total & subtotals
   const {
@@ -583,8 +615,8 @@ export function DirectCigSalesPage({
         cashPay: billCashPay,
         onlinePay: billOnlinePay,
         paymentNote: billPaymentNote,
-        cashAccountId: billCashAccountId || defaultCash,
-        bankAccountId: billBankAccountId || defaultBank,
+        cashAccountId: defaultCash,
+        bankAccountId: defaultBank,
       },
     });
   };
@@ -2414,19 +2446,6 @@ export function DirectCigSalesPage({
                         onChange={(e) => setBillCashPay(e.target.value)}
                         style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 14, fontWeight: 600 }}
                       />
-                      {accounts.filter((a) => a.type === "cash").length > 1 && (
-                        <div style={{ marginTop: 6 }}>
-                          <select
-                            value={billCashAccountId || defaultCash}
-                            onChange={(e) => setBillCashAccountId(e.target.value)}
-                            style={{ width: "100%", padding: "5px 8px", fontSize: 11, borderRadius: 6, border: "1px solid #cbd5e1" }}
-                          >
-                            {accounts.filter((a) => a.type === "cash").map((a) => (
-                              <option key={str(a.id)} value={str(a.id)}>{str(a.name)}</option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
                     </div>
 
                     <div style={{ background: "#ffffff", border: "1px solid #cbd5e1", borderRadius: 10, padding: "12px 14px" }}>
@@ -2459,19 +2478,6 @@ export function DirectCigSalesPage({
                         }
                         return null;
                       })()}
-                      {accounts.filter((a) => a.type === "bank").length > 1 && (
-                        <div style={{ marginTop: 6 }}>
-                          <select
-                            value={billBankAccountId || defaultBank}
-                            onChange={(e) => setBillBankAccountId(e.target.value)}
-                            style={{ width: "100%", padding: "5px 8px", fontSize: 11, borderRadius: 6, border: "1px solid #cbd5e1" }}
-                          >
-                            {accounts.filter((a) => a.type === "bank").map((a) => (
-                              <option key={str(a.id)} value={str(a.id)}>{str(a.name)}</option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
                     </div>
 
                     <div style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 10, padding: "12px 14px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
@@ -4223,6 +4229,21 @@ export function DirectCigSalesPage({
           }}
         />
       )}
+
+      <ProductScanDisambiguationModal
+        open={Boolean(disambiguateScan && disambiguateScan.products.length > 1)}
+        products={disambiguateScan?.products || []}
+        scannedCode={disambiguateScan?.rawScan}
+        onSelectProduct={(p) => {
+          setDisambiguateScan(null);
+          applyProductsToBill([p]);
+        }}
+        onSelectAll={(prods) => {
+          setDisambiguateScan(null);
+          applyProductsToBill(prods);
+        }}
+        onClose={() => setDisambiguateScan(null)}
+      />
     </div>
   );
 }

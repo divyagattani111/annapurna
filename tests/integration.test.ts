@@ -1831,3 +1831,239 @@ test("Direct cigarette bill preview and posting calculates customer-scoped outst
   expect(doc3.data.cashConfirmed).toBe("40.00");
   expect(doc3.data.onlineConfirmed).toBe("60.00");
 });
+
+test("Direct vs Retail route collection accounts routing guarantee", async () => {
+  const f = await fixture();
+  const cookie = await authCookie(f, "owner");
+
+  const mudhasirSalesmanId = crypto.randomUUID();
+  const retailSalesmanId = crypto.randomUUID();
+  const mudhasirCashId = crypto.randomUUID();
+  const mudhasirBankId = crypto.randomUUID();
+  const managerCashId = crypto.randomUUID();
+  const managerBankId = crypto.randomUUID();
+
+  // Create salesmen
+  await db.execute(
+    sql`insert into salesmen(id,org,code,name,details) values(${mudhasirSalesmanId},${f.org},'MUD','Mudashir Route',${JSON.stringify({ itc_id: "MUD01" })})`,
+  );
+  await db.execute(
+    sql`insert into salesmen(id,org,code,name,details) values(${retailSalesmanId},${f.org},'RET','Retail Salesman 1',${JSON.stringify({})})`,
+  );
+
+  // Create accounts
+  await db.execute(
+    sql`insert into money_accounts(id,org,name,type,holder) values(${mudhasirCashId},${f.org},'Mudhasir cash account','cash','Mudhasir')`,
+  );
+  await db.execute(
+    sql`insert into money_accounts(id,org,name,type,holder) values(${mudhasirBankId},${f.org},'Mudhasir online account','bank','Mudhasir')`,
+  );
+  await db.execute(
+    sql`insert into money_accounts(id,org,name,type,holder) values(${managerCashId},${f.org},'Demo manager cash','cash','Demo manager')`,
+  );
+  await db.execute(
+    sql`insert into money_accounts(id,org,name,type,holder) values(${managerBankId},${f.org},'Demo receiving bank','bank','Demo business')`,
+  );
+
+  // 1. Mudhasir Bill with cash & online payments
+  // Even if manager accounts were passed, it must route cash to Mudhasir cash and online to Mudhasir bank
+  const mudPreview = await (
+    await request(cookie, "preview/bill", {
+      date,
+      salesmanId: mudhasirSalesmanId,
+      lines: [{ productId: f.product, quantity: "2" }],
+      receipts: [
+        {
+          amount: "80.00",
+          accountId: managerCashId, // explicitly passing manager cash
+          method: "cash",
+          actualDate: date,
+          reference: "",
+          verified: false,
+        },
+        {
+          amount: "120.00",
+          accountId: managerBankId, // explicitly passing manager bank
+          method: "online",
+          actualDate: date,
+          reference: "UPI-MUD-01",
+          verified: false,
+        },
+      ],
+    })
+  ).json();
+
+  const mudBillRes = await request(cookie, "commands/bill", {
+    date,
+    salesmanId: mudhasirSalesmanId,
+    lines: [{ productId: f.product, quantity: "2" }],
+    receipts: [
+      {
+        amount: "80.00",
+        accountId: managerCashId,
+        method: "cash",
+        actualDate: date,
+        reference: "",
+        verified: false,
+      },
+      {
+        amount: "120.00",
+        accountId: managerBankId,
+        method: "online",
+        actualDate: date,
+        reference: "UPI-MUD-01",
+        verified: false,
+      },
+    ],
+    expectedQuoteHash: mudPreview.quoteHash,
+  });
+  expect(mudBillRes.status).toBe(201);
+  const mudBillDoc = await mudBillRes.json();
+  expect(mudBillDoc.receipts).toHaveLength(2);
+
+  // Inspect the journal entries posted for Mudhasir's receipt child documents
+  const mudReceiptIds = mudBillDoc.receipts.map((r: { id: string }) => r.id);
+  const mudReceiptJournals = await rows<{ account: string; debit: string }>(
+    db,
+    sql`select j.account, j.debit from journal j where j.document_id in (${mudReceiptIds[0]}, ${mudReceiptIds[1]}) and j.debit > 0 order by j.debit`,
+  );
+  expect(mudReceiptJournals).toHaveLength(2);
+  expect(mudReceiptJournals).toContainEqual({
+    account: `money:${mudhasirCashId}`,
+    debit: "80.00",
+  });
+  expect(mudReceiptJournals).toContainEqual({
+    account: `money:${mudhasirBankId}`,
+    debit: "120.00",
+  });
+  expect(await f.bal("money:" + mudhasirCashId)).toBe("80.00");
+  expect(await f.bal("money:" + mudhasirBankId)).toBe("120.00");
+  expect(await f.bal("money:" + managerCashId)).toBe("0.00");
+  expect(await f.bal("money:" + managerBankId)).toBe("0.00");
+
+  // 2. Retail Bill with cash & online payments
+  // Even if Mudhasir accounts were passed, it must route cash to Demo manager cash and online to Demo receiving bank
+  const retPreview = await (
+    await request(cookie, "preview/bill", {
+      date,
+      salesmanId: retailSalesmanId,
+      lines: [{ productId: f.product, quantity: "3" }],
+      receipts: [
+        {
+          amount: "100.00",
+          accountId: mudhasirCashId, // explicitly passing Mudhasir cash
+          method: "cash",
+          actualDate: date,
+          reference: "",
+          verified: false,
+        },
+        {
+          amount: "200.00",
+          accountId: mudhasirBankId, // explicitly passing Mudhasir bank
+          method: "online",
+          actualDate: date,
+          reference: "UPI-RET-01",
+          verified: false,
+        },
+      ],
+    })
+  ).json();
+
+  const retBillRes = await request(cookie, "commands/bill", {
+    date,
+    salesmanId: retailSalesmanId,
+    lines: [{ productId: f.product, quantity: "3" }],
+    receipts: [
+      {
+        amount: "100.00",
+        accountId: mudhasirCashId,
+        method: "cash",
+        actualDate: date,
+        reference: "",
+        verified: false,
+      },
+      {
+        amount: "200.00",
+        accountId: mudhasirBankId,
+        method: "online",
+        actualDate: date,
+        reference: "UPI-RET-01",
+        verified: false,
+      },
+    ],
+    expectedQuoteHash: retPreview.quoteHash,
+  });
+  expect(retBillRes.status).toBe(201);
+  const retBillDoc = await retBillRes.json();
+  expect(retBillDoc.receipts).toHaveLength(2);
+
+  // Inspect the journal entries posted for Retail's receipt child documents
+  const retReceiptIds = retBillDoc.receipts.map((r: { id: string }) => r.id);
+  const retReceiptJournals = await rows<{ account: string; debit: string }>(
+    db,
+    sql`select j.account, j.debit from journal j where j.document_id in (${retReceiptIds[0]}, ${retReceiptIds[1]}) and j.debit > 0 order by j.debit`,
+  );
+  expect(retReceiptJournals).toHaveLength(2);
+  expect(retReceiptJournals).toContainEqual({
+    account: `money:${managerCashId}`,
+    debit: "100.00",
+  });
+  expect(retReceiptJournals).toContainEqual({
+    account: `money:${managerBankId}`,
+    debit: "200.00",
+  });
+  expect(await f.bal("money:" + managerCashId)).toBe("100.00");
+  expect(await f.bal("money:" + managerBankId)).toBe("200.00");
+
+  // 3. Self-healing / inactive resilience test:
+  // Deliberately set Mudhasir cash account to inactive=false
+  await db.execute(sql`update money_accounts set active = false where id = ${mudhasirCashId}`);
+
+  // Post Mudhasir bill with cash payment pointing to the deactivated account
+  const mudInactivePreview = await (
+    await request(cookie, "preview/bill", {
+      date,
+      salesmanId: mudhasirSalesmanId,
+      lines: [{ productId: f.product, quantity: "1" }],
+      receipts: [
+        {
+          amount: "50.00",
+          accountId: mudhasirCashId,
+          method: "cash",
+          actualDate: date,
+          reference: "",
+          verified: false,
+        },
+      ],
+    })
+  ).json();
+
+  const mudInactivePostRes = await request(cookie, "commands/bill", {
+    date,
+    salesmanId: mudhasirSalesmanId,
+    lines: [{ productId: f.product, quantity: "1" }],
+    receipts: [
+      {
+        amount: "50.00",
+        accountId: mudhasirCashId,
+        method: "cash",
+        actualDate: date,
+        reference: "",
+        verified: false,
+      },
+    ],
+    expectedQuoteHash: mudInactivePreview.quoteHash,
+  });
+  // Must NOT fail with "Account is inactive", must succeed with 201
+  expect(mudInactivePostRes.status).toBe(201);
+  const mudInactiveDoc = await mudInactivePostRes.json();
+  expect(mudInactiveDoc.receipts).toHaveLength(1);
+
+  // Verify account was auto-reactivated and journal correctly debited
+  const [reactivatedAcc] = await rows<{ active: boolean }>(
+    db,
+    sql`select active from money_accounts where id = ${mudhasirCashId}`,
+  );
+  expect(reactivatedAcc.active).toBe(true);
+  expect(await f.bal("money:" + mudhasirCashId)).toBe("130.00"); // 80 + 50
+});
